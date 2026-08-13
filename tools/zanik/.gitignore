@@ -1,0 +1,75 @@
+﻿# Build / output folders
+bin/
+obj/
+out/
+artifacts/
+build/
+
+# Rider, Visual Studio, VS Code
+.idea/
+.vs/
+.vscode/
+
+# User-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.DotSettings.user
+*.userprefs
+
+# ReSharper
+_ReSharper*/
+*.ReSharper*/
+*.DotSettings.user
+
+# NuGet
+packages/
+*.nupkg
+*.snupkg
+project.lock.json
+project.fragment.lock.json
+.nuget/
+
+# Visual Studio / MSBuild artifacts
+*.VC.db
+*.VC.VC.opendb
+*.pdb
+*.ipch/
+*.sdf
+*.cache
+*.ilk
+*.log
+*.tlog
+*.lastbuildstate
+
+# Runtime / compiled files
+*.dll
+*.exe
+*.mdb
+
+# Test results and coverage
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+coverage/
+
+# Publish / deployment
+publish/
+PublishOutput/
+
+# Database / EF artifacts
+*.dbmdl
+*.mdf
+*.ldf
+*.bak
+
+# Dotnet / tooling local secrets and settings
+secrets.json
+appsettings.Development.json
+
+# Misc
+*.vspscc
+*.vssscc
+node_modules/

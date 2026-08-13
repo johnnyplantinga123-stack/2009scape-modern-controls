@@ -1,0 +1,47 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm' version '1.4.32'
+    id 'application'
+}
+
+group 'org.example'
+version '1.4'
+
+repositories {
+    repositories {
+        mavenCentral()
+    }
+}
+
+application {
+    mainClass = 'MainScreenKt'
+}
+
+dependencies {
+    implementation "org.jetbrains:markdown-jvm:0.2.0"
+    implementation "com.github.ajalt.mordant:mordant:2.0.0-alpha2"
+    implementation "com.github.weisj:darklaf-core:2.5.5"
+    implementation "com.googlecode.json-simple:json-simple:1.1.1"
+    implementation "org.jetbrains.kotlin:kotlin-stdlib"
+    // https://mvnrepository.com/artifact/com.displee/disio
+    implementation group: 'com.displee', name: 'disio', version: '2.2'
+
+    // https://mvnrepository.com/artifact/com.displee/rs-cache-library
+    implementation group: 'com.displee', name: 'rs-cache-library', version: '6.8.1'
+}
+
+task buildJar(type: Jar) {
+    manifest {
+        attributes(
+                'Main-Class': 'MainScreenKt'
+        )
+    }
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+            {
+                exclude "META-INF/*.SF"
+                exclude "META-INF/*.DSA"
+                exclude "META-INF/*.RSA"
+            }
+    with jar
+}

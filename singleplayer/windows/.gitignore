@@ -1,0 +1,10 @@
+**/.idea
+db/data
+
+game/data/playerstats/
+game/data/eco/grandexchange.db
+
+game/data/logs/
+game/data/players/
+game/data/serverstore/
+game/plugins/plsto

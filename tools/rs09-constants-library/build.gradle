@@ -1,0 +1,76 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm' version '1.4.31'
+    id 'maven-publish'
+}
+
+group 'org.rs09.consts'
+
+apply plugin: 'java'
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+
+
+compileKotlin {
+    kotlinOptions {
+        jvmTarget = "1.8"
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        url "https://gitlab.com/api/v4/groups/10870176/-/packages/maven"
+        name "GitLab"
+        credentials(HttpHeaderCredentials) {
+            name = 'Job-Token'
+            value = System.getenv("CI_JOB_TOKEN")
+        }
+        authentication {
+            header(HttpHeaderAuthentication)
+        }
+    }
+}
+
+publishing {
+    publications {
+        library(MavenPublication) {
+            from components.java
+        }
+    }
+
+    repositories {
+        maven {
+            url "https://gitlab.com/api/v4/projects/${System.getenv('CI_PROJECT_ID')}/packages/maven"
+            name "GitLab"
+            credentials(HttpHeaderCredentials) {
+                name = 'Job-Token'
+                value = System.getenv("CI_JOB_TOKEN")
+            }
+            authentication {
+                header(HttpHeaderAuthentication)
+            }
+        }
+    }
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib"
+}
+
+task incrementBuildNumber { 
+    def versionFile = file('version.properties')
+    def buildNum
+
+    //does some fun "hacks" with properties to achieve auto incrementing version. version.properties needs to get cached on CICD for this to work
+    if (versionFile.canRead()) {
+        def Properties versionProps = new Properties()
+        versionProps.load(new FileInputStream(versionFile))
+        buildNum = versionProps["BUILD_NUMBER"].toInteger() + 1
+        versionProps["BUILD_NUMBER"] = buildNum + ""
+        version '1.4.' + buildNum
+        versionProps.store(versionFile.newWriter(), null)
+    } 
+}
+
+build.dependsOn(incrementBuildNumber)

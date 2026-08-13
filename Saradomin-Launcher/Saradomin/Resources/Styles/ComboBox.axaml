@@ -1,0 +1,63 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Style Selector="ComboBox">
+        <Setter Property="BorderBrush" Value="{StaticResource DarkBorderBrush}" />
+        <Setter Property="Background" Value="{StaticResource DarkMediumBackgroundBrush}" />
+        <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="2" />
+    </Style>
+
+    <Style Selector="ComboBox /template/ ToggleButton:checked /template/ ContentPresenter">        
+        <Setter Property="Background" Value="Transparent" />
+        
+        <Setter Property="Content">
+            <Template>
+                <Path Fill="{StaticResource AccentBrush}"
+                      Width="8"
+                      Height="4"
+                      Stretch="Uniform"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center"
+                      Data="F1 M 301.14,-189.041L 311.57,-189.041L 306.355,-182.942L 301.14,-189.041 Z" />
+            </Template>
+        </Setter>
+    </Style>
+
+    <Style Selector="ComboBox:pointerover /template/ Border#border">
+        <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+    </Style>
+    
+    <Style Selector="ComboBox /template/ Popup">
+        <Setter Property="VerticalOffset" Value="-1" />
+    </Style>
+    
+    <Style Selector="ComboBox /template/ Popup > Border">
+        <Style.Resources>
+            <ResourceDictionary>
+                <SolidColorBrush x:Key="ThemeBorderMidBrush" Color="{StaticResource DarkBorderColor}" />
+            </ResourceDictionary>
+        </Style.Resources>
+        
+        <Setter Property="BorderThickness" Value="1,0,1,1" />
+        <Setter Property="CornerRadius" Value="0,0,4,4" />
+    </Style>
+    
+    <Style Selector="ComboBoxItem">
+        <Setter Property="Background" Value="{StaticResource DarkMediumBackgroundBrush}" />
+        
+        <Setter Property="ToolTip.Tip" Value="{Binding Hint}" />
+    </Style>
+    
+    <Style Selector="ComboBoxItem:pointerover /template/ ContentPresenter">
+        <Setter Property="Background" Value="{StaticResource MediumBackgroundBrush}" />
+    </Style>
+    
+    <Style Selector="ComboBoxItem:selected /template/ ContentPresenter">
+        <Setter Property="Background" Value="{StaticResource SemiLightMediumBackgroundBrush}" />
+    </Style>
+    
+    <Style Selector="ComboBoxItem:selected:pointerover /template/ ContentPresenter">
+        <Setter Property="Background" Value="{StaticResource MediumBackgroundBrush}" />
+    </Style>
+</Styles>

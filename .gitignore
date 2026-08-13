@@ -1,0 +1,114 @@
+# Build outputs
+build/
+dist/
+out/
+target/
+*.class
+*.jar
+
+# IDE metadata
+.idea/
+*.iml
+/.idea/workspace.xml
+/.idea/libraries/
+.vscode/
+*.vscode/
+
+# Caches and temporary files
+.gradle/
+.cxx/
+.DS_Store
+*.temp
+*.tmp
+*.log
+
+# Generated files
+generated/
+protobuf/
+src/gen/
+
+# Logs
+*.log
+logs/
+
+# Local configuration and secrets
+# Ignore .env files, but keep .env.example templates
+.env
+.env.*
+!.env.example
+!.gitignore  # keep this file
+local-config/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Package files and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+
+# Project-specific exclusions
+dumps/
+
+# Gradle wrapper
+**/gradle-wrapper.jar
+
+# Vim / Nano / Emacs swap files
+*.swp
+*.swo
+*~
+\#*\#
+
+# OS generated files
+Thumbs.db
+desktop.ini
+
+# Coverage / test reports
+.coverage/
+htmlcov/
+.coverage.*
+coverage.xml
+*.cover
+.pytest_cache/
+.nox/
+.mypy_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+dist/
+.eggs/
+
+# Node / npm / yarn
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env.local
+.env.development
+.env.test
+.env.production
+.npm/
+.yarn/
+.yarn-cache/
+.pnpm-store/
+
+# Docker
+docker-compose.override.yml
+docker-compose.local.yml
+.docker/
+
+# Compiled extensions for VS Code (if anyone uses it)
+.vscode/extensions/
+
+**/.git_disabled/

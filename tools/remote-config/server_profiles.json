@@ -1,0 +1,26 @@
+[
+    {
+        "name": "Local server",
+        "ip_management": "localhost",
+        "ip_address": "localhost",
+        "server_port": 43594,
+        "wl_port": 43595,
+        "js5_port": 43595
+    },
+    {
+        "name": "Live server",
+        "ip_management": "play.2009scape.org",
+        "ip_address": "play.2009scape.org",
+        "server_port": 43594,
+        "wl_port": 43595,
+        "js5_port": 43595
+    },
+    {
+        "name": "Testing server",
+        "ip_management": "209.46.120.47",
+        "ip_address": "209.46.120.47",
+        "server_port": 43594,
+        "wl_port": 43595,
+        "js5_port": 43595
+    }
+]

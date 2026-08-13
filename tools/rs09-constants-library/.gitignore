@@ -1,0 +1,8 @@
+build
+build/
+/build/
+**/.idea/workspace.xml
+**/.idea/tasks.xml
+.gradle
+.idea
+.idea/

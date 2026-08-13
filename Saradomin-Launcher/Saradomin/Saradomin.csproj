@@ -1,0 +1,79 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>WinExe</OutputType>
+        <TargetFramework>net6.0</TargetFramework>
+        <Version>1.6.1</Version>
+        <NoWarn>IL2026;CS0067</NoWarn>
+        <ApplicationIcon>Resources\Icons\saradomin.ico</ApplicationIcon>
+        <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+        <StartupObject>Saradomin.Program</StartupObject>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <NSubsysTasksPath Condition="'$(NSubsysTasksPath)' == ''">$(NugetPackageRoot)\nsubsys\1.0.0\tool\NSubsys.Tasks.dll</NSubsysTasksPath>
+    </PropertyGroup>
+        
+    <UsingTask TaskName="NSubsys.Tasks.NSubsys" AssemblyFile="$(NSubsysTasksPath)" />
+        
+    <Target Name="CustomAfterBuild" AfterTargets="Build" Condition="$(RuntimeIdentifier.StartsWith('win'))">
+        <NSubsys TargetFile="$(OutputPath)$(AssemblyName)$(_NativeExecutableExtension)" />
+    </Target>
+
+    <Target Name="CustomAfterPublish" AfterTargets="Publish" Condition="$(RuntimeIdentifier.StartsWith('win'))">
+        <NSubsys TargetFile="$(PublishDir)$(AssemblyName)$(_NativeExecutableExtension)" />
+    </Target>
+
+    <ItemGroup>
+        <PackageReference Include="Avalonia" Version="11.0.10" />
+        <PackageReference Include="Avalonia.Desktop" Version="11.0.10" />
+        <!--Condition below is needed to remove Avalonia.Diagnostics package from build output in Release configuration.-->
+        <PackageReference Condition="'$(Configuration)' == 'Debug'" Include="Avalonia.Diagnostics" Version="11.0.10" />
+        <PackageReference Include="Avalonia.Themes.Simple" Version="11.0.10" />
+        <PackageReference Include="GitLabApiClient" Version="1.8.0" />
+        <PackageReference Include="HtmlAgilityPack" Version="1.11.60" />
+        <PackageReference Include="Mono.Posix.NETStandard" Version="1.0.0" />
+        <PackageReference Include="NSubsys" Version="1.0.0">
+          <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+          <PrivateAssets>all</PrivateAssets>
+        </PackageReference>
+        <PackageReference Include="PropertyChanged.Fody" Version="4.1.0" PrivateAssets="all" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Glitonea\Glitonea.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Update="Views\Windows\MainWindow.axaml.cs">
+            <DependentUpon>MainWindow.axaml</DependentUpon>
+            <SubType>Code</SubType>
+        </Compile>
+        <Compile Update="View\Windows\NotificationBox.axaml.cs">
+            <DependentUpon>NotificationBox.axaml</DependentUpon>
+            <SubType>Code</SubType>
+        </Compile>
+        <Compile Update="Views\Controls\SingleplayerView.axaml.cs">
+            <DependentUpon>MainWindow.axaml</DependentUpon>
+            <SubType>Code</SubType>
+        </Compile>
+        <Compile Update="Views\Controls\SettingsView.axaml.cs">
+            <DependentUpon>MainWindow.axaml</DependentUpon>
+            <SubType>Code</SubType>
+        </Compile>
+        <Compile Update="Views\Controls\MenuPreview.axaml.cs">
+            <DependentUpon>MenuPreview.axaml</DependentUpon>
+            <SubType>Code</SubType>
+        </Compile>
+        <Compile Update="View\Controls\PluginManagerView.axaml.cs">
+          <DependentUpon>PluginManagerView.axaml</DependentUpon>
+        </Compile>
+        <Compile Update="View\Controls\SingleplayerView.axaml.cs">
+          <DependentUpon>SingleplayerView.axaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+    </ItemGroup>
+
+    <ItemGroup>
+        <AvaloniaResource Include="Resources\Icons\saradomin.ico" />
+    </ItemGroup>
+</Project>

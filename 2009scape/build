@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+
+SCRIPT_DIR=$(cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P)
+
+CLEAN=0
+BUILD_GS=0
+SKIPTEST=""
+
+GS_SRC=$SCRIPT_DIR/Server
+
+_JAR_DIR="$SCRIPT_DIR/builddir"
+
+help()
+{
+    echo "Usage: $0 [-h] [-q] <-g|-c> [-o <path>]";
+    echo "  -h: Display this message.";
+    echo "  -g: Build the game server.";
+    echo "  -c: Clean previous build.";
+    echo "  -o: Specify jar-file directory.";
+    echo "  -q: Quick build - will skip tests.";
+}
+
+error()
+{
+    echo "$1";
+    exit 1;
+}
+
+clean_gs()
+{
+    cd $GS_SRC || error "Could not change dir to game server directory."
+	echo "Cleaning the game server."
+    sh mvnw clean || error "Failed to clean the game server. Giving up."
+}
+
+build_gs()
+{
+    cd "$GS_SRC" || error "ERROR: Could not chdir to server src. Abort."
+
+    sh mvnw package $SKIPTEST || \
+	error "Failed to build the game server. Giving up."
+}
+
+while getopts "hqgc:o:d" arg; do
+    case $arg in
+        h)
+            help
+            exit 0
+            ;;
+        g)
+            BUILD_GS=1
+            ;;
+        c)
+            CLEAN=1
+            ;;
+        o)
+            _JAR_DIR=${OPTARG}
+            ;;
+        d)
+            echo "_JAR_DIR=$_JAR_DIR"
+            ;;
+        q)
+            SKIPTEST="-DskipTests"
+            ;;
+        *)
+            error "Argument -$arg is not a known or valid argument."
+            ;;
+    esac
+done
+
+if [ $BUILD_GS -eq 0 ] && [ $CLEAN -eq 0 ]; then
+    error "Need to either build or clean at least. See -h for details."
+fi
+
+# Inside func is cd so mgmt prob fails if no condition
+(( CLEAN )) && clean_gs
+
+# -----------
+
+if [ -d "$_JAR_DIR" ]; then
+    rm -r "$_JAR_DIR"
+fi
+
+mkdir -p "$_JAR_DIR" || error "Failed to create build directory.";
+
+if [ $BUILD_GS -eq 1 ]; then
+    build_gs
+
+    # Will never execute if build_gs fails because it quits upon failure.
+    mv -v "$GS_SRC"/target/*-with-dependencies.jar "$_JAR_DIR"/server.jar
+fi

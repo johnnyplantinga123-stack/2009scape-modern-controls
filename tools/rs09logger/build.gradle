@@ -1,0 +1,21 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm' version '1.5.10'
+}
+
+group 'rs09.logger'
+version '1.0'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib"
+    implementation files(
+            "libs/mordant-jvm-2.0.0-alpha2.jar",
+            "libs/colormath-jvm-2.0.0.jar",
+            "libs/markdown-jvm-0.2.4.jar"
+    )
+}
+
+jar { from { configurations.compileClasspath.collect { it.isDirectory() ? it : zipTree(it) } } }

@@ -1,0 +1,57 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm' version '1.5.31'
+    id 'java'
+    id 'application'
+}
+
+group 'org.2009scape'
+version '1.0'
+
+compileKotlin {
+    kotlinOptions {
+        jvmTarget = "1.8"
+    }
+}
+compileTestKotlin {
+    kotlinOptions {
+        jvmTarget = "1.8"
+    }
+}
+
+repositories {
+    mavenCentral()
+    mavenCentral()
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib"
+
+
+    // Flatlaf
+    implementation 'com.formdev:flatlaf:1.6.1'
+
+    // https://mvnrepository.com/artifact/com.displee/disio
+    implementation group: 'com.displee', name: 'disio', version: '2.2'
+
+    // https://mvnrepository.com/artifact/com.displee/rs-cache-library
+    implementation group: 'com.displee', name: 'rs-cache-library', version: '6.8.1'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.7.0'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.7.0'
+
+    implementation files("libs/json-simple-1.1.1.jar")
+}
+
+test {
+    useJUnitPlatform()
+}
+
+jar {
+    duplicatesStrategy = 'exclude'
+    manifest {
+        attributes 'Main-Class': 'Rs2MapEditor'
+    }
+    from { configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }
+}
+
+mainClassName = "Rs2MapEditor"
