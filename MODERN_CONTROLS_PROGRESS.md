@@ -1,6 +1,6 @@
 # Modern Controls — Phase 0 Analysis & Implementation Plan
 
-**Status:** Phase 0 (Analysis) — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE**
+**Status:** Phase 0 (Analysis) — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE**
 
 **Date:** 13-08-2026
 
@@ -387,10 +387,11 @@ git diff --stat
 ```
 
 ---
-**Last updated:** 13-08-2026 (Phase 3 stabilization pass 2 complete)
+**Last updated:** 14-08-2026 (Phase 3 movement runtime fix complete)
 **Phase 3 completion:** MovementIntent + ModernMovementController wired into ModernControlController, build verified, no scope creep.
 **Phase 3 stabilization pass 1:** WASD/chat input arbitration fixed (chatInputActive flag), head bob disabled, third-person confirmed placeholder, Java runtime/HD investigated.
 **Phase 3 stabilization pass 2:** True WASD/chat root cause fixed (typed key queue filtering), camera mode F11 transitions safe, third-person placeholder documented, first-person body culling investigated.
+**Phase 3 movement runtime fix:** WASD movement root cause fixed (world→local coordinate conversion for PathFinder.findPath, mode 2→0 for MOVE_GAMECLICK).
 
 ---
 
@@ -491,4 +492,129 @@ git diff --stat
   - `ModernControlController.java` (+52 lines)
   - `Protocol.java` (+5 lines)
   - `client.java` (+8/-1 lines)
+- No Phase 4 collision, targeting, combat, third-person camera, controller, protocol rewrite, renderer rewrite, or first-person viewmodel changes.
+
+---
+
+## 10. Phase 3 Movement Runtime Fix (14-08-2026)
+
+### 10.1 Problem statement
+- WASD keys were correctly blocked from chat and correctly read by `ModernMovementController.readInput()`, but pressing W/A/S/D produced **zero player movement** in both FIRST_PERSON and THIRD_PERSON modes.
+- Input arbitration (chat/WASD) was working. The bug was in the movement pipeline itself.
+
+### 10.2 Root cause analysis — complete flow trace
+
+**Step 1: Keyboard input** ✓
+- `Keyboard.pressedKeys[33]` (W), `[48]` (A), `[49]` (S), `[50]` (D) correctly set to `true`.
+- Keycode verification: `CODE_MAP[VK_W]=33`, `CODE_MAP[VK_A]=48`, `CODE_MAP[VK_S]=49`, `CODE_MAP[VK_D]=50`, `CODE_MAP[VK_CONTROL]=82`. All match `ModernMovementController` constants.
+
+**Step 2: ModernControlController.update() dispatch** ✓
+- Called from `client.java` in `gameState == 30` block.
+- FIRST_PERSON case calls `ModernMovementController.update()` then `FirstPersonCamera.update()`.
+- THIRD_PERSON case calls `ModernMovementController.update()`.
+
+**Step 3: ModernMovementController.update() — movement intent** ✓
+- `readInput()` correctly reads WASD from `pressedKeys[]`.
+- `intent.normalize()` correctly normalizes diagonals.
+- Camera-relative direction vectors computed correctly from `Camera.cameraYaw`.
+
+**Step 4: Target tile computation** ✓ (but wrong coordinate space)
+- `currentTileX = self.xFine >> 7` → **WORLD** tile coordinate (e.g., 3200).
+- `targetTileX = currentTileX + stepX` → **WORLD** tile coordinate (e.g., 3201).
+
+**Step 5: PathFinder.findPath() call** ✗ **ROOT CAUSE**
+- `PathFinder.findPath()` operates entirely in **LOCAL** coordinates (0..103 grid).
+- All existing click-to-move call sites pass LOCAL coordinates:
+  - `MiniMenu.doAction` WALK_HERE: passes `local15`/`local19` (local tiles).
+  - NPC pathing: passes `npc.movementQueueX[0]`/`npc.movementQueueZ[0]` (local).
+  - `findPathN` uses `parents[arg2][arg9]` indexing into `parents[104][104]` — local grid.
+- ModernMovementController passed **WORLD** coordinates (e.g., 3201) into a function expecting **LOCAL** coordinates (0..103).
+- Result: pathfinding always failed because coordinates were far outside the 0..103 grid. `findPath` returned `false`. No route was generated. No movement packet was sent.
+
+**Step 6: mode parameter** ✗ **SECONDARY ROOT CAUSE**
+- `mode=2` → `ClientProt.method3502(queueLen, 2)` → sends opcode 77 (walk+action).
+- Opcode 77 is used for NPC/object interactions where a walk is followed by an action packet.
+- For basic WASD walking, we need `mode=0` → `method3502(queueLen, 0)` → sends `MOVE_GAMECLICK` (215), the standard walk packet.
+
+### 10.3 Keycode verification
+| Key | AWT VK | CODE_MAP result | pressedKeys index | ModernMovementController constant | Match |
+|---|---|---|---|---|---|
+| W | VK_W (87) | 33 | 33 | KEY_W = 33 | ✓ |
+| A | VK_A (65) | 48 | 48 | KEY_A = 48 | ✓ |
+| S | VK_S (83) | 49 | 49 | KEY_S = 49 | ✓ |
+| D | VK_D (68) | 50 | 50 | KEY_D = 50 | ✓ |
+| Ctrl | VK_CONTROL (17) | 82 | 82 | KEY_CTRL = 82 | ✓ |
+
+### 10.4 PathFinder.findPath() parameter verification
+
+**findPath signature:** `(arg0=srcZ, arg1=angle, arg2, arg3=boolean, arg4=runModifier, arg5=destX, arg6=size, arg7, arg8=mode, arg9=destZ, arg10=srcX)`
+
+**Delegation for size ≤ 2:** `findPathN(arg5, arg4, arg10, arg9, arg8, arg2, arg1, arg3, arg7, arg0, arg6)`
+
+**findPathN internal coordinate space:**
+- `parents[104][104]` and `costs[104][104]` — indexed by local coordinates.
+- Source: `parents[arg2][arg9]` = `parents[srcX_local][srcZ_local]`.
+- Destination check: `local3 == arg0 && local10 == arg3` = `(currentX_local == destX_local)`.
+- Collision: `collisionMaps[Player.plane].flags[localX][localZ]` — local coordinates.
+- Route output: `queueX[]/queueZ[]` — local coordinates.
+- Packet: `ClientProt.method3502(queueLen, mode)` → adds `Camera.originX/Z` to convert local→world for the packet payload.
+
+**Comparison with existing click-to-move calls (MiniMenu.doAction):**
+
+| Parameter | NPC path | WALK_HERE (mode 1) | WALK_HERE (game==1) | ModernMovementController (BEFORE fix) | ModernMovementController (AFTER fix) |
+|---|---|---|---|---|---|
+| srcZ | `self.movementQueueZ[0]` | `self.movementQueueZ[0]` | `self.movementQueueZ[0]` | `self.movementQueueZ[0]` | `self.movementQueueZ[0]` |
+| destX | `npc.movementQueueX[0]` (local) | `local15` (local) | `local15` (local) | `targetTileX` (**WORLD**) ✗ | `localDestX` (local) ✓ |
+| destZ | `npc.movementQueueZ[0]` (local) | `local19` (local) | `local19` (local) | `targetTileZ` (**WORLD**) ✗ | `localDestZ` (local) ✓ |
+| srcX | `self.movementQueueX[0]` | `self.movementQueueX[0]` | `self.movementQueueX[0]` | `self.movementQueueX[0]` | `self.movementQueueX[0]` |
+| mode | 2 | 1 | 2 | 2 (opcode 77) ✗ | 0 (MOVE_GAMECLICK) ✓ |
+
+### 10.5 Coordinate space verification
+- `self.xFine >> 7` = **WORLD** tile (e.g., 3200).
+- `Camera.originX` = world X of local (0,0) corner.
+- Local tile = world tile - `Camera.originX`.
+- `movementQueueX[0]` = **LOCAL** tile coordinate (confirmed by usage in existing click-to-move).
+- `PathFinder.queueX[]/queueZ[]` = **LOCAL** tile coordinates (confirmed by `method3502` adding `Camera.originX/Z` before sending).
+- `ClientProt.method3502` converts local→world: `p2(Camera.originX + local23)`.
+
+### 10.6 Movement queue / packet flow verification
+1. `PathFinder.findPathN()` computes route → fills `PathFinder.queueX[]/queueZ[]` (local coords).
+2. `findPathN()` calls `ClientProt.method3502(queueLen, mode)`.
+3. `method3502` reads `PathFinder.queueX/Z[last]` (final destination, local), adds `Camera.originX/Z` (world), sends `MOVE_GAMECLICK` packet.
+4. `method3502` also sets `LoginManager.mapFlagX/Z = PathFinder.queueX/Z[0]` (map flag).
+5. Server receives walk packet, validates, updates player position.
+6. Client receives server response, `NpcList.method2247` interpolates `xFine/zFine` toward `movementQueueX/Z`.
+
+### 10.7 Throttle / dedup verification
+- `ticksSinceLastSend` starts at 0, incremented each update tick.
+- `SEND_THROTTLE_TICKS = 3` → first movement sends after 3 ticks of holding WASD.
+- `lastSentTileX/Z` start at -1 → first target never matches dedup sentinel.
+- After successful send: `ticksSinceLastSend = 0`, `lastSentTileX/Z = targetTileX/Z` (world coords for dedup comparison — correct).
+- Throttle does not block first movement; it only delays by 3 ticks (~150ms). This is acceptable.
+
+### 10.8 Fix applied
+**File:** `rt4/ModernMovementController.java`
+
+**Changes:**
+1. Compute `localDestX = targetTileX - Camera.originX` and `localDestZ = targetTileZ - Camera.originZ` before findPath call.
+2. Pass `localDestX`/`localDestZ` (local coordinates) to `PathFinder.findPath()` instead of `targetTileX`/`targetTileZ` (world coordinates).
+3. Change mode from `2` (opcode 77, walk+action) to `0` (MOVE_GAMECLICK, standard walk).
+4. Set `arg4` (runModifier) to `0` — `method3502` reads Ctrl directly from `Keyboard.pressedKeys[KEY_CTRL]`.
+
+### 10.9 Runtime test checklist
+- [ ] WASD movement in FIRST_PERSON: W forward, S backward, A left, D right (camera-relative)
+- [ ] WASD movement in THIRD_PERSON placeholder: same movement foundation
+- [ ] Ctrl+W = run forward
+- [ ] Diagonalen (W+D) niet sneller dan W alleen
+- [ ] WASD typed NIET in chat tijdens gameplay
+- [ ] Enter opent chat typing mode; W/A/S/D typen nu wel in chat
+- [ ] Escape sluit chat input; WASD weer movement
+- [ ] F11 cycling: ORIGINAL → FP → TP → ORIGINAL (veilig)
+- [ ] ORIGINAL mode 100% ongewijzigd (click-to-move werkt nog)
+- [ ] Player movement visible (walk animation, orientation change)
+
+### 10.10 Build verification
+- `gradlew.bat :client:compileJava` → **BUILD SUCCESSFUL**
+- `git diff --stat` shows 1 code file changed (plus config.json/GlobalConfig.java user changes):
+  - `ModernMovementController.java` (+25/-20 lines)
 - No Phase 4 collision, targeting, combat, third-person camera, controller, protocol rewrite, renderer rewrite, or first-person viewmodel changes.

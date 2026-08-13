@@ -191,31 +191,36 @@ public final class ModernMovementController {
 			return;
 		}
 
-		// Clamp target to valid local map range (0..103 relative to origin)
-		int localX = targetTileX - Camera.originX;
-		int localZ = targetTileZ - Camera.originZ;
-		if (localX < 0 || localX > 103 || localZ < 0 || localZ > 103) {
+		// Convert world tile to local tile (0..103 relative to camera origin).
+		// PathFinder.findPath operates entirely in LOCAL coordinates — all
+		// existing click-to-move call sites (MiniMenu.doAction WALK_HERE, NPC
+		// pathing, etc.) pass local coordinates, not world coordinates.
+		int localDestX = targetTileX - Camera.originX;
+		int localDestZ = targetTileZ - Camera.originZ;
+
+		// Clamp target to valid local map range
+		if (localDestX < 0 || localDestX > 103 || localDestZ < 0 || localDestZ > 103) {
 			return;
 		}
 
-		// Use existing PathFinder to validate collision and send movement
-		// findPath args: srcZ, angle, srcX, running, arg4, destX, size, arg7, mode, destZ, srcX2
-		// mode=0 is walk, mode=2 is the standard click mode
-		boolean running = intent.runRequested || Keyboard.pressedKeys[KEY_CTRL];
-		int runModifier = running ? 1 : 0;
-
+		// Use existing PathFinder to validate collision and send movement.
+		// findPath params: srcZ, angle, arg2, objectPathing, runModifier,
+		//   destX, size, arg7, mode, destZ, srcX
+		// mode=0 → MOVE_GAMECLICK (215), the standard walk packet.
+		// mode=2 → opcode 77 (walk+action), used for NPC/object interactions.
+		// We use mode=0 for basic WASD walking.
 		boolean found = PathFinder.findPath(
-				self.movementQueueZ[0],  // srcZ (current queue position)
+				self.movementQueueZ[0],  // srcZ (local)
 				0,                        // angle (0 = no specific approach angle)
-				0,                        // arg2 (unused for mode 2)
+				0,                        // arg2 (unused for single-tile step)
 				false,                    // arg3 (not object pathing)
-				runModifier,              // run modifier
-				targetTileX,              // destX
+				0,                        // arg4 (runModifier — method3502 reads Ctrl directly)
+				localDestX,               // destX (LOCAL tile coordinate)
 				1,                        // size (1x1 for player)
 				0,                        // arg7
-				2,                        // mode (2 = standard walk)
-				targetTileZ,              // destZ
-				self.movementQueueX[0]    // srcX (current queue position)
+				0,                        // mode (0 = MOVE_GAMECLICK)
+				localDestZ,               // destZ (LOCAL tile coordinate)
+				self.movementQueueX[0]    // srcX (local)
 		);
 
 		if (found) {
