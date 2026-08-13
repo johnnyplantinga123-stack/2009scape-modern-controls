@@ -59,12 +59,12 @@ public final class ModernControlController {
 				// No modern override — original RuneScape controls run as-is.
 				break;
 		case FIRST_PERSON:
-			// Phase 3+: ModernMovementController.update();
+			ModernMovementController.update();
 			FirstPersonCamera.update();
 			break;
 			case THIRD_PERSON:
-				// Phase 14: ModernMovementController.update();
-				//           ThirdPersonCamera.update();
+				ModernMovementController.update();
+				// Phase 14: ThirdPersonCamera.update();
 				break;
 		}
 	}

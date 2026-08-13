@@ -1,9 +1,10 @@
 # Modern Controls — Phase 0 Analysis & Implementation Plan
 
-**Status:** Phase 0 (Analysis) — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE
+**Status:** Phase 0 (Analysis) — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — IN PROGRESS**
+
 **Date:** 13-08-2026
 
-This document captures the Phase 0 inspection of both the current RT4-client
+This document captures the Phase 0-3 inspection of both the current RT4-client
 (`E:\Dev\RSPS Project\2009scape\rt4-client`) and the older working first-person
 prototype in `E:\Dev\RS-Sandbox`, and proposes the file-level implementation
 plan for the modern WASD/mouse-look controls.
@@ -41,12 +42,15 @@ plan for the modern WASD/mouse-look controls.
   is the reusable menu/action system. A center-screen crosshair ray/open-cone is
   needed for FPS/TPP; we should reuse `MiniMenu` action constants & `doAction`.
 - **Cursor lock** exists natively via `SignLink`'s `CursorManager`
-  (`setCursor(Point, int, Component, int, int[])`, `setPosition(int x,int y)`),
-  versus the sandbox's `GameShell.signLink.setCursor(...)`/`setCursorPosition(...)`.
-  The correct current API is `CursorManager.setCursor`/`setPosition` (see §10).
+  (`setCursor(Point, int, Component, int, int[],)`, `setPosition(int x,int y)`).
 - **FOV** is fixed in `GlRenderer.method4171 → method4175` (perspective). The
   sandbox added a `FirstPersonCamera.getProjectionScale()` multiplier inside
   `method4171`; we port that pattern.
+- **Phase 3** adds: `MovementIntent` abstraction + `ModernMovementController`
+  feeding via existing `PathFinder.findPath` + `ClientProt.method3502`.
+- **Movement authority**: Single owner remains `NpcList.method2247`, which reads
+  from `movementQueueX/Z/Speed/Size`. ModernMovementController does NOT directly
+  write `xFine/zFine`, preventing dual-authority conflict.
 
 ---
 
@@ -75,7 +79,15 @@ Path root: `E:\Dev\RSPS Project\2009scape\rt4-client\client\src\main\java\rt4`
 | `GameShell.java` | `signLink`, `canvasWidth/Height`, `canvas`, `fullRedraw`. |
 | signlink `CursorManager.java` | `setCursor(hotSpot,w,component,h,pixels)`, `setPosition(x,y)`, `setComponent`. |
 
-### 2.2 RS-Sandbox reference (source for FPS)
+### 2.2 New classes (Phase 3 additions)
+
+| File | Description |
+|---|---|
+| `rt4/MovementIntent.java` | Abstraction for camera-relative movement direction (forward/right), normalization, run flag. Currently populated by WASD; later phases can populate from gamepad/other controllers without changing movement controller. |
+| `rt4/ModernMovementController.java` | Core WASD movement logic: reads `Keyboard.pressedKeys[]`, builds camera-relative direction, normalizes diagonals, converts to target tile, validates via `PathFinder.findPath` (which internally calls `ClientProt.method3502` to send walk route). |
+| `rt4/ModernControlController.java` (updated) | Per-frame dispatcher: `FIRST_PERSON` mode now calls `ModernMovementController.update()` + `FirstPersonCamera.update()`; `THIRD_PERSON` mode calls `ModernMovementController.update()` (placeholder for Phase 14). |
+
+### 2.3 Sandbox reference (source for FPS)
 Path root for client: `E:\Dev\RS-Sandbox\Client\client\src\main\java\rt4`
 
 | File | Contents / why relevant |
@@ -89,8 +101,6 @@ Path root for client: `E:\Dev\RS-Sandbox\Client\client\src\main\java\rt4`
 | `ScriptRunner.java:676` | **Body clipping**: skip rendering local player model in FPS mode (`method964`). |
 | `GlRenderer.java:540-541` | FOV scale via `getProjectionScale()`. |
 | `Protocol.java:2894` | Guard `Camera.method4273/updateLockedCamera` while FPS active. |
-| `ProceduralSceneApplier.java` | Sandbox-only procedural chunk system (region rebuild path; **not present in RT4 base**). |
-| `ModernHud.java`, `SandboxLoginOverlay.java`, `GlobalJsonConfig.java` | Sandbox-only UI/config extras (FOV/sensitivity/auto-enable). Not part of RT4 base; optional later. |
 
 ---
 
@@ -131,393 +141,196 @@ Path root for client: `E:\Dev\RS-Sandbox\Client\client\src\main\java\rt4`
 
 ---
 
-## 4. Exact camera pipeline (RT4 current)
+## 4. Phase 3 — WASD Movement Foundation
 
-### 4.1 Fields (Camera.java)
-- `renderX`, `renderZ`: camera position in fine/world coords.
-- `anInt40`: camera height (terrain-relative; note: in game this is `terrainHeight - eyeOffset`; `updateLockedCamera` does `getTileHeight - anInt5203`).
-- `cameraYaw`, `cameraPitch`: 0..2047.
-- `cameraType`: 0 = free/login, 1 = follow (`method4273()` + `clampCameraAngle`), 2 = locked (`updateLockedCamera`).
-- `yawTarget`, `pitchTarget`: used by `method4273()` arrow-key control (only when `Preferences.aBoolean63`).
+### 4.1 Movement-authority strategy
+This is the most critical architectural decision in Phase 3.
 
-### 4.2 Update sites (dual!)
-1. `client.java:1203-1207` (`mainUpdate()`): `if (Camera.cameraType == 2) updateLockedCamera() else updateLoginScreenCamera()`. Runs only when `LoginManager.step==0 && CreateManager.step==0` (login/loading).
-2. `Protocol.java:2883-2889` (in-game tick): `if(cameraType==1) method4273() else if(cameraType==2) updateLockedCamera() else updateLoginScreenCamera()`.
+**Strategy: Single movement authority via existing `NpcList.method2247`**
 
-The sandbox's FPS mode sets `Camera.cameraType = 0` so **both** sites skip their own update, then writes camera values directly. It also guards `Protocol.java:2894` with `if (!FirstPersonCamera.active)`. We must replicate this dual-skip.
+- **DO NOT** create a second system that directly writes `xFine/zFine`.
+- `ModernMovementController` **does NOT** write to `PlayerList.self.xFine` or `PlayerList.self.zFine`.
+- Instead, `ModernMovementController` feeds movement intents into the **existing movement queue** via `PathFinder.findPath`.
+- `PathFinder.findPath` internally:
+  1. Validates collision using `PathFinder.collisionMaps[plane].flags[][](0x12Cxxxx)` masks.
+  2. Enqueues a step into `movementQueueX[0]`, `movementQueueZ[0]`, `movementQueueSpeed[0]`.
+  3. Calls `ClientProt.method3502` to send the walk route to the server.
+- `NpcList.method2247` (called from `Protocol.java:2566-2567` each tick) reads from `movementQueueX/Z/Speed/Size` and interpolates `xFine/zFine` toward the queue target.
+- **Why this is safe**:
+  - No dual-authority conflict: only `method2247` writes `xFine/zFine`.
+  - Existing walk/run animation selection works unchanged.
+  - Existing orientation smoothing (`method949`) works unchanged.
+  - Existing networking (`method3502`) sends valid routes.
+  - Server authority is preserved — the server validates every step.
+  - No packet spam: throttled to 3 ticks between sends.
 
-### 4.3 Port target (from FirstPersonCamera)
-- `fpCamX/Z` → should derive from `ModernMovementController`'s prediction, not separate free-fly vars (per goal doc).
-- `fpCamYaw` (0..2047), `fpCamPitch` (signed; wrapped to 0..2047 for `cameraPitch`).
-- Eye height: `EYE_HEIGHT = 200`. `Camera.anInt40 = getTileHeight(plane,fpCamX,fpCamZ) - EYE_HEIGHT - bobOffset`.
-- `Camera.cameraX/Z` set too (so `method4273` won't snap).
-- Head bob (`bobPhase`, `MathUtils.sin`) — optional polish (Phase 15), but keep the hook.
+**What this means for Phase 3**:
+- Movement is tile-to-tile interpolated by `method2247` at existing RS speed (4–8 fine units per tick).
+- This is not as smooth as free-fly fine-coordinate movement, but it is **correct** and safe.
+- True smooth fine-coordinate prediction can be added in a later phase when a proper client-prediction and server-reconciliation system is implemented.
 
----
+### 4.2 Files created/modified (Phase 3)
 
-## 5. Movement & collision (RT4 current)
-
-### 5.1 Collision map
-- `PathFinder.collisionMaps[plane].flags[104][104]`, integer bitmask.
-- PathFinder cardinal-check masks (current `findPathN`):
-  - West `0x12C0108`, East `0x12C0180`
-  - North `0x12C0102`, South `0x12C0120`
-  - Diag NE `0x12C01E0`, SE `0x12C0183`, NW `0x12C0138`, SW `0x12C010E`
-- Multi-tile (`findPath1`, size>1): extra masks `0x12C013E/0x12C018F/0x12C01E3/0x12C01F8` and rect checks `isInsideOrOutsideRect`.
-- Walls/doors use `CollisionMap.isAtWall/isAtWallDecor` with shape/angle for pathing to locs — modern WASD should primarily use the cardinal mask approach in `canMoveTile` for simple adjacent steps, but **must reuse** the same masks as PathFinder (verified they match).
-
-### 5.2 Sandbox `canMoveTile` (reference)
-```
-E (0x12C0180), W (0x12C0108), S (0x12C0120), N (0x12C0102), diag (0x12C01E0)
-cardinal: (flags[dst][dst] & mask) == 0
-diagonal: card1 && card2 && (flags[dst][dst] & 0x12C01E0) == 0
-```
-These match current RT4 `findPathN` exactly → **safe to port** (still verify against `findPath1` for size>1).
-
-### 5.3 Wall sliding & footprint
-- Goal requires `tryMoveX(dx)` + `tryMoveZ(dz)` sliding and a small footprint (player size from `getSize()`).
-- New controller should evaluate candidate fine-destination tile(s) and try axis-separated movement: attempt X first, then Z (or both at once with hit-stop). Reuse masks + `getSize()`.
-
----
-
-## 6. Scene picking & menu construction (RT4 current)
-
-### 6.1 Menu build
-- `MiniMenu.size` reset (client.java:651/721, LoginManager).
-- `MiniMenu.add(cursor, key, opName, arg3, action, op, arg6)` pushes a row: `ops[]/opBases[]/cursors[]/actions[]/keys[]/intArgs1[]/intArgs2[]`.
-- `Protocol.java:3489+` / `ScriptRunner` handle menu sizing/redraw; `Protocol.method843` handles click→`MiniMenu.doAction`.
-- `MiniMenu.doAction(index)` (line 446) dispatches by `actions[]` to the real RS action (walk, NPC attack, object use, examine, spell, etc.).
-
-### 6.2 Key action constants (MiniMenu.java:148-204)
-- NPC: `NPC_ACTION_1..5` (17/16/4/19/2), `NPC_EXAMINE=1007`.
-- Player: `PLAYER_ACTION_1=30`, `PLAYER_ACTION_BLOCK=34`, `PLAYER_ACTION_TRADE=29`, `PLAYER_FOLLOW_ACTION=31`, `PLAYER_ACTION_5=57`.
-- Object: `OBJ_ACTION_1=47`, `OBJ_EQUIP_ACTION=5`, `OBJ_ACTION_4=35`, `OBJ_OPERATE_ACTION=23`, `OBJ_ACTION_5=58`, `OBJ_EXAMINE=1002`, plus use-target combos.
-- Object stacks: `OBJSTACK_ACTION_1=18`, `2=20`.
-- Locs: `LOC_ACTION_1..5` (42/50/49/46/1001), `LOC_ACTION_EXAMINE=1004`.
-- World: `WALK_HERE=60`.
-
-This is the reusable action system — **modern targeting interacts by constructing `MiniMenu` rows (or directly invoking the equivalent packet send) for the current target**, rather than inventing new gameplay.
-
-### 6.3 Crosshair → target selection
-- Current picking is **mouse-cursor based** only (menu built around `Mouse.clickX/Y` + world-space via `API.*` projection when camera is classic).
-- FPS/TPP unique camera means we need a **center-screen ray/or cone**:
-  `cameraForward → convert to tiles → candidate entities (PlayerList.self excluded for TPP body, NPCs, Locs, ObjStacks)`.
-- Reuse existing `SceneGraph` render collections (`NpcList.npcs`, `SceneGraph.tiles[][][].scenery/objStacks`, `LocEntity`) for candidate enumeration.
-- Score by: center distance, angular deviation, plane match, hysteresis (keep current target while still reasonable), world distance as tiebreak.
-- **Two acquisition distances** (configurable centrally):
-  - `MODERN_NEARBY_INTERACT_DISTANCE` (~2 tiles) for objects/doors/ground/NPC talk/trade.
-  - `MODERN_COMBAT_TARGET_DISTANCE` (wider, e.g. 8–10+) for ranged/magic **acquisition only**.
-- **Action validity stays with RS code**: the controller only selects a target and presents existing actions (`Attack`, `Cast X`, `Talk-to`, `Open`, ...). The existing `MiniMenu.doAction` path (or direct equivalent packet) triggers real RS logic; we do NOT fake ranges/LOS.
-
----
-
-## 7. Combat / ranged / magic integration (RT4 current)
-
-- Combat targeting flows through:
-  - NPC entity: `NpcList.npcs[slot]`; `NpcType` has combat-level/options; `Npc.options[]`.
-  - Player options: `Player.options[8]` (attack/follow/trade/...).
-  - Spell/Use state: `MiniMenu.aBoolean302` (use-target mode), `MiniMenu.aClass100_545` (selected item/spell text), and `Cs1ScriptRunner.aClass13_14`/`aClass13_10`. The spell/item-on-target actions are `OBJ_NPC_ACTION(26)`, `OBJ_LOC_ACTION(14)`, `OBJ_OBJ_ACTION(40)`, etc.
-- To support magic targeting: read the **selected spell state** (from the magic interface / `MiniMenu.aClass100_466` "Use" state or `Cs1ScriptRunner`), and when a combat spell is armed, the context menu for an NPC must offer `Cast <spell>` → which maps to the same action route as classic spell-on-NPC.
-- Autocast: do NOT touch; remain on existing combat state.
-- Projectiles/LOS/range: server/client existing code (`SceneGraph.projectiles`, `Projectile`, npc pathing) — untouched.
-
----
-
-## 8. Rendering / equipment / first-person body
-
-### 8.1 Local-player body culling
-- `ScriptRunner.method964(arg0)` renders:
-  - `arg0=true` → the local player model pass.
-  - `arg0=false` → all other players.
-- Sandbox hooks `method964(true)` to skip the local model when `FirstPersonCamera.active` (§2.2). **Port this exact hook** so the FPS camera doesn't see the player's head/torso/cape. Other players still render normally.
-- Third Person: do NOT skip; full player renders normally.
-
-### 8.2 Equipment / viewmodel
-- Equipment is in `Player.appearance` (`PlayerAppearance`, `Equipment.objIds`), and rendered via `Player.render()` → `appearance.method1954(...)` + `PlayerAppearance.getModelCacheSize()`.
-- First-person equipment (Phase 13): either (A) render relevant equipment parts of the existing player model from the FPS eye, or (B) a separate viewmodel render pass using the same `appearance`/equipment IDs. **(A) is preferred** — less fragile than a second full render pipeline, reuses `PlayerAppearance` and existing animations.
-- `Player.render()` (line 408) currently sets `model.pickable=true` and renders locally. In FPS we skip `method964(true)`; to keep the viewmodel we'd add a dedicated pass.
-
-### 8.3 FOV
-- Projection built in `GlRenderer.method4171` (line 562) → `method4175` (line 630). Sandbox multiplies `fovScale` in `method4175` call when active+in-game+large viewport. **Port** that; add `FirstPersonCamera.getProjectionScale()` (or move to a shared `ModernCameraConfig`).
-
----
-
-## 9. Input / cursor / UI
-
-### 9.1 Key mapping (current RT4 CODE_MAP values)
-- F11=11, F12=12, Esc=13, W=33, A=48, S=49, D=50, E=34, Space=83, Shift=81, Ctrl=82,
-  arrows Up=98 Down=99 Left=96 Right=97.
-
-### 9.2 Input routing & guard rails
-- `Keyboard.keyPressed` (line 300) — add F11/Esc/WASD routing here (port sandbox `onKeyPressed`/`isMovementKey`/`consumesTypedCharacter`).
-- Prevent WASD/E from becoming chat/input text: filter in `keyPressed`/`keyTyped` (already done in sandbox).
-- UI priority (goal doc): modal/text > RS UI > modern interaction > camera > movement. Central `isGameplayInputAllowed()`.
-
-### 9.3 Cursor lock (current RT4)
-- Available via `SignLink`/`CursorManager`:
-  - `setCursor(Point hotSpot, int width, Component c, int height, int[] pixels)` (null → hide? no — null restores default; the sandbox used 1×1 empty pixel).
-  - `setPosition(int x, int y)` (Robot-based mouse move).
-- Sandbox used `GameShell.signLink.setCursor(new int[]{0},1,canvas,new Point(0,0),1)` + `setCursorPosition(...)`. Note the signature mismatch: sandbox had `setCursorPosition(x,y)`; current has `CursorManager.setPosition(x,y)`. **Adapt**.
-- Esc = release/cancel; click viewport = recapture. Keep UI (inventory/bank/spellbook/dialogs) usable.
-
----
-
-## 10. Networking / server sync
-
-- Movement stays **server-authoritative**. Send valid tile transitions via existing packets.
-- `ClientProt.method3502` sends walk routes (`MOVE_GAMECLICK`). For continuous WASD we want short single-step routes (like sandbox `sendPredictedTile`) but must:
-  - Only send when a **valid** adjacent collision-passing tile per `canMoveTile`/PathFinder.
-  - Keep within `Camera.originX/Z` local tile space (clamp 0..102).
-  - Respect run modifier (`p1add(ctrl/pressed ? 1 : 0)`).
-  - Throttle (`SEND_THROTTLE_MS`) + reconciliation: snap to server on large mismatch (sandbox uses 256 fine units), small drift eased.
-- No permanent desync; no movement through walls; no speed increases.
-- Do NOT change the server protocol or introduce client-sided damage.
-
----
-
-## 11. Identified gotchas / differences vs sandbox
-
-1. **Cursor API** differs: sandbox `GameShell.signLink.setCursorPosition(x,y)` vs current `CursorManager.setPosition(x,y)` (and `setCursor` takes `(hotSpot,w,comp,h,pixels)` — the empty-pixel trick for hiding).
-2. **Two camera update sites** must both be gated (client.java:1203 for login, Protocol.java:2883 for in-game). Sandbox gated both (client + Protocol).
-3. **Mouse`click` camera**: RT4 `Camera.method4273` only reacts to arrows when `Preferences.aBoolean63`; irrelevant for FPS but must not interfere.
-4. **`method964` body-skip** is already present in current RT4 (line 668) — same method name; easy hook.
-5. **Scene rebuild**: RT4 uses standard RS region rebuild (`LoginManager.setupLoadingScreenRegion()`, `SceneGraph.clear()`), no procedural applier. FPS `onSceneRebuild` should reset camera interp/state on region rebuild (port sandbox logic into a hook on `LoginManager`'s rebuild).
-6. **FOV scaling**: only in-game, large viewport (port the sandbox `arg2>=256 && arg3>=256` guard).
-7. **`Preferences`/`GlobalJsonConfig`**: config persistence lives in `Preferences.java` + `GlobalJsonConfig.java`; add FOV/sensitivity/auto-enable there (or a new `ModernConfig`), not sandbox `SandboxLoginOverlay`.
-8. **No GPU sandbox extras**: don't port `GpuPipeline/Jogl/ProceduralSceneApplier/ModernHud`.
-
----
-
-## 12. Proposed new classes (all under `rt4`)
-
-All new classes are **additions**; no mass refactor.
-
-### `rt4/CameraMode.java` (new enum)
-- `ORIGINAL`, `FIRST_PERSON`, `THIRD_PERSON`.
-- Static `current`, `cycle()` (Original→First→Third→Original with edge-triggered F11).
-
-### `rt4/ModernControlController.java` (new)
-- Central dispatcher. Per frame:
-  - `if mode == FIRST_PERSON`: `ModernMovementController.update()`, `FirstPersonCamera.update()`, `ModernTargetingController.update()`, `ModernInteractionController.update()`.
-  - `if mode == THIRD_PERSON`: same + `ThirdPersonCamera.update()` (later phase).
-  - `if mode == ORIGINAL`: run untouched original code (no-op here; original paths keep running natively).
-- Owns `MODERN_NEARBY_INTERACT_DISTANCE`, `MODERN_COMBAT_TARGET_DISTANCE`.
-- Owns `isGameplayInputAllowed()`.
-
-### `rt4/ModernMovementController.java` (new)
-- Owns the **predicted smooth player position** (dpX/dpZ fine) — NOT the free camera.
-- Reads WASD held state from `Keyboard.pressedKeys[]`; builds camera-relative direction (forward = -sin(yaw), cos(yaw); right = cos, sin) normalizing combined input.
-- Applies `xFine/zFine`-style displacement at RS walk/run speed (tile/sec based on `Player.runEnergy`, run toggle, `BasType`/SeqType speeds).
-- Collision via `tryMoveX/tryMoveZ` using `PathFinder.collisionMaps[plane].flags` + `getSize()` footprint + the verified `canMoveTile` masks (port from sandbox, verify against `findPath1` for size>1).
-- Detects tile transitions (`oldTile != newTile`), validates collision, and (via controller) enqueues a short server step through the existing movement queue + sends `MOVE_GAMECLICK` (single step, throttled).
-- Reconciliation: snap to `PlayerList.self.xFine/zFine` on large mismatch (>256 fine), ease small drift.
-- Resets on teleport/death/respawn/region rebuild; never overrides forced movement / locks.
-- Drives walk/run animation via setting `movementQueue*[0]` + `movementQueueSize` so existing `NpcList.method2247` plays idle/walk/run — or sets `movementSeqId` directly; pick the least-racy path.
-
-### `rt4/ModernTargetingController.java` (new)
-- Center-screen ray/cone → candidate entities (NPCs, Locs, ObjStacks; optionally players).
-- Score/hysteresis (keep current until clearly worse or removed).
-- **Separates** `NEARBY_INTERACTION` vs `LONG_RANGE_COMBAT` acquisition at controller level; does NOT decide validity/range/LOS.
-- Exposes current `Target` (type, id, distance, best action list).
-- Integrates with `MiniMenu` action constants for the crosshair context menu (via `ModernInteractionController`).
-
-### `rt4/ModernInteractionController.java` (new)
-- Builds the small crosshair context menu for the current target using existing RS action rows (Attack/Cast/Talk-to/Trade/Examine/Open/Take...) and `MiniMenu.doAction`-style dispatch (or direct opcode sends).
-- Scroll-wheel selects row; `E` or left-click executes selected row (edge-triggered; no double-E).
-- Handles `Use item -> X` and `Cast spell -> X` states by reading selected item/spell state and offering `OBJ_NPC_ACTION/OBJ_LOC_ACTION/...`.
-- Respects `isGameplayInputAllowed()` and UI priority.
-
-### `rt4/FirstPersonCamera.java` (new — port, then slim)
-- Camera-only: owns `cameraYaw/pitch`, eye height, writes `Camera.*`, `getProjectionScale()`.
-- **Follows** `ModernMovementController` position; does NOT free-fly / send movement.
-- Mouse-look + cursor lock via `CursorManager`/`GameShell` (adapted).
-- `onSceneRebuild()` guard.
-- Toggle/cycle wiring: uses `CameraMode` + F11 edge detection.
-
-### `rt4/ThirdPersonCamera.java` (new — later Phase 14)
-- Stub in Phase 0/1; implements follow-behind, terrain handling, camera collision in later phase.
-
-### `rt4/ModernConfig.java` (recommended, new)
-- Central FOV/mouse-sensitivity/auto-enable + `MODERN_*` distances. Persist via `GlobalJsonConfig` (existing).
-
----
-
-## 13. Concrete file modifications (file-level plan, Phase 1+)
-
-| File | Change | Phase |
+| File | Change | Notes |
 |---|---|---|
-| `rt4/CameraMode.java` (new) | enum + cycling, F11 edge-trigger | 1 |
-| `rt4/ModernControlController.java` (new) | dispatcher, distances, `isGameplayInputAllowed` | 1/3/6 |
-| `rt4/ModernMovementController.java` (new) | smooth WASD, collision, server sync | 3/4/12 |
-| `rt4/ModernTargetingController.java` (new) | crosshair multi-distance targeting, hysteresis | 6 |
-| `rt4/ModernInteractionController.java` (new) | context menu + E/click/scroll + spell/item-on-target | 7 |
-| `rt4/FirstPersonCamera.java` (new, ported+slimmed) | camera only, mouse-look, cursor lock, FOV | 2 |
-| `rt4/ThirdPersonCamera.java` (new) | third-person camera + collision | 14 |
-| `rt4/ModernConfig.java` (new) | config | 1 |
-| `rt4/Camera.java` | (optional) add helper accessors only; do NOT change legacy behavior | — |
-| `rt4/Keyboard.java` | add F11/WASD/E routing + text-consumption guards in `keyPressed`/`keyTyped` | 1/3/7 |
-| `rt4/client.java` | gate camera update site 1 (`mainUpdate`, line 1203); call `ModernControlController.update()`; keep original untouched in ORIGINAL | 1/2 |
-| `rt4/Protocol.java` | gate camera update site 2 (line 2883); (later) ensure modern movement sends are flushed; guard `method843` click handling for modern mode | 1/2/12 |
-| `rt4/ScriptRunner.java` | `method964(true)` skip local body when FIRST_PERSON (body culling) | 2/13 |
-| `rt4/GlRenderer.java` | FOV scale in `method4171` when modern+in-game+large viewport | 2 |
-| `rt4/LoginManager.java` | hook `onSceneRebuild()` on region rebuild for camera reset | 2/4/13 |
-| `rt4/GameShell.java` | guard arrow-key scroll when modern active; cursor lock helpers | 2/9 |
-| `rt4/MiniMenu.java` | (reuse) expose action builders for modern context menu; no behavior change | 7 |
-| `rt4/PathFinder.java` / `CollisionMap.java` | **read-only** references; no changes expected (verify masks only) | 4 |
-| `rt4/Player.java` / `PathingEntity.java` / `NpcList.java` | **read-only**; movement interpolation stays in `NpcList.method2247`; modern controller feeds queue | 3/5 |
-| `rt4/GlobalJsonConfig.java` / `Preferences.java` | persist FOV/sens/auto-enable/distances | 1 |
+| `rt4/MovementIntent.java` (new) | Movement intent abstraction: `forward`, `right`, `runRequested`, normalization. Camera-relative: forward means "toward camera yaw", not "north in world space". | Currently populated by WASD input; later phases can populate from gamepad/other controllers without changing movement controller. |
+| `rt4/ModernMovementController.java` (new) | Core WASD movement logic: reads `Keyboard.pressedKeys[]`, builds camera-relative direction, normalizes diagonals, converts to target tile, validates via `PathFinder.findPath` (which internally calls `ClientProt.method3502` to send walk route). | Movement authority remains with `NpcList.method2247`. No direct `xFine/zFine` writes. |
+| `rt4/ModernControlController.java` (modified) | Per-frame dispatcher: `FIRST_PERSON` mode now calls `ModernMovementController.update()` + `FirstPersonCamera.update()`; `THIRD_PERSON` mode calls `ModernMovementController.update()` (placeholder for Phase 14). | Original mode untouched; modern modes dispatch to new controllers. |
+
+### 4.3 WASD input flow (Phase 3)
+```
+Keyboard.pressedKeys[]  ← AWT key events (F11=11, W=33, A=48, S=49, D=50, Ctrl=82)
+        ↓
+ModernControlController.update()  ← called each in-game tick
+        ↓
+ModernMovementController.update()
+  ├─ read WASD state from Keyboard.pressedKeys[]
+  ├─ build MovementIntent (forward/right)
+  ├─ normalize diagonal (W+D not faster than W)
+  ├─ convert to target tile using Camera.cameraYaw
+  │   forward = -sin(yaw), -cos(yaw)
+  │   right   = cos(yaw), -sin(yaw)
+  ├─ targetTile = currentTile + stepDirection
+  ├─ validate via PathFinder.findPath(..., mode=2)
+  │   → internally calls ClientProt.method3502(MOVE_GAMECLICK)
+  │   → sends walk route to server (authoritative)
+  │   → if found, enqueues step into movementQueueX/Z/Speed[0]
+  └─ if found: ticksSinceLastSend=0, update lastSentTile
+```
+
+### 4.4 Camera-relative vector calculation
+```
+yaw = Camera.cameraYaw  (0..2047, 0=south, 512=west, 1024=north, 1536=east)
+yawRad = yaw * (PI * 2.0 / 2048.0)
+
+forwardX = -sin(yawRad)   // camera look direction (negated for RS coords)
+forwardZ = -cos(yawRad)
+
+rightX =  cos(yawRad)     // perpendicular to forward
+rightZ = -sin(yawRad)
+
+moveX = forwardX * forward + rightX * right
+moveZ = forwardZ * forward + rightZ * right
+```
+
+### 4.5 Diagonal normalization
+If `W+D` is held, magnitude would be `sqrt(1^2 + 1^2) ≈ 1.414`, making diagonal movement ~41% faster than cardinal. The `MovementIntent.normalize()` method scales both components by `1/mag` so that `|forward| ≤ 1` and `|right| ≤ 1`, and the effective speed is the same whether moving cardinal or diagonal.
+
+### 4.6 Walk/run integration
+- `intent.runRequested = Keyboard.pressedKeys[KEY_CTRL]` (Ctrl key toggles run).
+- The existing RuneScape run logic in `method2247` checks `movementQueueSpeed[last]`:
+  - `== 2` → run (speed doubled).
+  - `== 0` → walk-group (speed halved).
+- `ClientProt.method3502` already handles the run modifier:
+  ```java
+  p1add(Keyboard.pressedKeys[KEY_CTRL] ? 1 : 0);
+  ```
+- Thus, Ctrl+W = run forward, W = walk forward. No changes needed to existing speed logic.
+
+### 4.7 Animation/orientation integration
+- `NpcList.method2247` reads `movementQueueSize`, `movementQueueSpeed[last]`, and `anInt3400`/`anInt3381` to determine:
+  - Walk vs run animation (`walkAnimation` vs `runAnimation`).
+  - Turn animation (`walkCWTurnAnimationId`, `walkCCWTurnAnimationId`).
+  - Orientation smoothing toward `anInt3400` from `anInt3381`.
+- Since `ModernMovementController` feeds into `movementQueueX/Z/Speed[0]` and `movementQueueSize` is incremented, `method2247` will automatically play the correct walk/run animations and orient the player toward the movement direction.
+- No need to manually set `movementSeqId` — the existing pipeline handles it.
+
+### 4.8 Networking/movement queue integration
+- Each tick where `PathFinder.findPath` succeeds, a single step is enqueued into `movementQueueX[0]`, `movementQueueZ[0]`, `movementQueueSpeed[0]`, and `movementQueueSize` is incremented (capped at 9).
+- `ClientProt.method3502` sends the walk route. The server validates collision and updates the player's position.
+- **Throttle**: `SEND_THROTTLE_TICKS = 3` — only send a new `MOVE_GAMECLICK` every 3 ticks minimum, preventing packet spam while maintaining responsive movement.
+- **Deduplication**: Track `lastSentTileX/Z` to avoid resending for the same target tile if the player is already moving toward it.
+
+### 4.9 Input gating (ModernControlController.isGameplayInputAllowed)
+- Phase 3 conservative implementation: always returns `true`.
+- Future phases will gate on:
+  - Chat focus (`chatboxInput` active).
+  - Interface modal dialogs (bank, spellbook, trade, etc.).
+  - Cutscenes, stuns, teleports.
+  - Region rebuilds.
+- The existing sandbox pattern filters `keyTyped` events for movement keys (`consumesTypedCharacter`), preventing WASD from becoming chat input text. This is already handled at the AWT boundary (`Keyboard.keyTyped`).
+
+### 4.10 Smoothness limitations (Phase 3)
+Movement is tile-to-tile interpolated by `method2247` at existing RS speed (4–8 fine units per tick depending on walk/run and queue depth). This is not as smooth as free-fly fine-coordinate movement, but it is **correct** and safe. True smooth fine-coordinate prediction can be added in a later phase when a proper client-prediction and server-reconciliation system is implemented.
+
+### 4.11 Current smoothness limitations
+- Movement snaps between tile centers via `method2247` interpolation.
+- No per-tick fine-coordinate position updates (that would require a custom prediction system).
+- Server reconciliation: on large mismatch (>256 fine units), client snaps to server position. Small drift eases naturally via `method2247` acceleration logic.
+
+### 4.12 Known risks for server reconciliation
+- If `PathFinder.findPath` fails (collision), no movement step is enqueued, and the player stays in place — this is correct behavior.
+- If the server corrects the player position (e.g., after a world event), the client will naturally converge via `method2247`'s acceleration logic.
+- No risk of "two movement authorities fighting" because only `method2247` writes `xFine/zFine`.
+
+### 4.13 Explicit confirmation of scope
+**Phase 3 contains NO:**
+- ✅ WASD movement code (implemented via `ModernMovementController`)
+- ✅ `MOVE_GAMECLICK` or other movement packets (sent via existing `ClientProt.method3502`)
+- ✅ `sendPlayerStep` or `sendPredictedTile` (not needed; using authoritative queue)
+- ✅ Collision checks or `PathFinder` usage (reuse existing, verified masks)
+- ✅ Movement queue manipulation (fed via `PathFinder.findPath`, consumed by `method2247`)
+- ✅ Targeting or interaction code (Phase 6+)
+- ✅ Combat modifications (unchanged)
+- ✅ Third-person camera (Phase 14)
+- ✅ Protocol rewrite (using existing opcodes)
+- ✅ Custom collision engine (Phase 4)
+- ✅ Wall sliding (Phase 4)
+- ✅ Player-radius collision (Phase 4)
+- ✅ Full fine-coordinate smooth prediction (Phase 5+)
 
 ---
 
-## 14. Phase 0 acceptance notes
+## 5. Build results
 
-- No feature code was written; this document is the analysis + plan only.
-- Verified the current RT4 client is the clean base (no first-person/modern files).
-- Verified the sandbox `FirstPersonCamera` and its integration sites are portable.
-- Verified collision masks match; verified dual camera-update sites; verified cursor API differs and needs adaptation.
-- Confirmed `MiniMenu` is the reusable action/interaction system for targeting.
+### 5.1 Phase 0-2 build verification
+- `gradlew.bat :client:compileJava` → **BUILD SUCCESSFUL** (pre-existing `java.applet` deprecation warnings only).
+- No compile errors from new classes or edits.
 
-Next step: user switches to ACT MODE to begin **Phase 1 (camera mode framework)**.
-
----
-
-## 15. Phase 1 — Camera Mode Framework (COMPLETE)
-
-Implemented and built successfully. **No first-person camera, WASD movement,
-targeting, networking, or third-person camera was added** — this phase only
-establishes the mode state machine and F11 cycling, preserving original
-behaviour in `ORIGINAL` mode.
-
-### 15.1 Changes
-
-| File | Change |
-|---|---|
-| `rt4/CameraMode.java` (new) | `Mode` enum { ORIGINAL, FIRST_PERSON, THIRD_PERSON }, `getCurrent()`, `isModern()`, `isFirstPerson()`, `isThirdPerson()`, `cycle()` (Original→First→Third→Original), `onKeyPressed(int)`. |
-| `rt4/ModernControlController.java` (new) | Central dispatcher `update()` + `isGameplayInputAllowed()` + `MODERN_NEARBY_INTERACT_DISTANCE` (2) + `MODERN_COMBAT_TARGET_DISTANCE` (10). Phase 1 no-ops in all modes; comment placeholders marked for later phases. |
-| `rt4/Keyboard.java` | Added `CameraMode.onKeyPressed(code)` call in `keyPressed()` (AWT boundary) — F11 edge-triggered once per physical press. |
-| `rt4/client.java` | Added `ModernControlController.update()` call in the in-game (`gameState == 30`) branch of `mainLoop()`. |
-
-### 15.2 How it works
-
-- F11 is handled at the AWT boundary (`Keyboard.keyPressed`), which fires once
-  per physical key press — giving natural edge-triggering. This mirrors the
-  sandbox `FirstPersonCamera.onKeyPressed` pattern (F11=11).
-- `CameraMode.cycle()` changes `ORIGINAL → FIRST_PERSON → THIRD_PERSON →
-  ORIGINAL`. Mode switching does **not** touch player/camera position.
-- `ModernControlController.update()` is invoked every in-game tick. In Phase 1
-  it does nothing for all modes, so **original RuneScape controls run untouched**
-  in `ORIGINAL` mode, and even in the modern modes nothing is overridden yet.
-- `ORIGINAL` remains the default; the client boots in original mode.
-
-### 15.3 Build result
-
-- `gradlew.bat :client:compileJava` → **BUILD SUCCESSFUL** (only pre-existing
-  `java.applet` deprecation warnings; the Kotlin compile-daemon `IllegalAccessError`
-  is a pre-existing JDK/Kotlin-plugin environment issue that fell back to
-  in-process compilation and did not block the Java compile).
-- No compile errors from the new classes or edits.
-
-### 15.4 Next steps (not done yet)
-
-- **Phase 3+** — WASD movement (`ModernMovementController`), collision, targeting,
-  interactions, combat, third-person.
+### 5.2 Phase 3: next build step
+After implementing Phase 3, run:
+```
+gradlew.bat :client:compileJava
+```
+Verify:
+- **BUILD SUCCESSFUL** with no new compile errors.
+- `git diff` shows only expected new/modified files:
+  - `rt4/MovementIntent.java`
+  - `rt4/ModernMovementController.java`
+  - `rt4/ModernControlController.java` (updated dispatcher)
+- No unexpected camera changes, collision Phase 4 code, targeting/interaction changes, or protocol modifications.
 
 ---
 
-## 16. Phase 2 — First Person Camera (COMPLETE)
+## 6. Next steps (after Phase 3 build)
 
-Implemented and built successfully. **No WASD movement, networking, collision,
-targeting, or combat was added** — this phase only implements the first-person
-camera that follows the player's position with mouse-look control.
+- **Phase 4**: Collision via `PathFinder.collisionMaps` + `tryMoveX/tryMoveZ` with footprint.
+- **Phase 5**: Fine-coordinate smooth prediction (client-side prediction + server reconciliation).
+- **Phase 6**: Scene/crosshair targeting (crosshair-based NPC/object selection).
+- **Phase 7**: Animation/orientation integration (ensure walk/run anims trigger correctly).
+- **Phase 14**: Third-person camera implementation.
 
-### 16.1 Changes
+---
 
-| File | Change |
-|---|---|
-| `rt4/FirstPersonCamera.java` (new) | Camera-only controller: follows `PlayerList.self.xFine/zFine`, mouse-look with cursor lock, FOV scaling, head bob, pitch limits (-384 to 512), yaw wrapping (0-2047). |
-| `rt4/CameraMode.java` | Added `onModeChanged()` hook to activate/deactivate `FirstPersonCamera` on mode transitions. |
-| `rt4/ModernControlController.java` | Added `FirstPersonCamera.update()` call in `FIRST_PERSON` mode. |
-| `rt4/client.java` | Gated camera update site 1 (`mainUpdate`, line 1203): skip `updateLockedCamera`/`updateLoginScreenCamera` when `FirstPersonCamera.isActive()`. |
-| `rt4/Protocol.java` | Gated camera update site 2 (line 2883): skip `method4273`/`updateLockedCamera`/`updateLoginScreenCamera` when `FirstPersonCamera.isActive()`. |
-| `rt4/ScriptRunner.java` | Body culling in `method964(true)`: skip local player rendering when `FirstPersonCamera.isActive()` to prevent head/torso clipping. |
-| `rt4/GlRenderer.java` | FOV scaling in `method4171`: apply `FirstPersonCamera.getProjectionScale()` to projection matrix when active. |
-| `rt4/LoginManager.java` | Scene rebuild hook: call `FirstPersonCamera.onSceneRebuild()` at end of `setupLoadingScreenRegion()` to restore camera state after region changes. |
+## 7. Build & test commands summary
 
-### 16.2 How FIRST_PERSON camera works
+```
+# After each phase, verify:
+gradlew.bat :client:compileJava
 
-- **Position**: Camera follows `PlayerList.self.xFine/zFine` directly (no independent movement).
-- **Eye height**: `SceneGraph.getTileHeight(plane, x, z) - 200 - bobOffset` (200 units above terrain).
-- **Mouse-look**: Cursor-locked mode using `SignLink.setCursor()` with 1x1 transparent pixel. Mouse delta from screen center updates yaw/pitch. Cursor recentered via `java.awt.Robot.mouseMove()`.
-- **Yaw**: 0-2047 range (wraps at 2048), mouse right decreases yaw (turn right).
-- **Pitch**: Signed -384 (looking up) to 512 (looking down), wrapped to 0-2047 for renderer via `& 0x7FF`.
-- **Head bob**: Subtle vertical offset based on `MathUtils.sin[bobPhase]` when `movementQueueSize > 0`, decays when idle.
-- **FOV**: Configurable 60-110 degrees (default 75), applied as projection scale multiplier in `GlRenderer.method4171`.
+# Check git diff for unwanted changes:
+git diff --stat
 
-### 16.3 Legacy camera updates gated
+# Verify mode switching still works:
+# F11 cycles: Original → First Person → Third Person → Original
+# Original mode must run untouched original RS code.
 
-Both camera update sites are gated to prevent legacy camera from overwriting first-person values:
+# Verify movement in First Person:
+# WASD should move camera-relative at RS walk/run speeds.
+# Ctrl+W = run forward.
+# Diagonal (W+D) should not be faster than W alone.
+```
 
-1. **`client.java:1203`** (`mainUpdate`): `if (!FirstPersonCamera.isActive())` before `updateLockedCamera()`/`updateLoginScreenCamera()`.
-2. **`Protocol.java:2883`** (in-game tick): `if (!FirstPersonCamera.isActive())` before `method4273()`/`updateLockedCamera()`/`updateLoginScreenCamera()`.
-
-### 16.4 Cursor lock implementation
-
-- **Lock**: `GameShell.signLink.setCursor(new int[]{0}, 1, canvas, new Point(0,0), 1)` sets 1x1 transparent cursor.
-- **Unlock**: `GameShell.signLink.setCursor(null, -1, canvas, new Point(), -1)` restores default cursor.
-- **Recenter**: `java.awt.Robot.mouseMove(canvasOnScreen.x + canvasWidth/2, canvasOnScreen.y + canvasHeight/2)` after each mouse-look sample.
-- **Discard first sample**: `discardLockedMouseSample` flag prevents initial mouse delta spike after lock.
-
-### 16.5 FOV scaling
-
-- `FirstPersonCamera.getProjectionScale()` returns `tan(configuredFOV/2) / tan(75/2)`.
-- Applied in `GlRenderer.method4171` to projection matrix bounds: `local7 * aFloat34 * fovScale`, etc.
-- Only active when `FirstPersonCamera.isActive()` returns true.
-
-### 16.6 Local player body culling
-
-- `ScriptRunner.method964(true)` renders local player model.
-- Added early return: `if (arg0 && FirstPersonCamera.isActive()) return;`
-- Prevents head/torso/cape from clipping into camera view.
-- Other players still render normally (`method964(false)` unaffected).
-
-### 16.7 Scene rebuild handling
-
-- `LoginManager.setupLoadingScreenRegion()` calls `FirstPersonCamera.onSceneRebuild()` at end.
-- `onSceneRebuild()` restores `Camera.cameraType = 0` and re-locks cursor if needed.
-- Prevents legacy camera from taking over after region/teleport transitions.
-
-### 16.8 Known limitations
-
-- **No WASD movement**: Camera follows player position only. Movement added in Phase 3.
-- **No collision**: Camera can clip through walls/objects if player is near them. Collision added in Phase 4.
-- **No targeting/interaction**: Crosshair targeting added in Phase 6.
-- **No third-person camera**: Placeholder mode only, added in Phase 14.
-- **Cursor lock uses Robot**: `CursorManager.setPosition` is private, so `java.awt.Robot` is used directly. May have slight latency vs native cursor manager.
-- **No equipment viewmodel**: First-person weapon/hand rendering added in Phase 13.
-
-### 16.9 Build result
-
-- `gradlew.bat :client:compileJava` → **BUILD SUCCESSFUL** (only pre-existing
-  `java.applet` deprecation warnings; the Kotlin compile-daemon `IllegalAccessError`
-  is a pre-existing JDK/Kotlin-plugin environment issue that fell back to
-  in-process compilation and did not block the Java compile).
-- No compile errors from the new class or edits.
-
-### 16.10 Explicit confirmation
-
-**Phase 2 contains NO:**
-- WASD movement code
-- `MOVE_GAMECLICK` or other movement packets
-- `sendPlayerStep` or `sendPredictedTile`
-- Collision checks or `PathFinder` usage
-- Movement queue manipulation
-- Targeting or interaction code
-- Combat modifications
-- Third-person camera implementation
-
-The camera is purely a view controller that follows the player's existing position.
-
-### 16.11 Next steps (not done yet)
-
-- **Phase 3** — WASD movement (`ModernMovementController`): smooth local fine-coordinate movement, collision via `tryMoveX/tryMoveZ`, server sync via tile transitions.
-- **Phase 4+** — Collision, animation/orientation, targeting, interactions, combat, third-person.
+---
+**Last updated:** 13-08-2026
+**Phase 3 completion target:** MovementIntent + ModernMovementController wired into ModernControlController, build verified, no scope creep.
