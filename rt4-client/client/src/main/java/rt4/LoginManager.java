@@ -643,8 +643,8 @@ public class LoginManager {
 			underWaterLocationsMapFileIds[local80] = -1;
 		}
 		method2463(0, local23, local10, 8, true, 8);
-		// Notify first-person camera of scene rebuild
-		FirstPersonCamera.onSceneRebuild();
+		// FirstPersonCamera.onSceneRebuild() is now called inside method2463()
+		// which covers all rebuild paths uniformly.
 	}
 
 	@OriginalMember(owner = "client!wj", name = "b", descriptor = "(B)V")
@@ -826,6 +826,11 @@ public class LoginManager {
 		LightingManager.anInt2875 = -1;
 		SceneGraph.spotanims.clear();
 		SceneGraph.projectiles.clear();
+		// Notify first-person camera of scene/region rebuild so it can
+		// reinitialise on the next update() call with valid player/terrain data.
+		// This covers ALL rebuild paths: REBUILD_REGION packet, plane changes,
+		// loading screen region setup, and reconnects.
+		FirstPersonCamera.onSceneRebuild();
 	}
 
 	@OriginalMember(owner = "client!dh", name = "a", descriptor = "(Z)V")
@@ -856,6 +861,9 @@ public class LoginManager {
 		}
 		Inv.clear();
 		Camera.cameraType = 1;
+		// Notify first-person camera of reconnect so it can reinitialise
+		// on the next update() call with valid player/terrain data.
+		FirstPersonCamera.onSceneRebuild();
 		client.setGameState(30);
 		for (i = 0; i < 100; i++) {
 			InterfaceList.aBooleanArray100[i] = true;

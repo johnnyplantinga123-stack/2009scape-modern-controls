@@ -53,6 +53,13 @@ public final class FirstPersonCamera {
 	// Saved state for restoring normal camera
 	private static int savedCameraType;
 
+	/**
+	 * Set when a scene/region rebuild occurs. The next {@link #update()} call
+	 * will perform a full reinitialisation from the player's new position
+	 * once valid terrain data is available.
+	 */
+	private static boolean sceneRebuildPending = false;
+
 	private FirstPersonCamera() {
 	}
 
@@ -134,10 +141,47 @@ public final class FirstPersonCamera {
 	/**
 	 * Called every frame when FIRST_PERSON is active.
 	 * Updates camera state and writes to Camera fields.
+	 *
+	 * <p>Handles the scene-rebuild lifecycle:
+	 * <ol>
+	 *   <li>If a rebuild is pending and player/terrain data is valid,
+	 *       reinitialise camera position, pitch/yaw, and cursor lock.</li>
+	 *   <li>Self-heal {@link Camera#cameraType} every frame — region rebuilds
+	 *       set it to 1, which must be overridden back to 0 for FP mode.</li>
+	 *   <li>Terrain safety: never let camera height go below terrain.</li>
+	 * </ol>
 	 */
 	public static void update() {
 		if (!active || PlayerList.self == null) {
 			return;
+		}
+
+		// --- Scene rebuild lifecycle ---
+		// After a region/chunk/scene rebuild, Camera.cameraType is set to 1
+		// by the deob code (LoginManager.method2463 line 816). We must
+		// re-assert cameraType=0 every frame to prevent the original camera
+		// system from interfering.
+		Camera.cameraType = 0;
+
+		if (sceneRebuildPending) {
+			// Reinitialise camera position from the player's current position.
+			// This is deferred until update() so that player position and
+			// terrain data are guaranteed to be valid (the rebuild is complete).
+			fpCamX = PlayerList.self.xFine;
+			fpCamZ = PlayerList.self.zFine;
+			// Keep current yaw (player's facing direction) — natural feel.
+			// Reset pitch to horizon — safe default after a region change.
+			fpCamPitch = 0;
+			fpCamYOffset = 0;
+			bobPhase = 0;
+			// Reset mouse tracking to prevent a large delta spike
+			lastMouseLookX = -1;
+			lastMouseLookY = -1;
+			// Re-lock cursor if it was lost during rebuild
+			if (!cursorLocked) {
+				lockCursor();
+			}
+			sceneRebuildPending = false;
 		}
 
 		// Follow player position (camera follows, doesn't lead)
@@ -186,7 +230,16 @@ public final class FirstPersonCamera {
 		}
 
 		// --- Write to Camera fields ---
+		// Terrain safety: SceneGraph.getTileHeight returns 0 when tileHeights
+		// is null (during scene transition) or when coordinates are out of
+		// bounds. A height of 0 would place the camera at -EYE_HEIGHT
+		// (underground). We detect this and use a safe minimum height.
 		int groundHeight = SceneGraph.getTileHeight(Player.plane, fpCamX, fpCamZ);
+		if (groundHeight <= 0) {
+			// Terrain data not yet available or invalid — use a safe default
+			// height that keeps the camera above ground level.
+			groundHeight = EYE_HEIGHT;
+		}
 		Camera.renderX = fpCamX;
 		Camera.renderZ = fpCamZ;
 		// anInt40 is the height component (terrain height - eye offset)
@@ -201,16 +254,37 @@ public final class FirstPersonCamera {
 	}
 
 	/**
-	 * Called on scene/region rebuild to restore first-person state.
+	 * Called on scene/region rebuild to notify the first-person camera that
+	 * the scene is being rebuilt. Sets a pending flag so the next
+	 * {@link #update()} call performs a full reinitialisation once valid
+	 * player/terrain data is available.
+	 *
+	 * <p>Called from:
+	 * <ul>
+	 *   <li>{@link LoginManager#setupLoadingScreenRegion()} — loading screen region setup</li>
+	 *   <li>{@link LoginManager#method2463} — all gameplay region rebuilds
+	 *       (REBUILD_REGION packet, plane changes, reconnects)</li>
+	 * </ul>
 	 */
 	public static void onSceneRebuild() {
 		if (!active) {
 			return;
 		}
+		// Mark that a rebuild happened. The actual reinitialisation is
+		// deferred to the next update() call, when player position and
+		// terrain data are guaranteed to be valid.
+		sceneRebuildPending = true;
+		// Immediately re-assert cameraType so the original camera system
+		// doesn't run even for one frame during the rebuild.
 		Camera.cameraType = 0;
-		if (!cursorLocked) {
-			lockCursor();
-		}
+	}
+
+	/**
+	 * Returns whether a scene rebuild reinitialisation is pending.
+	 * Visible for debugging / lifecycle diagnostics.
+	 */
+	public static boolean isRebuildPending() {
+		return sceneRebuildPending;
 	}
 
 	/**

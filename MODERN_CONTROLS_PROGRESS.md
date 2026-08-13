@@ -1,8 +1,8 @@
 # Modern Controls — Phase 0 Analysis & Implementation Plan
 
-**Status:** Phase 0 (Analysis) — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE**
+**Status:** Phase 0 (Analysis) — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE**
 
-**Date:** 13-08-2026
+**Date:** 14-08-2026
 
 This document captures the Phase 0-3 inspection of both the current RT4-client
 (`E:\Dev\RSPS Project\2009scape\rt4-client`) and the older working first-person
@@ -493,6 +493,103 @@ git diff --stat
   - `Protocol.java` (+5 lines)
   - `client.java` (+8/-1 lines)
 - No Phase 4 collision, targeting, combat, third-person camera, controller, protocol rewrite, renderer rewrite, or first-person viewmodel changes.
+
+---
+
+## 11. Phase 3 Stabilization Pass 3 — Scene Rebuild / Terrain Safety / Visibility
+
+### 11.1 Problem statement
+Runtime testing revealed three critical bugs during region/chunk/scene rebuilds:
+
+1. **FIRST_PERSON mode breaks on region change**: Camera falls through terrain, mode state becomes inconsistent, camera can move freely under the map.
+2. **Camera terrain safety**: First-person camera can end up below terrain after scene transitions due to invalid height data.
+3. **Local player visibility**: Stale first-person culling state can keep the local player invisible after mode switches or rebuilds.
+
+### 11.2 Root cause analysis
+
+**Root cause 1: `Camera.cameraType` overwritten during rebuild**
+
+`LoginManager.method2463()` (the core scene rebuild method) sets `Camera.cameraType = 1` at line 816 for non-loading-screen rebuilds (gameplay region changes). This overrides `FirstPersonCamera.activate()`'s `cameraType = 0`, causing the original camera system to interfere.
+
+Rebuild paths that set `Camera.cameraType = 1`:
+- `method2463()` line 816 — gameplay region changes (REBUILD_REGION packet)
+- `reconnect()` line 858 — reconnect/world hop
+
+**Root cause 2: `onSceneRebuild()` only called from loading screen path**
+
+`FirstPersonCamera.onSceneRebuild()` was only called from `LoginManager.setupLoadingScreenRegion()`, NOT from the main gameplay rebuild path (`Protocol.readRebuildPacket()` → `LoginManager.method2463()`). So during normal region changes, the FP camera was never notified.
+
+**Root cause 3: Terrain height returns 0 for invalid data**
+
+`SceneGraph.getTileHeight()` returns 0 when `tileHeights == null` (during scene transition) or when coordinates are out of bounds. The FP camera computed `Camera.anInt40 = 0 - EYE_HEIGHT = -200`, placing the camera underground.
+
+**Root cause 4: Culling check too narrow**
+
+`ScriptRunner.method964()` checked only `FirstPersonCamera.isActive()` for body culling. If `active` stayed true while the camera mode state was inconsistent (e.g., during rebuild), the local player remained invisible.
+
+### 11.3 Fix applied
+
+**File: `FirstPersonCamera.java`**
+1. Added `sceneRebuildPending` flag for deferred reinitialisation
+2. `onSceneRebuild()` now sets the pending flag + immediately re-asserts `cameraType = 0`
+3. `update()` self-heals `Camera.cameraType = 0` every frame (prevents any rebuild code from overriding it)
+4. `update()` performs full camera reinitialisation when rebuild is pending (position, pitch, mouse tracking, cursor lock)
+5. Terrain safety: if `getTileHeight()` returns ≤ 0, uses `EYE_HEIGHT` as safe default (prevents underground camera)
+
+**File: `LoginManager.java`**
+1. Added `FirstPersonCamera.onSceneRebuild()` at end of `method2463()` — covers ALL rebuild paths
+2. Added `FirstPersonCamera.onSceneRebuild()` in `reconnect()` — covers reconnect/world hop
+3. Removed redundant call from `setupLoadingScreenRegion()` (now handled by `method2463()`)
+
+**File: `ScriptRunner.java`**
+1. Changed body culling check from `FirstPersonCamera.isActive()` to `CameraMode.isFirstPerson() && FirstPersonCamera.isActive()` — requires both mode AND camera to agree
+
+**File: `client/build.gradle`** (from previous session)
+1. Added `run { executable = 'C:\\Program Files\\Java\\jre1.8.0_491\\bin\\java.exe' }` for Java 8 runtime
+2. Added `options.release = 8` to `tasks.withType(JavaCompile)` for Java 8 API compatibility
+
+### 11.4 Scene rebuild lifecycle
+```
+FIRST_PERSON active, player walking
+→ Server sends REBUILD_REGION packet
+→ Protocol.readRebuildPacket() → LoginManager.method2463()
+  ├─ Camera.cameraType = 1 (original deob code)
+  ├─ Player positions adjusted for new origin
+  └─ FirstPersonCamera.onSceneRebuild()
+      ├─ sceneRebuildPending = true
+      └─ Camera.cameraType = 0 (immediate fix)
+→ gameState changes to 25/28 (rebuild in progress)
+  └─ ModernControlController.update() NOT called during rebuild
+→ rebuildMap() completes, gameState returns to 30
+→ ModernControlController.update() → FirstPersonCamera.update()
+  ├─ Camera.cameraType = 0 (self-healing, every frame)
+  ├─ sceneRebuildPending == true → full reinit:
+  │   ├─ fpCamX/Z = PlayerList.self.xFine/zFine
+  │   ├─ fpCamPitch = 0 (horizon, safe default)
+  │   ├─ Reset mouse tracking
+  │   └─ Re-lock cursor if needed
+  ├─ groundHeight = SceneGraph.getTileHeight(...)
+  │   └─ if ≤ 0: use EYE_HEIGHT as safe default
+  └─ Write camera fields → FIRST_PERSON continues normally
+```
+
+### 11.5 Runtime test checklist
+- [ ] Walk into a new region while in FIRST_PERSON — camera stays stable, no underground
+- [ ] Teleport to a different area in FIRST_PERSON — camera reinitialises at new location
+- [ ] Switch to ORIGINAL during region load — camera returns to normal safely
+- [ ] Switch to THIRD_PERSON during region load — player model visible, no culling issues
+- [ ] Look straight up/down during region transition — pitch stays within safe limits
+- [ ] Rapid F11 cycling during region load — no crashes, no stuck states
+- [ ] Reconnect/world hop in FIRST_PERSON — camera reinitialises correctly
+- [ ] Local player model visible in ORIGINAL/THIRD_PERSON after region change
+- [ ] Local player model hidden in FIRST_PERSON (body culling works)
+- [ ] Camera never goes below terrain height during any transition
+
+### 11.6 Build verification
+- `gradlew.bat :client:compileJava` → **BUILD SUCCESSFUL**
+- Files changed: FirstPersonCamera.java, LoginManager.java, ScriptRunner.java, build.gradle
+- Java 8 runtime: `--release 8` flag ensures Java 8 API compatibility (no ByteBuffer covariant return issues)
+- Client launches with Java 8 JRE (`jre1.8.0_491`) for HD/OpenGL graphics support
 
 ---
 

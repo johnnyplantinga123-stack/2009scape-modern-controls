@@ -667,8 +667,12 @@ public final class ScriptRunner {
 	@OriginalMember(owner = "client!cn", name = "b", descriptor = "(ZI)V")
 	public static void method964(@OriginalArg(0) boolean arg0) {
 		// Body culling: skip local player rendering in first-person mode
-		// to prevent head/torso from clipping into the camera view
-		if (arg0 && FirstPersonCamera.isActive()) {
+		// to prevent head/torso from clipping into the camera view.
+		// Only cull when BOTH the camera mode is FIRST_PERSON AND the
+		// first-person camera is actually active/valid. This prevents
+		// stale culling state from making the player permanently invisible
+		// during scene rebuilds, mode transitions, login, or reconnect.
+		if (arg0 && CameraMode.isFirstPerson() && FirstPersonCamera.isActive()) {
 			return;
 		}
 		@Pc(3) int local3 = PlayerList.size;

@@ -12,8 +12,13 @@ targetCompatibility = 1.8
 
 compileJava.options.encoding = 'UTF-8'
 
+// --release 8 restricts both language level AND API to Java 8.
+// Without this, javac on Java 17 generates calls to Java 9+ covariant
+// return methods (e.g. ByteBuffer.position()LByteBuffer;) that don't
+// exist on Java 8, causing NoSuchMethodError at runtime.
 tasks.withType(JavaCompile) {
     options.encoding = 'UTF-8'
+    options.release = 8
 }
 
 dependencies {
@@ -40,6 +45,12 @@ dependencies {
     implementation 'lib:jogl-all-natives-android-aarch64'
 
     runtime 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.4.10'
+}
+
+run {
+    // Launch the client with Java 8 so HD (JOGL/OpenGL) graphics and fullscreen work correctly.
+    // The Gradle build itself still runs on Java 17; only the forked JVM for :client:run uses Java 8.
+    executable = 'C:\\Program Files\\Java\\jre1.8.0_491\\bin\\java.exe'
 }
 
 jar {
