@@ -1,6 +1,6 @@
 # Modern Controls — Phase 0 Analysis & Implementation Plan
 
-**Status:** Phase 0 (Analysis) — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE**
+**Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE**
 
 **Date:** 14-08-2026
 
@@ -387,11 +387,12 @@ git diff --stat
 ```
 
 ---
-**Last updated:** 14-08-2026 (Phase 3 movement runtime fix complete)
+**Last updated:** 14-08-2026 (Phase 3 stabilization pass 4 — camera height regression fix complete)
 **Phase 3 completion:** MovementIntent + ModernMovementController wired into ModernControlController, build verified, no scope creep.
 **Phase 3 stabilization pass 1:** WASD/chat input arbitration fixed (chatInputActive flag), head bob disabled, third-person confirmed placeholder, Java runtime/HD investigated.
 **Phase 3 stabilization pass 2:** True WASD/chat root cause fixed (typed key queue filtering), camera mode F11 transitions safe, third-person placeholder documented, first-person body culling investigated.
-**Phase 3 movement runtime fix:** WASD movement root cause fixed (world→local coordinate conversion for PathFinder.findPath, mode 2→0 for MOVE_GAMECLICK).
+**Phase 3 movement runtime fix:** WASD movement root cause fixed (double coordinate conversion removed — xFine>>7 is already LOCAL, mode 2→0 for MOVE_GAMECLICK).
+**Phase 3 stabilization pass 4:** Camera height regression fixed (removed groundHeight<=0 fallback from b90c72f, added terrain validation, hasValidPosition flag, safe F11 enter, preserved last good camera position).
 
 ---
 
@@ -496,6 +497,164 @@ git diff --stat
 
 ---
 
+## 12. Phase 3 Stabilization Pass 4 — Camera Height Regression Fix (14-08-2026)
+
+### 12.1 Problem statement
+Runtime testing after commit b90c72f revealed a critical camera regression:
+
+- Pressing F11 to enter FIRST_PERSON mode placed the camera **DIRECTLY UNDER THE MAP**.
+- Screenshot showed camera looking up from below the world at terrain/buildings from underneath.
+- Large beige void visible (empty space below the world).
+- This happened immediately on F11 press — no region transition needed.
+- WASD movement still non-functional (separate issue, debug logging added).
+
+### 12.2 Root cause analysis — which b90c72f change caused the regression
+
+**Commit b90c72f changes examined:**
+- `FirstPersonCamera.java` (+82 lines): Added sceneRebuildPending, cameraType self-healing, groundHeight fallback, onSceneRebuild rework.
+- `LoginManager.java` (+12/-3): Moved onSceneRebuild() calls to method2463() and reconnect().
+- `ScriptRunner.java` (+8/-2): Changed body culling to require both CameraMode.isFirstPerson() AND FirstPersonCamera.isActive().
+- `build.gradle` (+11): Java 8 runtime config.
+
+**The regression was in FirstPersonCamera.java — the `groundHeight <= 0 → EYE_HEIGHT` fallback.**
+
+### 12.3 RT4 vertical camera coordinate convention (traced from working legacy code)
+
+**Ground truth from existing working legacy camera code:**
+
+1. **`SceneGraph.getTileHeight(level, xFine, zFine)`** returns tile heights that are **NEGATIVE** for typical terrain. Higher elevation = more negative values. Standard RuneScape convention.
+   - Returns 0 when `tileHeights == null` (scene not loaded) or coordinates out of bounds (0..103 tile range).
+   - Returns actual (negative) height for valid terrain.
+
+2. **`Camera.anInt40`** = camera Y position in world space.
+   - Confirmed via `SceneGraph.cameraY = arg1` at method2954 (line 2913), where arg1 = Camera.anInt40.
+   - OpenGL renders with `glTranslatef(-cameraX, -cameraY, -cameraZ)` (SceneGraph.java line 3047).
+   - Visibility check: `surfaceTileHeights[0][x][z] + 128 - cameraY` (line 2950) — positive means terrain above camera.
+
+3. **Legacy camera formula** (from Camera.java, all working code):
+   - `updateLockedCamera()` line 155: `anInt40 = SceneGraph.getTileHeight(Player.plane, renderX, renderZ) - anInt5203`
+   - `method2722()` line 345: `anInt40 = SceneGraph.getTileHeight(Player.plane, renderX, renderZ) - anInt5203`
+   - `method555()` line 430: `anInt40 = arg2 - local59`
+   - All follow the pattern: **`anInt40 = terrainHeight - offset`**
+
+4. **Physical meaning:**
+   - `anInt40 = terrainHeight - 200` → camera 200 units **above** terrain (correct first-person view).
+   - More negative `anInt40` = camera **higher** in world space (because terrain heights are negative).
+   - Less negative / zero `anInt40` = camera **lower** — at or below ground level.
+
+5. **Why the fallback was wrong:**
+   - b90c72f code: `if (groundHeight <= 0) groundHeight = EYE_HEIGHT (200)`.
+   - This made `anInt40 = 200 - 200 = 0`.
+   - On typical negative terrain (e.g., terrainHeight = -1000), the correct value is `anInt40 = -1000 - 200 = -1200` (camera 200 above terrain).
+   - The fallback jumped the camera from `anInt40 = -1200` (correct, above terrain) to `anInt40 = 0` (at/below ground level).
+   - Result: camera directly under the map, looking up at terrain from below.
+
+### 12.4 Fix applied
+
+**File: `rt4/FirstPersonCamera.java`**
+
+**Changes:**
+1. **Removed the `groundHeight <= 0 → EYE_HEIGHT` fallback entirely.** A terrain height of 0 from `getTileHeight` means either invalid data or genuinely flat terrain — neither case should produce an invented camera height.
+2. **Added `hasValidPosition` flag** — tracks whether the camera has been initialized with proven valid terrain data.
+3. **Added `tryValidateTerrain()` method** — validates before height lookup:
+   - `PlayerList.self != null`
+   - `Player.plane` in range 0..3
+   - `SceneGraph.tileHeights != null` (scene loaded)
+   - Local tile `(fpCamX >> 7)` and `(fpCamZ >> 7)` within 0..103
+4. **When terrain invalid: `return` from `update()`** — preserves last known good camera position. No camera field writes with invented data.
+5. **`activate()` clears stale state** — `sceneRebuildPending = false`, validates terrain immediately via `tryValidateTerrain()`, sets `hasValidPosition` accordingly.
+6. **`deactivate()` resets** `hasValidPosition` and `sceneRebuildPending`.
+7. **`onSceneRebuild()`** sets `hasValidPosition = false` — terrain will be re-validated before next camera field writes.
+
+### 12.5 Correct terrain validation strategy
+
+**Before using `getTileHeight()` for camera placement:**
+1. Check `PlayerList.self != null` — player must exist.
+2. Check `Player.plane` in 0..3 — valid plane.
+3. Check `SceneGraph.tileHeights != null` — scene data loaded.
+4. Check tile coordinates `(fpCamX >> 7)` and `(fpCamZ >> 7)` within 0..103 — within scene bounds.
+
+**If any check fails:**
+- Do NOT write camera fields.
+- Preserve last proven valid camera position.
+- If never had valid position (e.g., F11 during loading), camera stays at pre-FP defaults (safe).
+
+### 12.6 F11 mode enter safety
+
+**On entering FIRST_PERSON via F11:**
+1. `activate()` anchors to `PlayerList.self.xFine/zFine` immediately.
+2. Clears `sceneRebuildPending` — no stale rebuild state.
+3. Validates terrain via `tryValidateTerrain()`.
+4. If valid: `hasValidPosition = true`, first `update()` writes correct camera fields.
+5. If invalid: `hasValidPosition = false`, `update()` returns early until terrain is ready.
+6. `Camera.cameraType = 0` — bypasses legacy camera system.
+7. Safe pitch (0 = horizon), safe yaw (current player facing).
+8. No old render height from ORIGINAL/THIRD_PERSON contaminates FP camera.
+
+### 12.7 Region rebuild behavior (corrected)
+
+**Retained from Pass 3:**
+- `LoginManager.method2463()` calls `FirstPersonCamera.onSceneRebuild()` at end.
+- `LoginManager.reconnect()` calls `FirstPersonCamera.onSceneRebuild()`.
+- `update()` self-heals `Camera.cameraType = 0` every frame.
+- `sceneRebuildPending` triggers full camera reinitialisation on next update.
+
+**Corrected in Pass 4:**
+- Reinitialisation sets `hasValidPosition = false`.
+- Terrain is re-validated via `tryValidateTerrain()` before camera field writes.
+- No fake terrain height used during rebuild transition.
+- Camera preserves last known good position until new terrain is validated.
+
+### 12.8 Body culling safety verification
+
+- `ScriptRunner.method964()` line 675: `if (arg0 && CameraMode.isFirstPerson() && FirstPersonCamera.isActive())` — requires both mode AND camera active.
+- `FirstPersonCamera.isActive()` returns `active` field (set in `activate()`, cleared in `deactivate()`).
+- When terrain is temporarily invalid, `active` stays true but camera fields aren't updated (preserves last good position).
+- Player stays culled during first-person view — correct behavior.
+- When leaving FIRST_PERSON: `deactivate()` sets `active = false`, body culling stops, player visible again.
+
+### 12.9 ORIGINAL mode regression verification
+
+- `FirstPersonCamera.update()` only runs when `active == true` — does NOT affect ORIGINAL mode.
+- `CameraMode.onModeChanged()` properly resets state on transitions:
+  - Leaving FP: `deactivate()` + `resetToSafeDefaults()`.
+  - Entering ORIGINAL: `resetToSafeDefaults()` as safety net.
+- ORIGINAL mode scrollwheel zoom, middle mouse camera movement, click-to-move: all handled by legacy camera system, completely unaffected by modern controls code.
+- No modern input/cursor code consumes events in ORIGINAL mode.
+
+### 12.10 WASD runtime trace status
+
+- `[MODERN-MOVE]` debug logging added to `ModernMovementController.update()` in commit 6420f42.
+- Logs: pressedKeys state, gameplayAllowed, MovementIntent, cameraYaw, originX/Z, self.xFine/zFine, movementQueue state, localDest, findPath result.
+- `[MODERN-MOVE]` debug logging also added to `ClientProt.method3502()` and `MiniMenu.doAction()` for click-to-move comparison.
+- Runtime comparison pending — requires launching server + client to capture debug output.
+- Coordinate fix applied: `xFine >> 7` gives LOCAL tile directly (no originX/Z subtraction).
+- Mode changed from 2 (opcode 77) to 0 (MOVE_GAMECLICK).
+
+### 12.11 Build verification
+- `gradlew.bat :client:compileJava` → **BUILD SUCCESSFUL**
+- Files changed in commit 6420f42:
+  - `FirstPersonCamera.java` (+102/-18 lines: terrain validation, hasValidPosition, removed fallback)
+  - `ModernMovementController.java` (+124/-24 lines: coordinate fix, debug logging)
+  - `ClientProt.java` (+15 lines: debug logging)
+  - `MiniMenu.java` (+14 lines: debug logging)
+  - `config.json`, `GlobalConfig.java` (user config changes)
+- No Phase 4 collision, targeting, combat, third-person camera, controller, protocol rewrite, renderer rewrite, or first-person viewmodel changes.
+
+### 12.12 Summary of findings
+
+| # | Finding | Detail |
+|---|---------|--------|
+| 1 | b90c72f change that caused camera under terrain | `groundHeight <= 0 → EYE_HEIGHT` fallback in FirstPersonCamera.update() |
+| 2 | Correct RT4 vertical coordinate convention | `anInt40 = terrainHeight - offset`; tileHeights are negative; more negative anInt40 = higher camera |
+| 3 | Correct terrain validation | Check self!=null, plane 0..3, tileHeights!=null, tile coords 0..103 before getTileHeight |
+| 4 | Correct F11 initialization | Anchor to xFine/zFine, clear stale state, validate terrain, set cameraType=0, safe pitch/yaw |
+| 5 | Region rebuild behavior | onSceneRebuild() hook preserved, reinit deferred to update(), terrain validated before camera writes |
+| 6 | ORIGINAL camera regression status | No regression — FP code doesn't run when not active, proper reset on mode transition |
+| 7 | WASD runtime trace status | Debug logging in place, coordinate fix applied (LOCAL coords), mode fix applied (0=MOVE_GAMECLICK), runtime test pending |
+
+---
+
 ## 11. Phase 3 Stabilization Pass 3 — Scene Rebuild / Terrain Safety / Visibility
 
 ### 11.1 Problem statement
@@ -534,7 +693,7 @@ Rebuild paths that set `Camera.cameraType = 1`:
 2. `onSceneRebuild()` now sets the pending flag + immediately re-asserts `cameraType = 0`
 3. `update()` self-heals `Camera.cameraType = 0` every frame (prevents any rebuild code from overriding it)
 4. `update()` performs full camera reinitialisation when rebuild is pending (position, pitch, mouse tracking, cursor lock)
-5. Terrain safety: if `getTileHeight()` returns ≤ 0, uses `EYE_HEIGHT` as safe default (prevents underground camera)
+5. Terrain safety: if `getTileHeight()` returns ≤ 0, uses `EYE_HEIGHT` as safe default — **LATER FOUND INCORRECT in Pass 4**: this fallback caused the camera regression. See §12.
 
 **File: `LoginManager.java`**
 1. Added `FirstPersonCamera.onSceneRebuild()` at end of `method2463()` — covers ALL rebuild paths
@@ -615,18 +774,20 @@ FIRST_PERSON active, player walking
 - `intent.normalize()` correctly normalizes diagonals.
 - Camera-relative direction vectors computed correctly from `Camera.cameraYaw`.
 
-**Step 4: Target tile computation** ✓ (but wrong coordinate space)
-- `currentTileX = self.xFine >> 7` → **WORLD** tile coordinate (e.g., 3200).
-- `targetTileX = currentTileX + stepX` → **WORLD** tile coordinate (e.g., 3201).
+**Step 4: Target tile computation** ✓ (coordinate space was wrong)
+- `currentLocalTileX = self.xFine >> 7` → **LOCAL** tile coordinate (xFine/zFine are LOCAL fine coords, same space as movementQueueX/Z).
+- `targetLocalTileX = currentLocalTileX + stepX` → **LOCAL** tile coordinate.
+- **Previous bug:** Code computed `targetTileX - Camera.originX` to get "local" coords, but xFine>>7 was ALREADY local. The double conversion (xFine>>7 already local, then subtracting originX again) produced invalid coordinates far outside 0..103.
 
-**Step 5: PathFinder.findPath() call** ✗ **ROOT CAUSE**
+**Step 5: PathFinder.findPath() call** ✗ **ROOT CAUSE (now fixed)**
 - `PathFinder.findPath()` operates entirely in **LOCAL** coordinates (0..103 grid).
 - All existing click-to-move call sites pass LOCAL coordinates:
   - `MiniMenu.doAction` WALK_HERE: passes `local15`/`local19` (local tiles).
   - NPC pathing: passes `npc.movementQueueX[0]`/`npc.movementQueueZ[0]` (local).
   - `findPathN` uses `parents[arg2][arg9]` indexing into `parents[104][104]` — local grid.
-- ModernMovementController passed **WORLD** coordinates (e.g., 3201) into a function expecting **LOCAL** coordinates (0..103).
+- ModernMovementController previously passed coordinates that were double-converted (xFine>>7 is already local, then originX subtracted again), producing values far outside 0..103.
 - Result: pathfinding always failed because coordinates were far outside the 0..103 grid. `findPath` returned `false`. No route was generated. No movement packet was sent.
+- **Fix:** Pass `xFine >> 7` directly as local coordinates (no originX/Z subtraction).
 
 **Step 6: mode parameter** ✗ **SECONDARY ROOT CAUSE**
 - `mode=2` → `ClientProt.method3502(queueLen, 2)` → sends opcode 77 (walk+action).
@@ -667,12 +828,13 @@ FIRST_PERSON active, player walking
 | mode | 2 | 1 | 2 | 2 (opcode 77) ✗ | 0 (MOVE_GAMECLICK) ✓ |
 
 ### 10.5 Coordinate space verification
-- `self.xFine >> 7` = **WORLD** tile (e.g., 3200).
-- `Camera.originX` = world X of local (0,0) corner.
-- Local tile = world tile - `Camera.originX`.
+- `self.xFine >> 7` = **LOCAL** tile coordinate (xFine/zFine are LOCAL fine coordinates, same space as movementQueueX/Z).
+- `Camera.originX` = world X offset of local (0,0) corner.
+- World tile = local tile + `Camera.originX`.
 - `movementQueueX[0]` = **LOCAL** tile coordinate (confirmed by usage in existing click-to-move).
 - `PathFinder.queueX[]/queueZ[]` = **LOCAL** tile coordinates (confirmed by `method3502` adding `Camera.originX/Z` before sending).
 - `ClientProt.method3502` converts local→world: `p2(Camera.originX + local23)`.
+- **Key insight:** xFine/zFine are ALREADY in local fine coordinate space. No originX/Z subtraction needed to get local tiles. The previous double-conversion bug subtracted originX from already-local coordinates.
 
 ### 10.6 Movement queue / packet flow verification
 1. `PathFinder.findPathN()` computes route → fills `PathFinder.queueX[]/queueZ[]` (local coords).
@@ -693,10 +855,11 @@ FIRST_PERSON active, player walking
 **File:** `rt4/ModernMovementController.java`
 
 **Changes:**
-1. Compute `localDestX = targetTileX - Camera.originX` and `localDestZ = targetTileZ - Camera.originZ` before findPath call.
-2. Pass `localDestX`/`localDestZ` (local coordinates) to `PathFinder.findPath()` instead of `targetTileX`/`targetTileZ` (world coordinates).
+1. Removed double coordinate conversion: `xFine >> 7` already gives LOCAL tile (no `Camera.originX` subtraction needed).
+2. Pass local coordinates directly to `PathFinder.findPath()`.
 3. Change mode from `2` (opcode 77, walk+action) to `0` (MOVE_GAMECLICK, standard walk).
 4. Set `arg4` (runModifier) to `0` — `method3502` reads Ctrl directly from `Keyboard.pressedKeys[KEY_CTRL]`.
+5. Added `[MODERN-MOVE]` debug logging for runtime comparison with click-to-move.
 
 ### 10.9 Runtime test checklist
 - [ ] WASD movement in FIRST_PERSON: W forward, S backward, A left, D right (camera-relative)
