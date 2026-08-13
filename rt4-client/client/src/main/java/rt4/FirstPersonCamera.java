@@ -78,6 +78,17 @@ public final class FirstPersonCamera {
 	}
 
 	/**
+	 * Returns the current first-person camera yaw.
+	 * This is the authoritative horizontal look direction for FIRST_PERSON mode.
+	 * Updated every frame from mouse-look input.
+	 *
+	 * <p>Only meaningful when {@link #isActive()} is true.
+	 */
+	public static int getYaw() {
+		return fpCamYaw;
+	}
+
+	/**
 	 * Called when entering FIRST_PERSON mode. Initializes camera state from player.
 	 */
 	public static void activate() {

@@ -61,6 +61,22 @@ public final class CameraMode {
 	}
 
 	/**
+	 * Returns the authoritative yaw for modern locomotion in the current camera mode.
+	 *
+	 * <ul>
+	 *   <li>FIRST_PERSON: reads FirstPersonCamera's internal yaw (the live mouse-look direction).</li>
+	 *   <li>THIRD_PERSON: falls back to Camera.cameraYaw (Phase 14 will supply its own camera).</li>
+	 *   <li>ORIGINAL: Camera.cameraYaw (not used for locomotion — original mode skips modern controller).</li>
+	 * </ul>
+	 */
+	public static int getModernMovementYaw() {
+		if (current == Mode.FIRST_PERSON) {
+			return FirstPersonCamera.getYaw();
+		}
+		return Camera.cameraYaw;
+	}
+
+	/**
 	 * Cycles the camera mode:
 	 * {@code ORIGINAL -> FIRST_PERSON -> THIRD_PERSON -> ORIGINAL}.
 	 *

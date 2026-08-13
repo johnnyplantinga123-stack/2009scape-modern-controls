@@ -258,6 +258,17 @@ public final class ModernMovementController {
 			if (lastMovementState != MovementState.IDLE) {
 				lastMovementState = MovementState.IDLE;
 				selectAnimationForState();
+				// Phase 3B fix #1: snap visual orientation to target so
+				// method949 (orientation smoothing) does not see a yaw error
+				// and replace the idle animation with walk/turn animation.
+				self.anInt3381 = self.anInt3400;
+				self.anInt3385 = 0;
+			}
+			// Defense in depth: method949 can overwrite movementSeqId with
+			// walkAnimation when it detects idle + yaw error. The legacy path
+			// (method2247) also sets idle every tick. This matches that behavior.
+			else {
+				self.movementSeqId = self.getBasType().idleAnimationId;
 			}
 			return;
 		}
@@ -269,7 +280,9 @@ public final class ModernMovementController {
 		// Camera looks NORTH (+Z) at yaw 0, confirmed by rendering pipeline.
 		// Forward basis: (sin[yaw], cos[yaw])
 		// Right basis:   (cos[yaw], -sin[yaw])
-		int yaw = Camera.cameraYaw;
+		// Phase 3B fix #2: read the LIVE camera yaw, not the stale Camera.cameraYaw.
+		// In FIRST_PERSON, this is FirstPersonCamera.fpCamYaw (the actual mouse-look yaw).
+		int yaw = CameraMode.getModernMovementYaw();
 		boolean running = intent.runRequested;
 		int speed = running ? RUN_SPEED : WALK_SPEED;
 

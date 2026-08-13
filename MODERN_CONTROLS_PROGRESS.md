@@ -1187,3 +1187,153 @@ ORIGINAL:
 - [ ] Legacy animations work
 - [ ] Player rendering works
 - [ ] No modern WASD locomotion leaks into ORIGINAL
+
+---
+
+## 14. Phase 3B Runtime Fix #2 — Live Camera Steering & Idle Animation
+
+**Commit:** TBD  
+**Baseline:** 83e6217 (Phase 3B stabilization)
+
+### 14.1 Runtime bugs found
+
+1. **IDLE ANIMATION STILL DID NOT WORK.** Releasing WASD left the player stuck in walk animation.
+2. **CAMERA-RELATIVE STEERING WAS NOT LIVE.** Holding W and rotating the camera did not change movement direction.
+
+### 14.2 Root cause — idle animation
+
+**Execution order analysis:**
+
+```
+client.mainUpdate() [gameState 30]:
+  ModernControlController.update()
+    → ModernMovementController.update()   ← sets movementSeqId = idle (ONCE on transition)
+    → FirstPersonCamera.update()
+  Protocol.method1756()
+    → PlayerList.method1444()
+      → method4514(self)
+        → [skip method2247 for modern self]
+        → method949(self)   ← orientation smoothing
+        → method879(self)   ← animation frame advance
+```
+
+**Legacy method2247** sets `movementSeqId = idleAnimationId` **every tick** (line 114) when there is no movement queue.
+
+**method949** (orientation smoothing) checks:
+```java
+if (idleAnimationId == movementSeqId && anInt3385 > 25) {
+    movementSeqId = walkAnimation;  // Replace idle with walk!
+}
+```
+
+`anInt3385` increments every tick there is a yaw error between `anInt3400` (target) and `anInt3381` (visual orientation). After 25 ticks of error, idle is replaced with walk.
+
+**The modern controller only set idle ONCE on state transition.** After method949 overwrote it with walk, the controller never set it back (state was already IDLE). Walk animation stuck permanently.
+
+### 14.3 Root cause — live camera steering
+
+**Execution order in ModernControlController.update():**
+```java
+case FIRST_PERSON:
+    ModernMovementController.update();  // reads Camera.cameraYaw
+    FirstPersonCamera.update();         // writes Camera.cameraYaw = fpCamYaw
+```
+
+The movement controller read `Camera.cameraYaw` **before** FirstPersonCamera updated it. The yaw was always one frame stale (20ms). While this alone should only cause imperceptible lag, the combination with the stale `Camera.cameraYaw` field (which could also be affected by legacy camera code paths) meant the movement basis was not reliably current.
+
+**FP yaw pipeline traced:**
+```
+Mouse.currentMouseX/Y (AWT events, async)
+  → FirstPersonCamera.updateLockedMouseLook()
+    → fpCamYaw -= deltaX * sensitivity  (fpCamYaw is the AUTHORITY)
+  → Camera.cameraYaw = fpCamYaw  (written at END of FirstPersonCamera.update())
+  → ModernMovementController reads Camera.cameraYaw  (was reading STALE value)
+```
+
+### 14.4 Fix — idle animation
+
+**Two-part fix in ModernMovementController.update():**
+
+1. **On IDLE transition:** snap visual orientation to target, reset yaw error counter:
+   ```java
+   self.anInt3381 = self.anInt3400;  // Snap visual = target
+   self.anInt3385 = 0;               // Reset error counter
+   ```
+   This prevents method949 from seeing any yaw error and replacing idle with walk.
+
+2. **Every tick when IDLE (no movement):** re-assert idle animation:
+   ```java
+   else {
+       self.movementSeqId = self.getBasType().idleAnimationId;
+   }
+   ```
+   This matches legacy method2247 behavior which sets idle every tick. Setting `movementSeqId` to the same value does NOT restart the animation — method879 continues advancing frames normally.
+
+### 14.5 Fix — live camera steering
+
+**Three changes:**
+
+1. **FirstPersonCamera.getYaw()** — new read-only getter exposing `fpCamYaw` (the authoritative FP horizontal look direction).
+
+2. **CameraMode.getModernMovementYaw()** — dispatcher that returns the correct yaw per mode:
+   - FIRST_PERSON → `FirstPersonCamera.getYaw()` (live fpCamYaw)
+   - THIRD_PERSON → `Camera.cameraYaw` (Phase 14 will supply its own camera)
+   - ORIGINAL → `Camera.cameraYaw` (not used — modern controller is inactive)
+
+3. **ModernControlController.update()** — swapped execution order for FIRST_PERSON:
+   ```java
+   case FIRST_PERSON:
+       FirstPersonCamera.update();         // FIRST: mouse look → fpCamYaw
+       ModernMovementController.update();  // SECOND: reads live fpCamYaw
+   ```
+
+4. **ModernMovementController.update()** — reads `CameraMode.getModernMovementYaw()` instead of `Camera.cameraYaw`.
+
+### 14.6 Files changed
+
+| File | Change |
+|------|--------|
+| `FirstPersonCamera.java` | Added `getYaw()` returning `fpCamYaw` |
+| `CameraMode.java` | Added `getModernMovementYaw()` dispatcher |
+| `ModernControlController.java` | Swapped FP update order: camera before movement |
+| `ModernMovementController.java` | Use `CameraMode.getModernMovementYaw()`; idle animation every-tick + orientation snap |
+
+### 14.7 Force-move preservation
+
+No changes to force-move suspension logic. Force-move active → modern controller does not touch movementSeqId, orientation, or position. Unchanged.
+
+### 14.8 Mode isolation
+
+ORIGINAL mode: no changes. method2247, PathFinder, legacy camera, legacy keyboard — all untouched.
+
+### 14.9 Build verification
+
+```
+gradlew.bat :client:compileJava → BUILD SUCCESSFUL
+```
+
+### 14.10 Runtime acceptance checklist
+
+FIRST_PERSON:
+- [ ] W = forward (camera direction)
+- [ ] S = backward
+- [ ] A = strafe left
+- [ ] D = strafe right
+- [ ] Hold W + rotate camera 90° → trajectory curves to follow camera
+- [ ] Hold W + rotate camera 360° → smooth circular/curved path
+- [ ] Hold A/D + rotate camera → strafe follows camera
+- [ ] Shift+W + rotate camera → same at run speed
+- [ ] Release W → idle animation (no walk stuck)
+- [ ] W → stop → W → stop → no stutter
+- [ ] Shift+W → run animation + faster
+- [ ] Release Shift while holding W → immediate walk
+- [ ] Idle 5 seconds → normal idle animation persists
+
+THIRD_PERSON:
+- [ ] Body orientation matches movement direction
+- [ ] Same idle/walk/run transitions
+
+ORIGINAL:
+- [ ] Click-to-move works
+- [ ] Legacy animations unchanged
+- [ ] No modern WASD leaks

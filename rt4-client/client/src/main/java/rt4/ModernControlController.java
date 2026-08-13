@@ -87,8 +87,11 @@ public final class ModernControlController {
 				// No modern override — original RuneScape controls run as-is.
 				break;
 		case FIRST_PERSON:
-			ModernMovementController.update();
+			// Phase 3B fix #2: camera MUST update before movement so that
+			// ModernMovementController reads the CURRENT frame's yaw
+			// (fpCamYaw → Camera.cameraYaw), not the previous frame's.
 			FirstPersonCamera.update();
+			ModernMovementController.update();
 			break;
 			case THIRD_PERSON:
 				ModernMovementController.update();
