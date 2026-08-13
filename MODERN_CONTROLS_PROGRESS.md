@@ -878,3 +878,88 @@ FIRST_PERSON active, player walking
 - `git diff --stat` shows 1 code file changed (plus config.json/GlobalConfig.java user changes):
   - `ModernMovementController.java` (+25/-20 lines)
 - No Phase 4 collision, targeting, combat, third-person camera, controller, protocol rewrite, renderer rewrite, or first-person viewmodel changes.
+
+---
+
+## Phase 3B — Continuous Modern Movement Foundation
+
+### 3B.1 Goal
+Replace tile-based WASD movement with continuous fine-coordinate prediction, DDA tile-boundary detection, server synchronization via pending ring buffer, and full BasType animation variant support.
+
+### 3B.2 Architecture Overview
+
+**Q16 Fixed-Point Prediction:**
+- `predictedSubX/Z` are Q16 accumulators (16-bit fractional sub-fine precision).
+- `self.xFine = (int)(predictedSubX >> 16)` each tick.
+- Velocity in Q16 fine units per client tick (WALK_SPEED=4, RUN_SPEED=8).
+
+**Camera-Relative Velocity:**
+- forward = (-sin[yaw], -cos[yaw]), right = (cos[yaw], -sin[yaw])
+- Uses `MathUtils.sin/cos` (2048-entry Q16 trig tables).
+- Float multiplication preserves fractional diagonal component before Q16 conversion.
+
+**DDA Tile Boundary Detection:**
+- Positive vel: boundary = (tile+1) * 128. Negative vel: boundary = tile * 128.
+- Cross-multiply to compare X vs Z boundary crossing time.
+- Simultaneous crossing produces diagonal target tile.
+
+**Server Sync:**
+- Single-tile MOVE_GAMECLICK packet (proven from method3502 byte trace).
+- Pending ring buffer (capacity 4) tracks multiple outstanding walk requests.
+- Exact path matching: server-confirmed tile consumes through that pending entry.
+
+**Protocol Hooks:**
+- `readSelfPlayerInfo` type 1/2: `self.move()` then `onServerStep()` then drain queue.
+- Type 3: distinguish near (queued) vs far (direct overwrite) teleport.
+- Near teleport treated as server step. Far teleport rebases from self.xFine/zFine.
+
+**Reconciliation:**
+- Normal: rebase from `lastServerReportedTile` converted to tile-center fine coords.
+- NOT from `self.xFine/zFine` (those ARE the predicted position during normal locomotion).
+- Timeout (100 ticks = 2s) + divergence > 0 + no pending requests = genuine desync.
+- Divergence > 3 tiles = always rebase regardless of timeout.
+- Timeout alone with no divergence = diagnostic only, no blind snap.
+
+### 3B.3 Files Modified
+
+1. **ClientProt.java** - Added `sendModernWalkPacket(worldX, worldZ, running)`.
+2. **NpcList.java** - Added `isModernSelf` gate in `method4514`: skip `method2247` only.
+3. **Protocol.java** - Added modern hooks in `readSelfPlayerInfo` for types 1/2/3.
+4. **ModernMovementController.java** - Complete rewrite (559 lines).
+5. **CameraMode.java** - Lifecycle hooks in `onModeChanged`.
+6. **LoginManager.java** - `onSceneRebuild()` hooks in `method2463` + `reconnect`.
+
+### 3B.4 Execution Order (per 20ms tick)
+1. `ModernMovementController.update()` - owns self.xFine/zFine, animation
+2. `Protocol.method1756()` - server packets, readSelfPlayerInfo hooks
+3. `NpcList.method4514(self)` - skip method2247, run method949 + method879
+
+### 3B.5 Mode Isolation
+- ORIGINAL: legacy method2247 only, no modern writes.
+- FIRST_PERSON: modern locomotion + FirstPersonCamera.
+- THIRD_PERSON: same locomotion, independent camera.
+
+### 3B.6 Animation Variants (BasType)
+- Forward arc [-256,256]: walk / run
+- CW arc [256,768): walkCW / runCW
+- CCW arc [-768,-256]: walkCCW / runCCW
+- Large |delta|>768: walkFullTurn / runFullTurn
+- All with fallback chain to available animations.
+
+### 3B.7 Runtime test checklist
+- [ ] WASD in FIRST_PERSON: W forward (-Z at yaw 0), S backward, A left, D right
+- [ ] Ctrl+W = run forward (8 fine/tick vs 4 walk)
+- [ ] Diagonal (W+D) not faster than cardinal W
+- [ ] Walk animation plays, CW/CCW turn animations on direction change
+- [ ] Run animation plays when Ctrl held
+- [ ] Server receives walk packets (player moves on server side)
+- [ ] Force-move suspends modern controller cleanly, rebases after
+- [ ] Region rebuild rebase works
+- [ ] F11 ORIGINAL to FP to TP to ORIGINAL: seamless handoff both directions
+- [ ] ORIGINAL mode 100% unchanged (click-to-move works)
+- [ ] No movementQueue accumulation (Protocol hooks drain it)
+
+### 3B.8 Build verification
+- `gradlew.bat :client:compileJava` -> **BUILD SUCCESSFUL**
+- 6 files modified (ClientProt, NpcList, Protocol, ModernMovementController, CameraMode, LoginManager)
+- No Phase 4 collision, wall sliding, player-radius, targeting, combat, third-person camera, or first-person viewmodel changes.

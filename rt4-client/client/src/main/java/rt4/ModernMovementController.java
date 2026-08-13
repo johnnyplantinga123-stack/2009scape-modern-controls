@@ -1,338 +1,611 @@
 package rt4;
 
 /**
- * Modern WASD movement controller (Phase 3).
+ * Modern continuous movement controller (Phase 3B).
  *
- * <h2>Movement Authority Strategy</h2>
+ * <p>Owns self.xFine/zFine prediction, server synchronization, orientation,
+ * and animation selection when a modern (non-ORIGINAL) camera mode is active.
  *
- * <p>This controller does <b>NOT</b> directly write to
- * {@link PathingEntity#xFine} or {@link PathingEntity#zFine}. Instead, it
- * feeds movement intents into the <b>existing movement queue</b> via
- * {@link PathFinder#findPath}, which is the same path used by click-to-move.
- *
- * <p>The single owner of {@code xFine/zFine} interpolation remains
- * {@link NpcList#method2247}, which reads from
- * {@code movementQueueX/Z/Speed/Size} and moves the entity toward the queue
- * target each tick. This ensures:
- *
+ * <h2>Architecture</h2>
  * <ul>
- *   <li>No dual-authority conflict (no two systems writing xFine/zFine).</li>
- *   <li>Existing walk/run animation selection works unchanged.</li>
- *   <li>Existing orientation smoothing ({@link NpcList#method949}) works unchanged.</li>
- *   <li>Existing networking ({@link ClientProt#method3502}) sends valid routes.</li>
- *   <li>Server authority is preserved — the server validates every step.</li>
+ *   <li>Q16 fixed-point sub-fine accumulators for smooth prediction.</li>
+ *   <li>Camera-relative velocity via {@link MathUtils#sin}/{@link MathUtils#cos}.</li>
+ *   <li>DDA tile-boundary crossing determines next server tile request.</li>
+ *   <li>Bounded pending-tile ring buffer tracks multiple outstanding walk requests.</li>
+ *   <li>Server-authoritative tile stored separately from legacy movement queue.</li>
+ *   <li>Protocol.java hooks drain legacy queue to prevent accumulation.</li>
  * </ul>
  *
- * <h2>How WASD Works</h2>
+ * <h2>Authority</h2>
+ * <p>This controller is the <b>sole NORMAL LOCOMOTION writer</b> for
+ * self.xFine/zFine in modern mode. Authoritative exceptions:
+ * force-move lerps, teleport, region rebuild.
  *
- * <ol>
- *   <li>Read WASD held state from {@link Keyboard#pressedKeys}.</li>
- *   <li>Build a camera-relative {@link MovementIntent} (forward/right).</li>
- *   <li>Normalize diagonal input so W+D is not faster than W alone.</li>
- *   <li>Convert intent to a world-space target tile (1 tile ahead).</li>
- *   <li>Call {@link PathFinder#findPath} to validate collision and enqueue.</li>
- *   <li>{@code findPath} internally calls {@link ClientProt#method3502} to
- *       send the walk route to the server.</li>
- *   <li>{@link NpcList#method2247} interpolates xFine/zFine toward the target
- *       as it does for all pathing entities.</li>
- * </ol>
- *
- * <h2>Smoothness Limitation (Phase 3)</h2>
- *
- * <p>Movement is tile-to-tile interpolated by {@code method2247} at the
- * existing RuneScape speed (4–8 fine units per tick depending on walk/run
- * and queue depth). This is not as smooth as free-fly fine-coordinate
- * movement, but it is <b>correct</b> and safe. True smooth fine-coordinate
- * prediction can be added in a later phase when a proper client-prediction
- * and server-reconciliation system is implemented.
- *
- * <h2>What This Does NOT Do (Phase 3)</h2>
- *
+ * <h2>Mode Isolation</h2>
  * <ul>
- *   <li>No custom collision engine (Phase 4).</li>
- *   <li>No wall sliding (Phase 4).</li>
- *   <li>No player-radius collision (Phase 4).</li>
- *   <li>No targeting/interaction (Phase 6+).</li>
- *   <li>No third-person camera (Phase 14).</li>
- *   <li>No combat modifications.</li>
- *   <li>No protocol changes.</li>
+ *   <li>ORIGINAL: no modern writes. Legacy method2247 owns everything.</li>
+ *   <li>FIRST_PERSON: modern locomotion + FirstPersonCamera.</li>
+ *   <li>THIRD_PERSON: same locomotion, independent camera lifecycle.</li>
+ * </ul>
+ *
+ * <h2>Coordinate Convention</h2>
+ * <ul>
+ *   <li>Internal: LOCAL tile coordinates.</li>
+ *   <li>Packet send: worldX = Camera.originX + localTileX.</li>
+ *   <li>self.xFine/zFine: LOCAL fine coordinates (tile &lt;&lt; 7 + offset).</li>
  * </ul>
  */
 public final class ModernMovementController {
 
-	// ---- WASD key codes (from Keyboard.CODE_MAP) ----
+	// ---- WASD key codes ----
 	private static final int KEY_W = 33;
 	private static final int KEY_A = 48;
 	private static final int KEY_S = 49;
 	private static final int KEY_D = 50;
 	private static final int KEY_CTRL = 82;
 
-	/**
-	 * Minimum interval (in game ticks) between sending movement packets.
-	 * Prevents packet spam while still allowing responsive WASD.
-	 * RuneScape runs at ~50ms per tick, so 3 ticks ≈ 150ms.
-	 */
-	private static final int SEND_THROTTLE_TICKS = 3;
+	// ---- Speed constants (fine units per client tick at 50Hz) ----
+	private static final int WALK_SPEED = 4;
+	private static final int RUN_SPEED = 8;
+
+	// ---- Reconciliation ----
+	/** ~2 seconds = ~3.3 server ticks (600ms each). Diagnostic, not blind snap. */
+	private static final int RECONCILE_TIMEOUT_TICKS = 100;
+	/** Max tile divergence before forced rebase regardless of timeout. */
+	private static final int MAX_DIVERGENCE_TILES = 3;
+
+	// ---- Pending request ring buffer ----
+	/** Walk ~640ms/tile, Run ~320ms/tile, Server tick ~600ms. Up to 3 outstanding. */
+	private static final int PENDING_CAPACITY = 4;
+
+	// ==== Q16 POSITION (FINE-GRAIN PREDICTION) ====
+	/** Q16 sub-fine accumulators. self.xFine = (int)(predictedSubX >> 16). */
+	private static long predictedSubX;
+	private static long predictedSubZ;
+	private static int velocityXQ16;
+	private static int velocityZQ16;
+
+	// ==== SERVER AUTHORITATIVE STATE (LOCAL tile coords) ====
+	private static int lastServerReportedTileX = -1;
+	private static int lastServerReportedTileZ = -1;
+	private static int lastServerReportTick = -1;
+
+	// ==== PENDING REQUEST RING BUFFER (LOCAL tile coords) ====
+	private static final int[] pendingTileX = new int[PENDING_CAPACITY];
+	private static final int[] pendingTileZ = new int[PENDING_CAPACITY];
+	private static int pendingHead;
+	private static int pendingTail;
+
+	// ==== ORIENTATION ====
+	/** Updated by modern controller; method949 smooths anInt3381 toward it. */
+	private static int targetOrientationAngle;
+
+	// ==== FLAGS ====
+	private static boolean initialized;
+	private static boolean suspended;
 
 	/** Reusable movement intent (avoids per-tick allocation). */
 	private static final MovementIntent intent = new MovementIntent();
 
-	/** Ticks since last movement packet was sent. */
-	private static int ticksSinceLastSend = 0;
-
-	/** Last tile X we sent a movement for (to avoid duplicate sends). */
-	private static int lastSentTileX = -1;
-
-	/** Last tile Z we sent a movement for. */
-	private static int lastSentTileZ = -1;
-
-	/** Whether WASD movement was active last tick (for edge detection). */
-	private static boolean wasMoving = false;
-
-	// ---- Debug logging ----
-	private static int debugLogCounter = 0;
-	private static final int DEBUG_LOG_INTERVAL = 50; // log every ~50 ticks (~2.5s)
-
 	private ModernMovementController() {
 	}
 
+	// =====================================================================
+	// LIFECYCLE
+	// =====================================================================
+
 	/**
-	 * Per-tick update. Called from {@link ModernControlController#update()}
-	 * when a modern camera mode is active.
+	 * ORIGINAL → MODERN transition.
+	 * Correction 3: initialize from current self.xFine/zFine for seamless visual handoff.
+	 * Do NOT snap to lastServerReportedTile center.
+	 */
+	public static void enterModernMode() {
+		Player self = PlayerList.self;
+		if (self == null) return;
+
+		predictedSubX = ((long) self.xFine) << 16;
+		predictedSubZ = ((long) self.zFine) << 16;
+		velocityXQ16 = 0;
+		velocityZQ16 = 0;
+
+		// Initialize lastServerReportedTile from movement queue (LOCAL tiles)
+		lastServerReportedTileX = self.movementQueueX[0];
+		lastServerReportedTileZ = self.movementQueueZ[0];
+		lastServerReportTick = client.loop;
+
+		targetOrientationAngle = self.anInt3400;
+		clearPending();
+		initialized = true;
+		suspended = false;
+	}
+
+	/**
+	 * MODERN → ORIGINAL transition.
+	 * Correction 6: safe handoff without modifying movementQueueX/Z/Size.
+	 * If predicted tile differs from server-reported, rebase fine to server tile center.
+	 */
+	public static void exitModernMode() {
+		if (initialized && PlayerList.self != null) {
+			Player self = PlayerList.self;
+			int predictedTileX = (int) (predictedSubX >> 16) >> 7;
+			int predictedTileZ = (int) (predictedSubZ >> 16) >> 7;
+
+			if (predictedTileX != lastServerReportedTileX
+					|| predictedTileZ != lastServerReportedTileZ) {
+				// Rebase to authoritative server tile center using getSize() * 64
+				self.xFine = (lastServerReportedTileX << 7) + self.getSize() * 64;
+				self.zFine = (lastServerReportedTileZ << 7) + self.getSize() * 64;
+			}
+			// else: preserve current fine position to avoid unnecessary visible snap
+		}
+
+		velocityXQ16 = 0;
+		velocityZQ16 = 0;
+		initialized = false;
+		suspended = false;
+		intent.clear();
+	}
+
+	/** FIRST_PERSON ↔ THIRD_PERSON: locomotion unchanged, camera only. */
+	public static void onModernModeSwitch() {
+		// No prediction reset needed.
+	}
+
+	/**
+	 * Region rebuild adjusts all entity xFine/zFine by -deltaOrigin*128.
+	 * self.xFine/zFine are externally overwritten — rebase prediction from them.
+	 */
+	public static void onSceneRebuild() {
+		if (!initialized) return;
+		Player self = PlayerList.self;
+		if (self == null) return;
+
+		predictedSubX = ((long) self.xFine) << 16;
+		predictedSubZ = ((long) self.zFine) << 16;
+		velocityXQ16 = 0;
+		velocityZQ16 = 0;
+
+		lastServerReportedTileX = self.xFine >> 7;
+		lastServerReportedTileZ = self.zFine >> 7;
+		lastServerReportTick = client.loop;
+		clearPending();
+	}
+
+	// =====================================================================
+	// SERVER HOOKS (called from Protocol.readSelfPlayerInfo)
+	// =====================================================================
+
+	/**
+	 * Server confirmed a step to this LOCAL tile.
+	 * Stores authoritative tile, consumes matching pending entries, reconciles.
+	 */
+	public static void onServerStep(int localTileX, int localTileZ) {
+		lastServerReportedTileX = localTileX;
+		lastServerReportedTileZ = localTileZ;
+		lastServerReportTick = client.loop;
+		consumePendingExact(localTileX, localTileZ);
+		reconcile();
+	}
+
+	/**
+	 * Far teleport directly overwrote self.xFine/zFine.
+	 * Rebase prediction from externally-updated fine coordinates.
+	 */
+	public static void onServerTeleportFine(int fineX, int fineZ) {
+		predictedSubX = ((long) fineX) << 16;
+		predictedSubZ = ((long) fineZ) << 16;
+		velocityXQ16 = 0;
+		velocityZQ16 = 0;
+		lastServerReportedTileX = fineX >> 7;
+		lastServerReportedTileZ = fineZ >> 7;
+		lastServerReportTick = client.loop;
+		clearPending();
+	}
+
+	// =====================================================================
+	// MAIN UPDATE
+	// =====================================================================
+
+	/**
+	 * Per-tick update called from {@link ModernControlController#update()}.
+	 * Execution order: this runs BEFORE Protocol.method1756() and NpcList.method4514().
 	 */
 	public static void update() {
-		if (PlayerList.self == null) {
-			return;
-		}
+		if (!initialized) return;
+		if (!CameraMode.isModern()) return;
+		Player self = PlayerList.self;
+		if (self == null) return;
 		if (!ModernControlController.isGameplayInputAllowed()) {
 			intent.clear();
 			return;
 		}
 
-		ticksSinceLastSend++;
+		// ---- Correction 4: Force-move suspension ----
+		// While force movement is active: no WASD, no packet, no prediction,
+		// no self.xFine/zFine write, NO movementSeqId write, NO orientation write.
+		// Let existing force-move/server animation and method879 operate normally.
+		boolean forceMoveActive = (client.loop < self.forceMoveCyclesToStart)
+				|| (self.forceMoveCyclesToDest >= client.loop);
+		if (forceMoveActive) {
+			velocityXQ16 = 0;
+			velocityZQ16 = 0;
+			suspended = true;
+			return;
+		}
+		if (suspended) {
+			// Force-move just ended — rebase prediction from externally-updated position
+			predictedSubX = ((long) self.xFine) << 16;
+			predictedSubZ = ((long) self.zFine) << 16;
+			lastServerReportedTileX = self.xFine >> 7;
+			lastServerReportedTileZ = self.zFine >> 7;
+			lastServerReportTick = client.loop;
+			clearPending();
+			suspended = false;
+		}
 
-		// Build movement intent from WASD keys
+		// ---- Read WASD input ----
 		readInput();
 
-		// Debug: log input state every interval when WASD is held
-		debugLogCounter++;
-		boolean shouldLog = intent.hasMovement() && (debugLogCounter % DEBUG_LOG_INTERVAL == 1);
-		if (shouldLog) {
-			Player self = PlayerList.self;
-			System.out.println("[MODERN-MOVE] === WASD INPUT STATE ===");
-			System.out.println("[MODERN-MOVE] mode=" + CameraMode.getCurrent()
-				+ " gameplayAllowed=" + ModernControlController.isGameplayInputAllowed());
-			System.out.println("[MODERN-MOVE] W=" + Keyboard.pressedKeys[KEY_W]
-				+ " A=" + Keyboard.pressedKeys[KEY_A]
-				+ " S=" + Keyboard.pressedKeys[KEY_S]
-				+ " D=" + Keyboard.pressedKeys[KEY_D]
-				+ " CTRL=" + Keyboard.pressedKeys[KEY_CTRL]);
-			System.out.println("[MODERN-MOVE] forward=" + intent.forward
-				+ " right=" + intent.right
-				+ " runRequested=" + intent.runRequested);
-			System.out.println("[MODERN-MOVE] cameraYaw=" + Camera.cameraYaw
-				+ " originX=" + Camera.originX + " originZ=" + Camera.originZ);
-			System.out.println("[MODERN-MOVE] self.xFine=" + self.xFine
-				+ " self.zFine=" + self.zFine
-				+ " plane=" + Player.plane);
-			System.out.println("[MODERN-MOVE] self.movementQueueX[0]=" + self.movementQueueX[0]
-				+ " self.movementQueueZ[0]=" + self.movementQueueZ[0]
-				+ " movementQueueSize=" + self.movementQueueSize);
-		}
-
 		if (!intent.hasMovement()) {
-			wasMoving = false;
+			velocityXQ16 = 0;
+			velocityZQ16 = 0;
 			return;
 		}
 
-		// Normalize diagonal input
+		// ---- Normalize diagonal ----
 		intent.normalize();
 
-		// Convert camera-relative intent to target tile.
-		// IMPORTANT: xFine/zFine are in LOCAL fine coordinates (same coordinate
-		// space as movementQueueX/Z). xFine >> 7 gives LOCAL tile directly.
-		// Camera.originX/Z must NOT be subtracted again — that was the bug.
-		Player self = PlayerList.self;
-		int currentLocalTileX = self.xFine >> 7;
-		int currentLocalTileZ = self.zFine >> 7;
-
-		// Camera yaw: 0 = north, 512 = east, 1024 = south, 1536 = west
-		// Forward vector: sin(yaw), cos(yaw) in RS coordinate space
-		// Note: In RS, yaw 0 = south, 512 = west, 1024 = north, 1536 = east
-		// But Camera.cameraYaw uses the same convention.
+		// ---- Compute camera-relative velocity (Correction 1: correct signs) ----
 		int yaw = Camera.cameraYaw;
-		double yawRad = yaw * (Math.PI * 2.0 / 2048.0);
+		boolean running = intent.runRequested;
+		int speed = running ? RUN_SPEED : WALK_SPEED;
 
-		// Forward direction (camera look direction projected to ground)
-		double forwardX = -Math.sin(yawRad);
-		double forwardZ = -Math.cos(yawRad);
+		// Correction 2: use float multiplication to preserve fractional diagonal
+		float fwdMul = intent.forward * speed;
+		float strMul = intent.right * speed;
 
-		// Right direction (perpendicular to forward)
-		double rightX = Math.cos(yawRad);
-		double rightZ = -Math.sin(yawRad);
+		velocityXQ16 = (int) (fwdMul * (-MathUtils.sin[yaw & 2047])
+				+ strMul * MathUtils.cos[yaw & 2047]);
+		velocityZQ16 = (int) (fwdMul * (-MathUtils.cos[yaw & 2047])
+				+ strMul * (-MathUtils.sin[yaw & 2047]));
 
-		// Combine intent with direction vectors
-		double moveX = forwardX * intent.forward + rightX * intent.right;
-		double moveZ = forwardZ * intent.forward + rightZ * intent.right;
+		// ---- Apply Q16 prediction ----
+		predictedSubX += velocityXQ16;
+		predictedSubZ += velocityZQ16;
+		self.xFine = (int) (predictedSubX >> 16);
+		self.zFine = (int) (predictedSubZ >> 16);
 
-		// Determine target tile (1 tile in the movement direction)
-		// Use sign to pick the dominant axis for a single-tile step
-		int targetLocalTileX = currentLocalTileX;
-		int targetLocalTileZ = currentLocalTileZ;
+		// ---- DDA tile boundary crossing → server sync ----
+		performDDACheck();
 
-		// Pick the dominant direction for tile stepping
-		double absX = Math.abs(moveX);
-		double absZ = Math.abs(moveZ);
+		// ---- Orientation ----
+		// Set anInt3400 (desired facing); method949 smooths anInt3381 toward it.
+		if (velocityXQ16 != 0 || velocityZQ16 != 0) {
+			targetOrientationAngle = (int) (Math.atan2(
+					(double) (-velocityXQ16),
+					(double) (-velocityZQ16)) * 325.949D) & 0x7FF;
+			self.anInt3400 = targetOrientationAngle;
+		}
 
-		if (absX > 0.3 || absZ > 0.3) {
-			// Determine step direction
-			int stepX = 0;
-			int stepZ = 0;
+		// ---- Animation selection (Correction 8: full BasType variants) ----
+		selectAnimation(running);
+	}
 
-			if (absX >= absZ) {
-				// Primarily moving along X axis
-				stepX = moveX > 0 ? 1 : -1;
-				// Add Z component if significant
-				if (absZ > 0.3) {
-					stepZ = moveZ > 0 ? 1 : -1;
-				}
+	// =====================================================================
+	// DDA TILE BOUNDARY DETECTION
+	// =====================================================================
+
+	/**
+	 * Digital Differential Analyzer: calculate which tile boundary the continuous
+	 * trajectory crosses first, and send a walk request for that tile.
+	 *
+	 * <p>Correction 4: simultaneous X+Z boundary → diagonal target tile.
+	 * <p>Correction 5: exact boundary math without -1 fudge.
+	 */
+	private static void performDDACheck() {
+		int currentTileX = (int) (predictedSubX >> 16) >> 7;
+		int currentTileZ = (int) (predictedSubZ >> 16) >> 7;
+
+		int ticksX = Integer.MAX_VALUE;
+		int ticksZ = Integer.MAX_VALUE;
+		int nextTileX = currentTileX;
+		int nextTileZ = currentTileZ;
+		long distXQ16 = 0;
+		long distZQ16 = 0;
+
+		// X axis
+		if (velocityXQ16 > 0) {
+			// Positive: next boundary is RIGHT edge of current tile = (tile+1)*128
+			int boundaryFine = (currentTileX + 1) << 7;
+			distXQ16 = ((long) boundaryFine << 16) - predictedSubX;
+			ticksX = (int) (distXQ16 / velocityXQ16);
+			nextTileX = currentTileX + 1;
+		} else if (velocityXQ16 < 0) {
+			// Negative: next boundary is LEFT edge of current tile = tile*128
+			int boundaryFine = currentTileX << 7;
+			distXQ16 = predictedSubX - ((long) boundaryFine << 16);
+			ticksX = (int) (distXQ16 / (-velocityXQ16));
+			nextTileX = currentTileX - 1;
+		}
+
+		// Z axis
+		if (velocityZQ16 > 0) {
+			int boundaryFine = (currentTileZ + 1) << 7;
+			distZQ16 = ((long) boundaryFine << 16) - predictedSubZ;
+			ticksZ = (int) (distZQ16 / velocityZQ16);
+			nextTileZ = currentTileZ + 1;
+		} else if (velocityZQ16 < 0) {
+			int boundaryFine = currentTileZ << 7;
+			distZQ16 = predictedSubZ - ((long) boundaryFine << 16);
+			ticksZ = (int) (distZQ16 / (-velocityZQ16));
+			nextTileZ = currentTileZ - 1;
+		}
+
+		// Determine which boundary is crossed first
+		int targetTileX = currentTileX;
+		int targetTileZ = currentTileZ;
+		boolean crossed = false;
+
+		if (ticksX != Integer.MAX_VALUE && ticksZ != Integer.MAX_VALUE) {
+			// Cross-multiply to compare without floating point:
+			// ticksX < ticksZ  ⟺  distX * |velZ| < distZ * |velX|
+			long crossX = distXQ16 * (long) Math.abs(velocityZQ16);
+			long crossZ = distZQ16 * (long) Math.abs(velocityXQ16);
+			if (crossX < crossZ) {
+				targetTileX = nextTileX;
+				crossed = true;
+			} else if (crossZ < crossX) {
+				targetTileZ = nextTileZ;
+				crossed = true;
 			} else {
-				// Primarily moving along Z axis
-				stepZ = moveZ > 0 ? 1 : -1;
-				// Add X component if significant
-				if (absX > 0.3) {
-					stepX = moveX > 0 ? 1 : -1;
-				}
+				// SIMULTANEOUS: diagonal crossing (Correction 4)
+				targetTileX = nextTileX;
+				targetTileZ = nextTileZ;
+				crossed = true;
 			}
-
-			targetLocalTileX = currentLocalTileX + stepX;
-			targetLocalTileZ = currentLocalTileZ + stepZ;
+		} else if (ticksX != Integer.MAX_VALUE) {
+			targetTileX = nextTileX;
+			crossed = true;
+		} else if (ticksZ != Integer.MAX_VALUE) {
+			targetTileZ = nextTileZ;
+			crossed = true;
 		}
 
-		if (shouldLog) {
-			System.out.println("[MODERN-MOVE] currentLocalTile=" + currentLocalTileX + "," + currentLocalTileZ);
-			System.out.println("[MODERN-MOVE] moveVec=" + moveX + "," + moveZ
-				+ " targetLocalTile=" + targetLocalTileX + "," + targetLocalTileZ);
+		if (crossed) {
+			maybeSendWalkRequest(targetTileX, targetTileZ);
 		}
+	}
 
-		// Don't send if target is same as current (no movement needed)
-		if (targetLocalTileX == currentLocalTileX && targetLocalTileZ == currentLocalTileZ) {
-			if (shouldLog) {
-				System.out.println("[MODERN-MOVE] BLOCKED: target == current (no step)");
-			}
-			return;
-		}
+	// =====================================================================
+	// SERVER SYNC — PENDING RING BUFFER
+	// =====================================================================
 
-		// Throttle: don't send too frequently
-		if (ticksSinceLastSend < SEND_THROTTLE_TICKS) {
-			if (shouldLog) {
-				System.out.println("[MODERN-MOVE] BLOCKED: throttle (ticksSinceLastSend=" + ticksSinceLastSend + ")");
-			}
-			return;
-		}
+	/**
+	 * Send walk request if target tile is not already pending and not the
+	 * last server-reported tile. Uses LOCAL coords internally, converts to
+	 * WORLD only for the packet.
+	 */
+	private static void maybeSendWalkRequest(int targetLocalTileX, int targetLocalTileZ) {
+		// Dedup: don't send if this exact tile is already pending
+		if (pendingContains(targetLocalTileX, targetLocalTileZ)) return;
 
-		// Compute world tile for dedup comparison (lastSentTile stores world coords)
-		int targetWorldTileX = targetLocalTileX + Camera.originX;
-		int targetWorldTileZ = targetLocalTileZ + Camera.originZ;
+		// Don't send if target == last server reported (already confirmed)
+		if (targetLocalTileX == lastServerReportedTileX
+				&& targetLocalTileZ == lastServerReportedTileZ) return;
 
-		// Don't resend if we already sent for this target tile
-		if (targetWorldTileX == lastSentTileX && targetWorldTileZ == lastSentTileZ) {
-			if (shouldLog) {
-				System.out.println("[MODERN-MOVE] BLOCKED: dedup (same target as last sent)");
-			}
-			return;
-		}
+		// Validate local tile bounds
+		if (targetLocalTileX < 0 || targetLocalTileX > 103
+				|| targetLocalTileZ < 0 || targetLocalTileZ > 103) return;
 
-		// targetLocalTileX/Z are already in LOCAL coordinates (0..103 relative
-		// to camera origin) — pass directly to PathFinder.findPath.
-		int localDestX = targetLocalTileX;
-		int localDestZ = targetLocalTileZ;
+		// Convert LOCAL → WORLD for packet (Correction 7: explicit coordinate space)
+		int worldX = Camera.originX + targetLocalTileX;
+		int worldZ = Camera.originZ + targetLocalTileZ;
 
-		if (shouldLog) {
-			System.out.println("[MODERN-MOVE] localDest=" + localDestX + "," + localDestZ
-				+ " srcLocal=" + self.movementQueueX[0] + "," + self.movementQueueZ[0]);
-		}
+		ClientProt.sendModernWalkPacket(worldX, worldZ, intent.runRequested);
 
-		// Clamp target to valid local map range
-		if (localDestX < 0 || localDestX > 103 || localDestZ < 0 || localDestZ > 103) {
-			if (shouldLog) {
-				System.out.println("[MODERN-MOVE] BLOCKED: local dest out of range [0..103]");
-			}
-			return;
-		}
+		// Record in pending ring buffer (LOCAL coords)
+		pendingAdd(targetLocalTileX, targetLocalTileZ);
+	}
 
-		// Call PathFinder.findPath
-		boolean found = PathFinder.findPath(
-				self.movementQueueZ[0],  // srcZ (local)
-				0,                        // angle
-				0,                        // arg2
-				false,                    // arg3 (allowAlternative)
-				0,                        // arg4 (runModifier)
-				localDestX,               // destX (LOCAL)
-				1,                        // size
-				0,                        // arg7
-				0,                        // mode (0 = MOVE_GAMECLICK)
-				localDestZ,               // destZ (LOCAL)
-				self.movementQueueX[0]    // srcX (local)
-		);
-
-		if (shouldLog) {
-			System.out.println("[MODERN-MOVE] findPath returned: " + found);
-			if (found) {
-				System.out.println("[MODERN-MOVE] PathFinder.queueX[0]=" + PathFinder.queueX[0]
-					+ " queueZ[0]=" + PathFinder.queueZ[0]);
-				System.out.println("[MODERN-MOVE] self.movementQueueSize AFTER=" + self.movementQueueSize
-					+ " movementQueueX[0]=" + self.movementQueueX[0]
-					+ " movementQueueZ[0]=" + self.movementQueueZ[0]);
-			}
-		}
-
-		if (found) {
-			ticksSinceLastSend = 0;
-			lastSentTileX = targetWorldTileX;
-			lastSentTileZ = targetWorldTileZ;
-			wasMoving = true;
+	/**
+	 * Add to ring buffer. If buffer full, drop oldest.
+	 */
+	private static void pendingAdd(int localX, int localZ) {
+		int idx = pendingTail % PENDING_CAPACITY;
+		pendingTileX[idx] = localX;
+		pendingTileZ[idx] = localZ;
+		pendingTail++;
+		if (pendingTail - pendingHead > PENDING_CAPACITY) {
+			pendingHead++;
 		}
 	}
 
 	/**
-	 * Reads WASD key state and populates the movement intent.
+	 * Check if exact tile exists in pending ring.
 	 */
+	private static boolean pendingContains(int localX, int localZ) {
+		for (int i = pendingHead; i < pendingTail; i++) {
+			int idx = i % PENDING_CAPACITY;
+			if (pendingTileX[idx] == localX && pendingTileZ[idx] == localZ) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Correction 7: exact path matching.
+	 * If the exact server-reported tile exists in pending ring,
+	 * discard entries through and including that entry.
+	 * If genuinely different, clear stale pending prediction.
+	 */
+	private static void consumePendingExact(int serverTileX, int serverTileZ) {
+		// Search for exact match in pending ring
+		for (int i = pendingHead; i < pendingTail; i++) {
+			int idx = i % PENDING_CAPACITY;
+			if (pendingTileX[idx] == serverTileX && pendingTileZ[idx] == serverTileZ) {
+				// Found: discard through and including this entry
+				pendingHead = i + 1;
+				return;
+			}
+		}
+		// No exact match: server reported a genuinely different tile.
+		// Clear stale pending prediction (authoritative route divergence).
+		clearPending();
+	}
+
+	private static void clearPending() {
+		pendingHead = 0;
+		pendingTail = 0;
+	}
+
+	private static boolean pendingEmpty() {
+		return pendingHead >= pendingTail;
+	}
+
+	// =====================================================================
+	// RECONCILIATION
+	// =====================================================================
+
+	/**
+	 * Correction 2: reconciliation does NOT rebase from self.xFine/zFine during
+	 * normal modern locomotion (those ARE the predicted position).
+	 * Uses lastServerReportedTile → tile-center fine coords instead.
+	 *
+	 * <p>Correction 9: timeout alone does not mean server rejection.
+	 * Requires actual divergence + no pending requests for correction.
+	 */
+	private static void reconcile() {
+		if (!initialized) return;
+
+		int predictedTileX = (int) (predictedSubX >> 16) >> 7;
+		int predictedTileZ = (int) (predictedSubZ >> 16) >> 7;
+		int dx = predictedTileX - lastServerReportedTileX;
+		int dz = predictedTileZ - lastServerReportedTileZ;
+		int divergence = Math.max(Math.abs(dx), Math.abs(dz));
+
+		boolean timeoutExpired = (client.loop - lastServerReportTick) > RECONCILE_TIMEOUT_TICKS;
+
+		if (divergence > MAX_DIVERGENCE_TILES) {
+			// Large divergence — always rebase regardless of timeout
+			rebaseFromServerTile();
+		} else if (timeoutExpired && divergence > 0 && pendingEmpty()) {
+			// Timeout + actual divergence + no pending = genuine desync
+			rebaseFromServerTile();
+		}
+		// Timeout alone with divergence==0 → do nothing (server just hasn't updated)
+		// Timeout with pending outstanding → do nothing (server is processing)
+	}
+
+	/**
+	 * Rebase prediction from lastServerReportedTile → tile-center fine coords.
+	 * NOT from self.xFine/zFine (those are the predicted position during normal locomotion).
+	 */
+	private static void rebaseFromServerTile() {
+		int centerFineX = (lastServerReportedTileX << 7) + 64;
+		int centerFineZ = (lastServerReportedTileZ << 7) + 64;
+		predictedSubX = ((long) centerFineX) << 16;
+		predictedSubZ = ((long) centerFineZ) << 16;
+		velocityXQ16 = 0;
+		velocityZQ16 = 0;
+	}
+
+	// =====================================================================
+	// ANIMATION SELECTION — FULL BASTYPE VARIANT SUPPORT
+	// =====================================================================
+
+	/**
+	 * Correction 8: faithfully reproduces method2247 animation-selection semantics
+	 * for ALL available BasType variants, without copying position interpolation.
+	 *
+	 * <p>BasType fields used:
+	 * <ul>
+	 *   <li>walkAnimation, walkCWTurnAnimationId, walkCCWTurnAnimationId, walkFullTurnAnimationId</li>
+	 *   <li>runAnimationId, runCWTurnAnimationId, runCCWTurnAnimationId, runFullTurnAnimationId</li>
+	 *   <li>idleAnimationId</li>
+	 * </ul>
+	 *
+	 * <p>Angle delta ranges (matching method2247):
+	 * <ul>
+	 *   <li>[-256, 256] → forward walk/run</li>
+	 *   <li>[256, 768) → CW turn walk/run</li>
+	 *   <li>[-768, -256] → CCW turn walk/run</li>
+	 *   <li>|delta| > 768 → full turn variant if available</li>
+	 * </ul>
+	 */
+	private static void selectAnimation(boolean running) {
+		Player self = PlayerList.self;
+		BasType bas = self.getBasType();
+
+		// Angle delta: difference between target orientation and current smoothed
+		int angleDelta = targetOrientationAngle - self.anInt3381 & 0x7FF;
+		if (angleDelta > 1024) angleDelta -= 2048;
+
+		int selectedAnim;
+
+		if (angleDelta >= -256 && angleDelta <= 256) {
+			// FORWARD ARC
+			if (running && bas.runAnimationId != -1) {
+				selectedAnim = bas.runAnimationId;
+			} else if (bas.walkAnimation != -1) {
+				selectedAnim = bas.walkAnimation;
+			} else if (running && bas.runAnimationId != -1) {
+				selectedAnim = bas.runAnimationId;
+			} else {
+				selectedAnim = bas.idleAnimationId;
+			}
+		} else if (angleDelta >= 256 && angleDelta < 768) {
+			// CW TURN ARC
+			if (running && bas.runCWTurnAnimationId != -1) {
+				selectedAnim = bas.runCWTurnAnimationId;
+			} else if (running && bas.runAnimationId != -1) {
+				selectedAnim = bas.runAnimationId;
+			} else if (bas.walkCWTurnAnimationId != -1) {
+				selectedAnim = bas.walkCWTurnAnimationId;
+			} else if (bas.walkAnimation != -1) {
+				selectedAnim = bas.walkAnimation;
+			} else {
+				selectedAnim = bas.idleAnimationId;
+			}
+		} else if (angleDelta >= -768 && angleDelta <= -256) {
+			// CCW TURN ARC
+			if (running && bas.runCCWTurnAnimationId != -1) {
+				selectedAnim = bas.runCCWTurnAnimationId;
+			} else if (running && bas.runAnimationId != -1) {
+				selectedAnim = bas.runAnimationId;
+			} else if (bas.walkCCWTurnAnimationId != -1) {
+				selectedAnim = bas.walkCCWTurnAnimationId;
+			} else if (bas.walkAnimation != -1) {
+				selectedAnim = bas.walkAnimation;
+			} else {
+				selectedAnim = bas.idleAnimationId;
+			}
+		} else {
+			// LARGE TURN (|delta| > 768) — full turn variants
+			if (running && bas.runFullTurnAnimationId != -1) {
+				selectedAnim = bas.runFullTurnAnimationId;
+			} else if (running && bas.runAnimationId != -1) {
+				selectedAnim = bas.runAnimationId;
+			} else if (bas.walkFullTurnAnimationId != -1) {
+				selectedAnim = bas.walkFullTurnAnimationId;
+			} else if (bas.walkAnimation != -1) {
+				selectedAnim = bas.walkAnimation;
+			} else {
+				selectedAnim = bas.idleAnimationId;
+			}
+		}
+
+		self.movementSeqId = selectedAnim;
+	}
+
+	// =====================================================================
+	// INPUT
+	// =====================================================================
+
 	private static void readInput() {
 		intent.clear();
-
-		if (Keyboard.pressedKeys[KEY_W]) {
-			intent.forward += 1f;
-		}
-		if (Keyboard.pressedKeys[KEY_S]) {
-			intent.forward -= 1f;
-		}
-		if (Keyboard.pressedKeys[KEY_D]) {
-			intent.right += 1f;
-		}
-		if (Keyboard.pressedKeys[KEY_A]) {
-			intent.right -= 1f;
-		}
-
-		// Run toggle: Ctrl key or existing run-energy toggle
+		if (Keyboard.pressedKeys[KEY_W]) intent.forward += 1f;
+		if (Keyboard.pressedKeys[KEY_S]) intent.forward -= 1f;
+		if (Keyboard.pressedKeys[KEY_D]) intent.right += 1f;
+		if (Keyboard.pressedKeys[KEY_A]) intent.right -= 1f;
 		intent.runRequested = Keyboard.pressedKeys[KEY_CTRL];
-	}
-
-	/**
-	 * Resets movement state. Called on teleport, death, region change, etc.
-	 */
-	public static void reset() {
-		intent.clear();
-		ticksSinceLastSend = 0;
-		lastSentTileX = -1;
-		lastSentTileZ = -1;
-		wasMoving = false;
-	}
-
-	/**
-	 * Returns whether WASD movement is currently active (any key held).
-	 */
-	public static boolean isMoving() {
-		return intent.hasMovement();
 	}
 }

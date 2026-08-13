@@ -745,6 +745,13 @@ public class Protocol {
 		if (type == 1) {
 			local54 = inboundBuffer.gBits(3);
 			PlayerList.self.move(1, local54);
+			// Phase 3B: drain legacy queue, store authoritative server tile
+			if (CameraMode.isModern()) {
+				ModernMovementController.onServerStep(
+					PlayerList.self.movementQueueX[0],
+					PlayerList.self.movementQueueZ[0]);
+				PlayerList.self.method2689();
+			}
 			local64 = inboundBuffer.gBits(1);
 			if (local64 == 1) {
 				extendedIds[extendedCount++] = 2047;
@@ -753,11 +760,29 @@ public class Protocol {
 			if (inboundBuffer.gBits(1) == 1) {
 				local54 = inboundBuffer.gBits(3);
 				PlayerList.self.move(2, local54);
+				if (CameraMode.isModern()) {
+					ModernMovementController.onServerStep(
+						PlayerList.self.movementQueueX[0],
+						PlayerList.self.movementQueueZ[0]);
+					PlayerList.self.method2689();
+				}
 				local64 = inboundBuffer.gBits(3);
 				PlayerList.self.move(2, local64);
+				if (CameraMode.isModern()) {
+					ModernMovementController.onServerStep(
+						PlayerList.self.movementQueueX[0],
+						PlayerList.self.movementQueueZ[0]);
+					PlayerList.self.method2689();
+				}
 			} else {
 				local54 = inboundBuffer.gBits(3);
 				PlayerList.self.move(0, local54);
+				if (CameraMode.isModern()) {
+					ModernMovementController.onServerStep(
+						PlayerList.self.movementQueueX[0],
+						PlayerList.self.movementQueueZ[0]);
+					PlayerList.self.method2689();
+				}
 			}
 			local54 = inboundBuffer.gBits(1);
 			if (local54 == 1) {
@@ -772,7 +797,26 @@ public class Protocol {
 				extendedIds[extendedCount++] = 2047;
 			}
 			@Pc(181) int x = inboundBuffer.gBits(7);
+			// Phase 3B: distinguish near (queued) vs far (direct overwrite) teleport
+			int preTeleportQueueX = PlayerList.self.movementQueueX[0];
+			int preTeleportQueueZ = PlayerList.self.movementQueueZ[0];
 			PlayerList.self.teleport(x, local64 == 1, local54);
+			if (CameraMode.isModern()) {
+				boolean nearTeleport = (PlayerList.self.movementQueueX[0] != preTeleportQueueX
+					|| PlayerList.self.movementQueueZ[0] != preTeleportQueueZ);
+				if (nearTeleport) {
+					// Near teleport queued a new tile — treat as server step
+					ModernMovementController.onServerStep(
+						PlayerList.self.movementQueueX[0],
+						PlayerList.self.movementQueueZ[0]);
+					PlayerList.self.method2689();
+				} else {
+					// Far teleport directly overwrote xFine/zFine
+					ModernMovementController.onServerTeleportFine(
+						PlayerList.self.xFine,
+						PlayerList.self.zFine);
+				}
+			}
 		}
 	}
 

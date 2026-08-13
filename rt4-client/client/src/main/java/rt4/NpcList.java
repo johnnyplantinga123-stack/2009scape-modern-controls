@@ -29,6 +29,10 @@ public class NpcList {
 			lerpToForceMoveStart(arg1);
 		} else if (arg1.forceMoveCyclesToDest >= client.loop) {
 			lerpToForceMoveDest(arg1);
+		} else if (arg1 == PlayerList.self && CameraMode.isModern()) {
+			// Phase 3B: Modern controller owns self position and animation.
+			// Skip method2247 (legacy position interpolation) ONLY.
+			// method949 (orientation) and method879 (animation frame advance) still run below.
 		} else {
 			method2247(arg1);
 		}

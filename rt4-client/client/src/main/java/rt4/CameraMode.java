@@ -101,6 +101,16 @@ public final class CameraMode {
 		// inconsistent state across mode boundaries.
 		ModernControlController.resetChatState();
 
+		// Phase 3B: lifecycle hooks for modern movement controller
+		if (previous == Mode.ORIGINAL && next != Mode.ORIGINAL) {
+			ModernMovementController.enterModernMode();
+		} else if (previous != Mode.ORIGINAL && next == Mode.ORIGINAL) {
+			ModernMovementController.exitModernMode();
+		} else if (previous != next) {
+			// e.g. FIRST_PERSON ↔ THIRD_PERSON: locomotion unchanged, camera only
+			ModernMovementController.onModernModeSwitch();
+		}
+
 		// Deactivate previous mode's camera
 		if (previous == Mode.FIRST_PERSON) {
 			FirstPersonCamera.deactivate();

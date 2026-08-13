@@ -154,6 +154,29 @@ public class ClientProt {
 		}
 	}
 
+	/**
+	 * Sends a single-tile MOVE_GAMECLICK walk packet for modern movement.
+	 *
+	 * <p>Proven from byte-for-byte trace of {@link #method3502} for routeLen=1:
+	 * <ul>
+	 *   <li>opcode: MOVE_GAMECLICK (215)</li>
+	 *   <li>payload size: 5 (1 run + 2 worldX + 2 worldZ)</li>
+	 *   <li>NO LoginManager.mapFlagX/Z (modern omits flag markers)</li>
+	 *   <li>NO route deltas (1-point route, loop doesn't execute)</li>
+	 * </ul>
+	 *
+	 * <p>Server decode proof (Decoders530.kt decodeWalkInformation):
+	 * reads isRunning(p1add), x(p2), y(p2add), remaining=0 → steps=0.
+	 * Final dest = (x, y) = the target tile we sent.
+	 */
+	public static void sendModernWalkPacket(int targetWorldX, int targetWorldZ, boolean running) {
+		Protocol.outboundBuffer.p1isaac(ClientProt.MOVE_GAMECLICK);
+		Protocol.outboundBuffer.p1(5);
+		Protocol.outboundBuffer.p1add(running ? 1 : 0);
+		Protocol.outboundBuffer.p2(targetWorldX);
+		Protocol.outboundBuffer.p2add(targetWorldZ);
+	}
+
 	@OriginalMember(owner = "client!mc", name = "f", descriptor = "(B)V")
 	public static void closeWidget() {
 		Protocol.outboundBuffer.p1isaac(ClientProt.CLOSE_MODAL);
