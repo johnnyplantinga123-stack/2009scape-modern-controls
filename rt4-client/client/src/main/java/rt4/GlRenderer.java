@@ -565,9 +565,11 @@ public final class GlRenderer {
 		@Pc(17) int local17 = (arg0 + arg2 - arg4 << 8) / arg8;
 		@Pc(25) int local25 = (arg1 - arg5 << 8) / arg9;
 		@Pc(35) int local35 = (arg1 + arg3 - arg5 << 8) / arg9;
+		// Apply FOV scaling for first-person camera
+		float fovScale = FirstPersonCamera.isActive() ? FirstPersonCamera.getProjectionScale() : 1.0f;
 		gl.glMatrixMode(GL2.GL_PROJECTION);
 		gl.glLoadIdentity();
-		method4175((float) local7 * aFloat34, (float) local17 * aFloat34, (float) -local35 * aFloat34, (float) -local25 * aFloat34, 50.0F, (float) GlobalConfig.VIEW_DISTANCE);
+		method4175((float) local7 * aFloat34 * fovScale, (float) local17 * aFloat34 * fovScale, (float) -local35 * aFloat34 * fovScale, (float) -local25 * aFloat34 * fovScale, 50.0F, (float) GlobalConfig.VIEW_DISTANCE);
 		setViewportBounds(arg0, canvasHeight - arg1 - arg3, arg2, arg3);
 		gl.glMatrixMode(GL2.GL_MODELVIEW);
 		gl.glLoadIdentity();

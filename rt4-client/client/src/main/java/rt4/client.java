@@ -1200,10 +1200,13 @@ public final class client extends GameShell {
 		if (!GlRenderer.enabled) {
 			Flames.update();
 		} else if (LoginManager.step == 0 && CreateManager.step == 0) {
-			if (Camera.cameraType == 2) {
-				Camera.updateLockedCamera();
-			} else {
-				Camera.updateLoginScreenCamera();
+			// Gate camera update: skip when first-person camera is active
+			if (!FirstPersonCamera.isActive()) {
+				if (Camera.cameraType == 2) {
+					Camera.updateLockedCamera();
+				} else {
+					Camera.updateLoginScreenCamera();
+				}
 			}
 			if (Camera.renderX >> 7 < 14 || Camera.renderX >> 7 >= 90 || Camera.renderZ >> 7 < 14 || Camera.renderZ >> 7 >= 90) {
 				LoginManager.setupLoadingScreenRegion();

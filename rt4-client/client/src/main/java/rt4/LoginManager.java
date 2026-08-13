@@ -643,6 +643,8 @@ public class LoginManager {
 			underWaterLocationsMapFileIds[local80] = -1;
 		}
 		method2463(0, local23, local10, 8, true, 8);
+		// Notify first-person camera of scene rebuild
+		FirstPersonCamera.onSceneRebuild();
 	}
 
 	@OriginalMember(owner = "client!wj", name = "b", descriptor = "(B)V")

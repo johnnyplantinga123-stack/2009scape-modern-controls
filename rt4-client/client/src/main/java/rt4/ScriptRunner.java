@@ -666,6 +666,11 @@ public final class ScriptRunner {
 
 	@OriginalMember(owner = "client!cn", name = "b", descriptor = "(ZI)V")
 	public static void method964(@OriginalArg(0) boolean arg0) {
+		// Body culling: skip local player rendering in first-person mode
+		// to prevent head/torso from clipping into the camera view
+		if (arg0 && FirstPersonCamera.isActive()) {
+			return;
+		}
 		@Pc(3) int local3 = PlayerList.size;
 		if (LoginManager.mapFlagX == PlayerList.self.xFine >> 7 && PlayerList.self.zFine >> 7 == LoginManager.mapFlagZ) {
 			LoginManager.mapFlagX = 0;

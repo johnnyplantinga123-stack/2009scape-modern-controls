@@ -68,6 +68,7 @@ public final class CameraMode {
 	 * position; only the camera-mode state changes here.
 	 */
 	public static void cycle() {
+		Mode previous = current;
 		switch (current) {
 			case ORIGINAL:
 				current = Mode.FIRST_PERSON;
@@ -80,6 +81,24 @@ public final class CameraMode {
 				current = Mode.ORIGINAL;
 				break;
 		}
+		onModeChanged(previous, current);
+	}
+
+	/**
+	 * Handles activation/deactivation when mode changes.
+	 */
+	private static void onModeChanged(Mode previous, Mode next) {
+		// Deactivate previous mode's camera
+		if (previous == Mode.FIRST_PERSON) {
+			FirstPersonCamera.deactivate();
+		}
+		// Third-person deactivation would go here in Phase 14
+
+		// Activate new mode's camera
+		if (next == Mode.FIRST_PERSON) {
+			FirstPersonCamera.activate();
+		}
+		// Third-person activation would go here in Phase 14
 	}
 
 	/**

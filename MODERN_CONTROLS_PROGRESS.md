@@ -419,11 +419,105 @@ behaviour in `ORIGINAL` mode.
 
 ### 15.4 Next steps (not done yet)
 
-- **Phase 2** — Port & slim the first-person camera out of
-  `E:\Dev\RS-Sandbox\Client\client\src\main\java\rt4\FirstPersonCamera.java`
-  (camera-only, following `ModernMovementController` position, mouse-look, cursor
-  lock via `CursorManager`, FOV scale in `GlRenderer.method4171`, dual camera-update
-  gating in `client.java:1203` + `Protocol.java:2883`, body culling via
-  `ScriptRunner.method964(true)`).
 - **Phase 3+** — WASD movement (`ModernMovementController`), collision, targeting,
   interactions, combat, third-person.
+
+---
+
+## 16. Phase 2 — First Person Camera (COMPLETE)
+
+Implemented and built successfully. **No WASD movement, networking, collision,
+targeting, or combat was added** — this phase only implements the first-person
+camera that follows the player's position with mouse-look control.
+
+### 16.1 Changes
+
+| File | Change |
+|---|---|
+| `rt4/FirstPersonCamera.java` (new) | Camera-only controller: follows `PlayerList.self.xFine/zFine`, mouse-look with cursor lock, FOV scaling, head bob, pitch limits (-384 to 512), yaw wrapping (0-2047). |
+| `rt4/CameraMode.java` | Added `onModeChanged()` hook to activate/deactivate `FirstPersonCamera` on mode transitions. |
+| `rt4/ModernControlController.java` | Added `FirstPersonCamera.update()` call in `FIRST_PERSON` mode. |
+| `rt4/client.java` | Gated camera update site 1 (`mainUpdate`, line 1203): skip `updateLockedCamera`/`updateLoginScreenCamera` when `FirstPersonCamera.isActive()`. |
+| `rt4/Protocol.java` | Gated camera update site 2 (line 2883): skip `method4273`/`updateLockedCamera`/`updateLoginScreenCamera` when `FirstPersonCamera.isActive()`. |
+| `rt4/ScriptRunner.java` | Body culling in `method964(true)`: skip local player rendering when `FirstPersonCamera.isActive()` to prevent head/torso clipping. |
+| `rt4/GlRenderer.java` | FOV scaling in `method4171`: apply `FirstPersonCamera.getProjectionScale()` to projection matrix when active. |
+| `rt4/LoginManager.java` | Scene rebuild hook: call `FirstPersonCamera.onSceneRebuild()` at end of `setupLoadingScreenRegion()` to restore camera state after region changes. |
+
+### 16.2 How FIRST_PERSON camera works
+
+- **Position**: Camera follows `PlayerList.self.xFine/zFine` directly (no independent movement).
+- **Eye height**: `SceneGraph.getTileHeight(plane, x, z) - 200 - bobOffset` (200 units above terrain).
+- **Mouse-look**: Cursor-locked mode using `SignLink.setCursor()` with 1x1 transparent pixel. Mouse delta from screen center updates yaw/pitch. Cursor recentered via `java.awt.Robot.mouseMove()`.
+- **Yaw**: 0-2047 range (wraps at 2048), mouse right decreases yaw (turn right).
+- **Pitch**: Signed -384 (looking up) to 512 (looking down), wrapped to 0-2047 for renderer via `& 0x7FF`.
+- **Head bob**: Subtle vertical offset based on `MathUtils.sin[bobPhase]` when `movementQueueSize > 0`, decays when idle.
+- **FOV**: Configurable 60-110 degrees (default 75), applied as projection scale multiplier in `GlRenderer.method4171`.
+
+### 16.3 Legacy camera updates gated
+
+Both camera update sites are gated to prevent legacy camera from overwriting first-person values:
+
+1. **`client.java:1203`** (`mainUpdate`): `if (!FirstPersonCamera.isActive())` before `updateLockedCamera()`/`updateLoginScreenCamera()`.
+2. **`Protocol.java:2883`** (in-game tick): `if (!FirstPersonCamera.isActive())` before `method4273()`/`updateLockedCamera()`/`updateLoginScreenCamera()`.
+
+### 16.4 Cursor lock implementation
+
+- **Lock**: `GameShell.signLink.setCursor(new int[]{0}, 1, canvas, new Point(0,0), 1)` sets 1x1 transparent cursor.
+- **Unlock**: `GameShell.signLink.setCursor(null, -1, canvas, new Point(), -1)` restores default cursor.
+- **Recenter**: `java.awt.Robot.mouseMove(canvasOnScreen.x + canvasWidth/2, canvasOnScreen.y + canvasHeight/2)` after each mouse-look sample.
+- **Discard first sample**: `discardLockedMouseSample` flag prevents initial mouse delta spike after lock.
+
+### 16.5 FOV scaling
+
+- `FirstPersonCamera.getProjectionScale()` returns `tan(configuredFOV/2) / tan(75/2)`.
+- Applied in `GlRenderer.method4171` to projection matrix bounds: `local7 * aFloat34 * fovScale`, etc.
+- Only active when `FirstPersonCamera.isActive()` returns true.
+
+### 16.6 Local player body culling
+
+- `ScriptRunner.method964(true)` renders local player model.
+- Added early return: `if (arg0 && FirstPersonCamera.isActive()) return;`
+- Prevents head/torso/cape from clipping into camera view.
+- Other players still render normally (`method964(false)` unaffected).
+
+### 16.7 Scene rebuild handling
+
+- `LoginManager.setupLoadingScreenRegion()` calls `FirstPersonCamera.onSceneRebuild()` at end.
+- `onSceneRebuild()` restores `Camera.cameraType = 0` and re-locks cursor if needed.
+- Prevents legacy camera from taking over after region/teleport transitions.
+
+### 16.8 Known limitations
+
+- **No WASD movement**: Camera follows player position only. Movement added in Phase 3.
+- **No collision**: Camera can clip through walls/objects if player is near them. Collision added in Phase 4.
+- **No targeting/interaction**: Crosshair targeting added in Phase 6.
+- **No third-person camera**: Placeholder mode only, added in Phase 14.
+- **Cursor lock uses Robot**: `CursorManager.setPosition` is private, so `java.awt.Robot` is used directly. May have slight latency vs native cursor manager.
+- **No equipment viewmodel**: First-person weapon/hand rendering added in Phase 13.
+
+### 16.9 Build result
+
+- `gradlew.bat :client:compileJava` → **BUILD SUCCESSFUL** (only pre-existing
+  `java.applet` deprecation warnings; the Kotlin compile-daemon `IllegalAccessError`
+  is a pre-existing JDK/Kotlin-plugin environment issue that fell back to
+  in-process compilation and did not block the Java compile).
+- No compile errors from the new class or edits.
+
+### 16.10 Explicit confirmation
+
+**Phase 2 contains NO:**
+- WASD movement code
+- `MOVE_GAMECLICK` or other movement packets
+- `sendPlayerStep` or `sendPredictedTile`
+- Collision checks or `PathFinder` usage
+- Movement queue manipulation
+- Targeting or interaction code
+- Combat modifications
+- Third-person camera implementation
+
+The camera is purely a view controller that follows the player's existing position.
+
+### 16.11 Next steps (not done yet)
+
+- **Phase 3** — WASD movement (`ModernMovementController`): smooth local fine-coordinate movement, collision via `tryMoveX/tryMoveZ`, server sync via tile transitions.
+- **Phase 4+** — Collision, animation/orientation, targeting, interactions, combat, third-person.

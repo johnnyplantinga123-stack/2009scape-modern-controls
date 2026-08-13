@@ -2880,12 +2880,15 @@ public class Protocol {
 													InterfaceList.redraw(aClass13_11);
 												}
 											}
-											if (Camera.cameraType == 1) {
-												Camera.method4273();
-											} else if (Camera.cameraType == 2) {
-												Camera.updateLockedCamera();
-											} else {
-												Camera.updateLoginScreenCamera();
+											// Gate camera update: skip when first-person camera is active
+											if (!FirstPersonCamera.isActive()) {
+												if (Camera.cameraType == 1) {
+													Camera.method4273();
+												} else if (Camera.cameraType == 2) {
+													Camera.updateLockedCamera();
+												} else {
+													Camera.updateLoginScreenCamera();
+												}
 											}
 											for (y = 0; y < 5; y++) {
 												@Pc(2001) int local2001 = anIntArray76[y]++;
