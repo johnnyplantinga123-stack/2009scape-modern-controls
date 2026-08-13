@@ -89,6 +89,10 @@ public final class ModernMovementController {
 	/** Whether WASD movement was active last tick (for edge detection). */
 	private static boolean wasMoving = false;
 
+	// ---- Debug logging ----
+	private static int debugLogCounter = 0;
+	private static final int DEBUG_LOG_INTERVAL = 50; // log every ~50 ticks (~2.5s)
+
 	private ModernMovementController() {
 	}
 
@@ -110,6 +114,32 @@ public final class ModernMovementController {
 		// Build movement intent from WASD keys
 		readInput();
 
+		// Debug: log input state every interval when WASD is held
+		debugLogCounter++;
+		boolean shouldLog = intent.hasMovement() && (debugLogCounter % DEBUG_LOG_INTERVAL == 1);
+		if (shouldLog) {
+			Player self = PlayerList.self;
+			System.out.println("[MODERN-MOVE] === WASD INPUT STATE ===");
+			System.out.println("[MODERN-MOVE] mode=" + CameraMode.getCurrent()
+				+ " gameplayAllowed=" + ModernControlController.isGameplayInputAllowed());
+			System.out.println("[MODERN-MOVE] W=" + Keyboard.pressedKeys[KEY_W]
+				+ " A=" + Keyboard.pressedKeys[KEY_A]
+				+ " S=" + Keyboard.pressedKeys[KEY_S]
+				+ " D=" + Keyboard.pressedKeys[KEY_D]
+				+ " CTRL=" + Keyboard.pressedKeys[KEY_CTRL]);
+			System.out.println("[MODERN-MOVE] forward=" + intent.forward
+				+ " right=" + intent.right
+				+ " runRequested=" + intent.runRequested);
+			System.out.println("[MODERN-MOVE] cameraYaw=" + Camera.cameraYaw
+				+ " originX=" + Camera.originX + " originZ=" + Camera.originZ);
+			System.out.println("[MODERN-MOVE] self.xFine=" + self.xFine
+				+ " self.zFine=" + self.zFine
+				+ " plane=" + Player.plane);
+			System.out.println("[MODERN-MOVE] self.movementQueueX[0]=" + self.movementQueueX[0]
+				+ " self.movementQueueZ[0]=" + self.movementQueueZ[0]
+				+ " movementQueueSize=" + self.movementQueueSize);
+		}
+
 		if (!intent.hasMovement()) {
 			wasMoving = false;
 			return;
@@ -118,10 +148,13 @@ public final class ModernMovementController {
 		// Normalize diagonal input
 		intent.normalize();
 
-		// Convert camera-relative intent to world-space target tile
+		// Convert camera-relative intent to target tile.
+		// IMPORTANT: xFine/zFine are in LOCAL fine coordinates (same coordinate
+		// space as movementQueueX/Z). xFine >> 7 gives LOCAL tile directly.
+		// Camera.originX/Z must NOT be subtracted again — that was the bug.
 		Player self = PlayerList.self;
-		int currentTileX = self.xFine >> 7;
-		int currentTileZ = self.zFine >> 7;
+		int currentLocalTileX = self.xFine >> 7;
+		int currentLocalTileZ = self.zFine >> 7;
 
 		// Camera yaw: 0 = north, 512 = east, 1024 = south, 1536 = west
 		// Forward vector: sin(yaw), cos(yaw) in RS coordinate space
@@ -144,8 +177,8 @@ public final class ModernMovementController {
 
 		// Determine target tile (1 tile in the movement direction)
 		// Use sign to pick the dominant axis for a single-tile step
-		int targetTileX = currentTileX;
-		int targetTileZ = currentTileZ;
+		int targetLocalTileX = currentLocalTileX;
+		int targetLocalTileZ = currentLocalTileZ;
 
 		// Pick the dominant direction for tile stepping
 		double absX = Math.abs(moveX);
@@ -172,61 +205,92 @@ public final class ModernMovementController {
 				}
 			}
 
-			targetTileX = currentTileX + stepX;
-			targetTileZ = currentTileZ + stepZ;
+			targetLocalTileX = currentLocalTileX + stepX;
+			targetLocalTileZ = currentLocalTileZ + stepZ;
+		}
+
+		if (shouldLog) {
+			System.out.println("[MODERN-MOVE] currentLocalTile=" + currentLocalTileX + "," + currentLocalTileZ);
+			System.out.println("[MODERN-MOVE] moveVec=" + moveX + "," + moveZ
+				+ " targetLocalTile=" + targetLocalTileX + "," + targetLocalTileZ);
 		}
 
 		// Don't send if target is same as current (no movement needed)
-		if (targetTileX == currentTileX && targetTileZ == currentTileZ) {
+		if (targetLocalTileX == currentLocalTileX && targetLocalTileZ == currentLocalTileZ) {
+			if (shouldLog) {
+				System.out.println("[MODERN-MOVE] BLOCKED: target == current (no step)");
+			}
 			return;
 		}
 
 		// Throttle: don't send too frequently
 		if (ticksSinceLastSend < SEND_THROTTLE_TICKS) {
+			if (shouldLog) {
+				System.out.println("[MODERN-MOVE] BLOCKED: throttle (ticksSinceLastSend=" + ticksSinceLastSend + ")");
+			}
 			return;
 		}
+
+		// Compute world tile for dedup comparison (lastSentTile stores world coords)
+		int targetWorldTileX = targetLocalTileX + Camera.originX;
+		int targetWorldTileZ = targetLocalTileZ + Camera.originZ;
 
 		// Don't resend if we already sent for this target tile
-		if (targetTileX == lastSentTileX && targetTileZ == lastSentTileZ) {
+		if (targetWorldTileX == lastSentTileX && targetWorldTileZ == lastSentTileZ) {
+			if (shouldLog) {
+				System.out.println("[MODERN-MOVE] BLOCKED: dedup (same target as last sent)");
+			}
 			return;
 		}
 
-		// Convert world tile to local tile (0..103 relative to camera origin).
-		// PathFinder.findPath operates entirely in LOCAL coordinates — all
-		// existing click-to-move call sites (MiniMenu.doAction WALK_HERE, NPC
-		// pathing, etc.) pass local coordinates, not world coordinates.
-		int localDestX = targetTileX - Camera.originX;
-		int localDestZ = targetTileZ - Camera.originZ;
+		// targetLocalTileX/Z are already in LOCAL coordinates (0..103 relative
+		// to camera origin) — pass directly to PathFinder.findPath.
+		int localDestX = targetLocalTileX;
+		int localDestZ = targetLocalTileZ;
+
+		if (shouldLog) {
+			System.out.println("[MODERN-MOVE] localDest=" + localDestX + "," + localDestZ
+				+ " srcLocal=" + self.movementQueueX[0] + "," + self.movementQueueZ[0]);
+		}
 
 		// Clamp target to valid local map range
 		if (localDestX < 0 || localDestX > 103 || localDestZ < 0 || localDestZ > 103) {
+			if (shouldLog) {
+				System.out.println("[MODERN-MOVE] BLOCKED: local dest out of range [0..103]");
+			}
 			return;
 		}
 
-		// Use existing PathFinder to validate collision and send movement.
-		// findPath params: srcZ, angle, arg2, objectPathing, runModifier,
-		//   destX, size, arg7, mode, destZ, srcX
-		// mode=0 → MOVE_GAMECLICK (215), the standard walk packet.
-		// mode=2 → opcode 77 (walk+action), used for NPC/object interactions.
-		// We use mode=0 for basic WASD walking.
+		// Call PathFinder.findPath
 		boolean found = PathFinder.findPath(
 				self.movementQueueZ[0],  // srcZ (local)
-				0,                        // angle (0 = no specific approach angle)
-				0,                        // arg2 (unused for single-tile step)
-				false,                    // arg3 (not object pathing)
-				0,                        // arg4 (runModifier — method3502 reads Ctrl directly)
-				localDestX,               // destX (LOCAL tile coordinate)
-				1,                        // size (1x1 for player)
+				0,                        // angle
+				0,                        // arg2
+				false,                    // arg3 (allowAlternative)
+				0,                        // arg4 (runModifier)
+				localDestX,               // destX (LOCAL)
+				1,                        // size
 				0,                        // arg7
 				0,                        // mode (0 = MOVE_GAMECLICK)
-				localDestZ,               // destZ (LOCAL tile coordinate)
+				localDestZ,               // destZ (LOCAL)
 				self.movementQueueX[0]    // srcX (local)
 		);
 
+		if (shouldLog) {
+			System.out.println("[MODERN-MOVE] findPath returned: " + found);
+			if (found) {
+				System.out.println("[MODERN-MOVE] PathFinder.queueX[0]=" + PathFinder.queueX[0]
+					+ " queueZ[0]=" + PathFinder.queueZ[0]);
+				System.out.println("[MODERN-MOVE] self.movementQueueSize AFTER=" + self.movementQueueSize
+					+ " movementQueueX[0]=" + self.movementQueueX[0]
+					+ " movementQueueZ[0]=" + self.movementQueueZ[0]);
+			}
+		}
+
 		if (found) {
 			ticksSinceLastSend = 0;
-			lastSentTileX = targetTileX;
-			lastSentTileZ = targetTileZ;
+			lastSentTileX = targetWorldTileX;
+			lastSentTileZ = targetWorldTileZ;
 			wasMoving = true;
 		}
 	}

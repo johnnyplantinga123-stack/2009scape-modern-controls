@@ -115,6 +115,21 @@ public class ClientProt {
 		arg0--;
 		@Pc(23) int local23 = PathFinder.queueX[arg0];
 		@Pc(27) int local27 = PathFinder.queueZ[arg0];
+		// Debug logging for walk packet
+		System.out.println("[MODERN-MOVE] === method3502 WALK PACKET ===");
+		System.out.println("[MODERN-MOVE] mode=" + arg1 + " routeLen=" + local13
+			+ " baseX(local)=" + local23 + " baseZ(local)=" + local27);
+		System.out.println("[MODERN-MOVE] destWorldX=" + (Camera.originX + local23)
+			+ " destWorldZ=" + (Camera.originZ + local27));
+		System.out.println("[MODERN-MOVE] mapFlagX=" + PathFinder.queueX[0]
+			+ " mapFlagZ=" + PathFinder.queueZ[0]);
+		if (arg1 == 0) {
+			System.out.println("[MODERN-MOVE] opcode=MOVE_GAMECLICK(215)");
+		} else if (arg1 == 1) {
+			System.out.println("[MODERN-MOVE] opcode=MOVE_MINIMAPCLICK(39)");
+		} else if (arg1 == 2) {
+			System.out.println("[MODERN-MOVE] opcode=77(walk+action)");
+		}
 		if (arg1 == 0) {
 			Protocol.outboundBuffer.p1isaac(ClientProt.MOVE_GAMECLICK);
 			Protocol.outboundBuffer.p1(local13 + local13 + 3);

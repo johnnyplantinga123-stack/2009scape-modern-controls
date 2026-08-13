@@ -60,6 +60,13 @@ public final class FirstPersonCamera {
 	 */
 	private static boolean sceneRebuildPending = false;
 
+	/**
+	 * Whether the FP camera has been initialised with a proven valid
+	 * terrain height. Until this is true, camera fields are NOT written
+	 * to prevent placing the camera at an invented height.
+	 */
+	private static boolean hasValidPosition = false;
+
 	private FirstPersonCamera() {
 	}
 
@@ -83,6 +90,10 @@ public final class FirstPersonCamera {
 		// Set cameraType to 0 so both camera update sites skip their normal updates
 		Camera.cameraType = 0;
 
+		// Clear scene rebuild state — F11 enter must always be safe
+		// regardless of any prior rebuild state.
+		sceneRebuildPending = false;
+
 		// Initialize camera position at player's current position
 		fpCamX = PlayerList.self.xFine;
 		fpCamZ = PlayerList.self.zFine;
@@ -95,6 +106,12 @@ public final class FirstPersonCamera {
 		lastMouseLookX = -1;
 		lastMouseLookY = -1;
 		lockCursor();
+
+		// Try to validate terrain data immediately so F11 enter is safe.
+		// If terrain is valid, mark hasValidPosition so update() writes camera fields.
+		// If terrain is NOT valid (scene still loading), hasValidPosition stays false
+		// and update() will defer camera field writes until terrain is ready.
+		hasValidPosition = tryValidateTerrain();
 	}
 
 	/**
@@ -105,6 +122,8 @@ public final class FirstPersonCamera {
 			return;
 		}
 		active = false;
+		hasValidPosition = false;
+		sceneRebuildPending = false;
 		unlockCursor();
 		Camera.cameraType = savedCameraType;
 	}
@@ -165,8 +184,10 @@ public final class FirstPersonCamera {
 
 		if (sceneRebuildPending) {
 			// Reinitialise camera position from the player's current position.
-			// This is deferred until update() so that player position and
-			// terrain data are guaranteed to be valid (the rebuild is complete).
+			// This is deferred until update() so that player position is valid
+			// (the rebuild is complete). However, terrain data may still be
+			// loading — we only clear the pending flag; hasValidPosition is
+			// set only after terrain validation below.
 			fpCamX = PlayerList.self.xFine;
 			fpCamZ = PlayerList.self.zFine;
 			// Keep current yaw (player's facing direction) — natural feel.
@@ -182,6 +203,8 @@ public final class FirstPersonCamera {
 				lockCursor();
 			}
 			sceneRebuildPending = false;
+			// Terrain will be validated below before writing camera fields
+			hasValidPosition = false;
 		}
 
 		// Follow player position (camera follows, doesn't lead)
@@ -229,20 +252,36 @@ public final class FirstPersonCamera {
 			}
 		}
 
-		// --- Write to Camera fields ---
-		// Terrain safety: SceneGraph.getTileHeight returns 0 when tileHeights
-		// is null (during scene transition) or when coordinates are out of
-		// bounds. A height of 0 would place the camera at -EYE_HEIGHT
-		// (underground). We detect this and use a safe minimum height.
-		int groundHeight = SceneGraph.getTileHeight(Player.plane, fpCamX, fpCamZ);
-		if (groundHeight <= 0) {
-			// Terrain data not yet available or invalid — use a safe default
-			// height that keeps the camera above ground level.
-			groundHeight = EYE_HEIGHT;
+		// --- Terrain validation before height lookup ---
+		// RT4 tile heights are negative (higher elevation = more negative).
+		// Camera.anInt40 = terrainHeight - EYE_HEIGHT places the camera above
+		// terrain (more negative anInt40 = higher in world space).
+		//
+		// getTileHeight returns 0 when tileHeights is null (scene not loaded)
+		// or when coordinates are out of bounds. A height of 0 is NOT a valid
+		// terrain height for camera placement — it would place the camera at
+		// anInt40 = -200 (below ground level).
+		//
+		// Instead of using a fallback height, we validate terrain data first.
+		// If invalid: skip camera field writes, preserve last known good position.
+		if (!tryValidateTerrain()) {
+			// Terrain data not available or coordinates out of bounds.
+			// Do NOT write camera fields — preserve the last proven valid position.
+			// If we never had a valid position (e.g., F11 during loading),
+			// the camera stays at its pre-FP defaults (safe).
+			return;
 		}
+
+		// Terrain is valid — compute camera height from terrain data
+		int groundHeight = SceneGraph.getTileHeight(Player.plane, fpCamX, fpCamZ);
+		hasValidPosition = true;
+
+		// --- Write to Camera fields ---
 		Camera.renderX = fpCamX;
 		Camera.renderZ = fpCamZ;
-		// anInt40 is the height component (terrain height - eye offset)
+		// anInt40 is the height component: terrain height minus eye offset.
+		// RT4 convention: tileHeights are negative, so anInt40 = terrainHeight - 200
+		// places the camera 200 units above the terrain surface.
 		Camera.anInt40 = groundHeight - EYE_HEIGHT - fpCamYOffset;
 		Camera.cameraYaw = fpCamYaw;
 		Camera.cameraPitch = fpCamPitch & 0x7FF;
@@ -271,9 +310,11 @@ public final class FirstPersonCamera {
 			return;
 		}
 		// Mark that a rebuild happened. The actual reinitialisation is
-		// deferred to the next update() call, when player position and
-		// terrain data are guaranteed to be valid.
+		// deferred to the next update() call, when player position is valid.
+		// Terrain validation happens in update() before camera field writes.
 		sceneRebuildPending = true;
+		// Invalidate current position — terrain data will be rebuilt
+		hasValidPosition = false;
 		// Immediately re-assert cameraType so the original camera system
 		// doesn't run even for one frame during the rebuild.
 		Camera.cameraType = 0;
@@ -285,6 +326,37 @@ public final class FirstPersonCamera {
 	 */
 	public static boolean isRebuildPending() {
 		return sceneRebuildPending;
+	}
+
+	/**
+	 * Validates that terrain data is available for the current FP camera position.
+	 *
+	 * <p>Checks:
+	 * <ul>
+	 *   <li>PlayerList.self != null</li>
+	 *   <li>Player.plane is 0..3</li>
+	 *   <li>SceneGraph.tileHeights is not null (scene loaded)</li>
+	 *   <li>Local tile coordinates (fpCamX/Z >> 7) are within 0..103</li>
+	 * </ul>
+	 *
+	 * @return true if terrain data is available and coordinates are valid
+	 */
+	private static boolean tryValidateTerrain() {
+		if (PlayerList.self == null) {
+			return false;
+		}
+		if (Player.plane < 0 || Player.plane > 3) {
+			return false;
+		}
+		if (SceneGraph.tileHeights == null) {
+			return false;
+		}
+		int tileX = fpCamX >> 7;
+		int tileZ = fpCamZ >> 7;
+		if (tileX < 0 || tileX > 103 || tileZ < 0 || tileZ > 103) {
+			return false;
+		}
+		return true;
 	}
 
 	/**
