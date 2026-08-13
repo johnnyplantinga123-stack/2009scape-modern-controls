@@ -44,6 +44,25 @@ public final class ModernControlController {
 	 */
 	public static final int MODERN_COMBAT_TARGET_DISTANCE = 10;
 
+	// ---- Chat input state ----
+
+	/**
+	 * Whether the chatbox is currently in text-input mode. When {@code true},
+	 * modern gameplay input (WASD movement, mouse-look, interaction) is
+	 * suppressed so the player can type freely.
+	 *
+	 * <p>The RS chatbox is driven by CS2 scripts; there is no single existing
+	 * Java boolean that tracks "chat typing mode". We therefore use Enter-key
+	 * edge-detection in {@link #updateChatInputState()} to maintain this flag.
+	 */
+	private static boolean chatInputActive = false;
+
+	/** Escape keycode in RS keycode space (CODE_MAP[VK_ESCAPE] = 13). */
+	private static final int KEY_ESCAPE = 13;
+
+	/** Previous frame's Enter-key state, used for edge-detection. */
+	private static boolean enterWasPressed = false;
+
 	private ModernControlController() {
 	}
 
@@ -54,6 +73,9 @@ public final class ModernControlController {
 	 * is done so the original RuneScape code paths run untouched.
 	 */
 	public static void update() {
+		// Always update chat input state (needed in any modern mode)
+		updateChatInputState();
+
 		switch (CameraMode.getCurrent()) {
 			case ORIGINAL:
 				// No modern override — original RuneScape controls run as-is.
@@ -71,13 +93,57 @@ public final class ModernControlController {
 
 	/**
 	 * Returns whether gameplay input (modern movement/interaction) is currently
-	 * allowed. In Phase 1 this is conservative: modern input is never injected
-	 * yet, so it always returns {@code true} for the frameworks that will use it
-	 * later. Future phases will gate on chat focus, dialogs, cutscenes, etc.
+	 * allowed. Returns {@code false} when the chatbox is in text-input mode so
+	 * WASD keys type letters instead of generating movement.
+	 *
+	 * <p>ORIGINAL mode never consults this method — it is only called by
+	 * {@link ModernMovementController} and (in the future) interaction/
+	 * targeting controllers.
 	 *
 	 * @return {@code true} when modern WASD/E/click may act on the world.
 	 */
 	public static boolean isGameplayInputAllowed() {
-		return true;
+		return !chatInputActive;
+	}
+
+	/**
+	 * Returns whether the chatbox is currently in text-input mode.
+	 */
+	public static boolean isChatInputActive() {
+		return chatInputActive;
+	}
+
+	// ---- Private helpers ----
+
+	/**
+	 * Tracks the chatbox text-input state using Enter-key edge-detection.
+	 *
+	 * <p>Pressing Enter toggles between "gameplay mode" and "chat typing mode".
+	 * Escape also closes the chat (RS default behaviour handled by the CS2
+	 * chatbox script); we mirror that here to keep the flag in sync.
+	 *
+	 * <p>This is called every frame from {@link #update()}, before the
+	 * mode-specific dispatch, so the flag is current for the entire frame.
+	 */
+	private static void updateChatInputState() {
+		boolean enterPressed = Keyboard.pressedKeys[Keyboard.KEY_ENTER];
+		boolean escPressed = Keyboard.pressedKeys[KEY_ESCAPE];
+
+		// Enter edge-detection: toggle on press (not hold)
+		if (enterPressed && !enterWasPressed) {
+			chatInputActive = !chatInputActive;
+		}
+		enterWasPressed = enterPressed;
+
+		// Escape always closes chat input
+		if (escPressed) {
+			chatInputActive = false;
+		}
+
+		// When camera mode switches to ORIGINAL, reset chat state
+		if (CameraMode.getCurrent() == CameraMode.Mode.ORIGINAL) {
+			chatInputActive = false;
+			enterWasPressed = enterPressed;
+		}
 	}
 }

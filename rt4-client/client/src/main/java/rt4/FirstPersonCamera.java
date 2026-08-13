@@ -116,34 +116,44 @@ public final class FirstPersonCamera {
 		fpCamX = PlayerList.self.xFine;
 		fpCamZ = PlayerList.self.zFine;
 
-		// Head bob based on movement (optional polish)
-		updateHeadBob();
+		// Head bob is disabled for stability (Phase 3 stabilization).
+		// The code is preserved so it can be re-enabled later as polish.
+		// updateHeadBob();
+		fpCamYOffset = 0;
 
 		// --- Mouse Look ---
-		int curX = Mouse.currentMouseX;
-		int curY = Mouse.currentMouseY;
-
-		if (cursorLocked) {
-			updateLockedMouseLook(curX, curY);
-		} else if (curX >= 0 && curY >= 0) {
-			if (lastMouseLookX >= 0 && lastMouseLookY >= 0) {
-				int deltaX = curX - lastMouseLookX;
-				int deltaY = curY - lastMouseLookY;
-
-				// Yaw: mouse right -> yaw decreases (turn right)
-				fpCamYaw -= deltaX * mouseSensitivity;
-				fpCamYaw &= 0x7FF; // Wrap at 2048
-
-				// Pitch: mouse down -> pitch increases (look down)
-				fpCamPitch += deltaY * mouseSensitivity;
-				if (fpCamPitch < PITCH_MIN) fpCamPitch = PITCH_MIN;
-				if (fpCamPitch > PITCH_MAX) fpCamPitch = PITCH_MAX;
-			}
-			lastMouseLookX = curX;
-			lastMouseLookY = curY;
-		} else {
+		// Skip mouse-look when chat input is active to prevent camera
+		// disturbance while typing.
+		if (ModernControlController.isChatInputActive()) {
+			// Reset tracking so no delta accumulates while typing
 			lastMouseLookX = -1;
 			lastMouseLookY = -1;
+		} else {
+			int curX = Mouse.currentMouseX;
+			int curY = Mouse.currentMouseY;
+
+			if (cursorLocked) {
+				updateLockedMouseLook(curX, curY);
+			} else if (curX >= 0 && curY >= 0) {
+				if (lastMouseLookX >= 0 && lastMouseLookY >= 0) {
+					int deltaX = curX - lastMouseLookX;
+					int deltaY = curY - lastMouseLookY;
+
+					// Yaw: mouse right -> yaw decreases (turn right)
+					fpCamYaw -= deltaX * mouseSensitivity;
+					fpCamYaw &= 0x7FF; // Wrap at 2048
+
+					// Pitch: mouse down -> pitch increases (look down)
+					fpCamPitch += deltaY * mouseSensitivity;
+					if (fpCamPitch < PITCH_MIN) fpCamPitch = PITCH_MIN;
+					if (fpCamPitch > PITCH_MAX) fpCamPitch = PITCH_MAX;
+				}
+				lastMouseLookX = curX;
+				lastMouseLookY = curY;
+			} else {
+				lastMouseLookX = -1;
+				lastMouseLookY = -1;
+			}
 		}
 
 		// --- Write to Camera fields ---
@@ -230,15 +240,18 @@ public final class FirstPersonCamera {
 	// ---- Private helpers ----
 
 	private static void updateHeadBob() {
-		// Subtle head bob based on player movement state
-		// Only apply when player is moving (has movement queue)
+		// Head bob disabled (Phase 3 stabilization).
+		// Preserved for future re-enable as optional polish.
+		// When re-enabling, also uncomment the call in update() and
+		// remove the fpCamYOffset = 0 override.
+		/*
 		if (PlayerList.self.movementQueueSize > 0) {
 			bobPhase = (bobPhase + 96) & 0x7FF;
 			fpCamYOffset = MathUtils.sin[bobPhase] >> 10;
 		} else {
-			// Decay bob when idle
 			fpCamYOffset = fpCamYOffset * 3 / 4;
 		}
+		*/
 	}
 
 	private static void updateLockedMouseLook(int mouseX, int mouseY) {

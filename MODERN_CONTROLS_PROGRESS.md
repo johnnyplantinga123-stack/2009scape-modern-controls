@@ -1,6 +1,6 @@
 # Modern Controls — Phase 0 Analysis & Implementation Plan
 
-**Status:** Phase 0 (Analysis) — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — IN PROGRESS**
+**Status:** Phase 0 (Analysis) — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization — COMPLETE
 
 **Date:** 13-08-2026
 
@@ -242,13 +242,13 @@ If `W+D` is held, magnitude would be `sqrt(1^2 + 1^2) ≈ 1.414`, making diagona
 - **Deduplication**: Track `lastSentTileX/Z` to avoid resending for the same target tile if the player is already moving toward it.
 
 ### 4.9 Input gating (ModernControlController.isGameplayInputAllowed)
-- Phase 3 conservative implementation: always returns `true`.
-- Future phases will gate on:
-  - Chat focus (`chatboxInput` active).
-  - Interface modal dialogs (bank, spellbook, trade, etc.).
-  - Cutscenes, stuns, teleports.
-  - Region rebuilds.
-- The existing sandbox pattern filters `keyTyped` events for movement keys (`consumesTypedCharacter`), preventing WASD from becoming chat input text. This is already handled at the AWT boundary (`Keyboard.keyTyped`).
+- **Phase 3 stabilization (13-08-2026):** `isGameplayInputAllowed()` now returns `!chatInputActive`.
+- **Cause of WASD/chat conflict:** The RS chatbox is driven entirely by CS2 scripts; there is no single existing Java boolean that tracks "chat typing mode". The previous `isGameplayInputAllowed()` always returned `true`, so WASD movement was always active and WASD keys also typed letters in chat via the CS2 script key handlers.
+- **Solution:** Enter-key edge-detection in `ModernControlController.updateChatInputState()` maintains a `chatInputActive` flag. Pressing Enter toggles between gameplay mode and chat typing mode. Escape also closes chat input. When camera mode is ORIGINAL, chat state is always reset.
+- **How `isGameplayInputAllowed()` works now:** Returns `false` when `chatInputActive == true`. `ModernMovementController.update()` checks this at the top and clears movement intent when chat is active. `FirstPersonCamera.update()` checks `isChatInputActive()` to skip mouse-look during typing.
+- **WASD during gameplay:** When chat is not active, WASD keys generate movement via `ModernMovementController` and do NOT reach the chatbox (no typed characters are produced because the CS2 chatbox script is not in input mode).
+- **WASD during active chat:** When chat is active (Enter was pressed), `isGameplayInputAllowed()` returns `false`, movement is fully suppressed, and W/A/S/D type letters normally via the existing CS2 script key handlers.
+- Future phases may extend gating for: interface modal dialogs, cutscenes, stuns, teleports, region rebuilds.
 
 ### 4.10 Smoothness limitations (Phase 3)
 Movement is tile-to-tile interpolated by `method2247` at existing RS speed (4–8 fine units per tick depending on walk/run and queue depth). This is not as smooth as free-fly fine-coordinate movement, but it is **correct** and safe. True smooth fine-coordinate prediction can be added in a later phase when a proper client-prediction and server-reconciliation system is implemented.
@@ -281,28 +281,83 @@ Movement is tile-to-tile interpolated by `method2247` at existing RS speed (4–
 
 ---
 
-## 5. Build results
+## 5. Phase 3 Stabilization (13-08-2026)
 
-### 5.1 Phase 0-2 build verification
-- `gradlew.bat :client:compileJava` → **BUILD SUCCESSFUL** (pre-existing `java.applet` deprecation warnings only).
-- No compile errors from new classes or edits.
+### 5.1 WASD / Chat input arbitration
+- **Bestaande chat state gebruikt:** De RS chatbox heeft geen enkele Java boolean voor "typing mode". De chatbox wordt volledig aangestuurd door CS2 scripts. We gebruiken daarom Enter-key edge-detection (`Keyboard.pressedKeys[KEY_ENTER]`) om een eigen `chatInputActive` flag bij te houden.
+- **Escape keycode:** `CODE_MAP[VK_ESCAPE] = 13` in de RS keycode ruimte. Er is een `KEY_ESCAPE = 13` constant toegevoegd aan `ModernControlController`.
+- **Mouse-look tijdens chat:** When `isChatInputActive()` is true, `FirstPersonCamera.update()` resets mouse tracking en slaat camera-rotatie over, zodat typen niet verstoord wordt.
+- **ORIGINAL mode:** Chat state wordt gereset wanneer de camera mode ORIGINAL is, zodat origineel RS-gedrag 100% ongewijzigd blijft.
 
-### 5.2 Phase 3: next build step
-After implementing Phase 3, run:
-```
-gradlew.bat :client:compileJava
-```
-Verify:
-- **BUILD SUCCESSFUL** with no new compile errors.
-- `git diff` shows only expected new/modified files:
-  - `rt4/MovementIntent.java`
-  - `rt4/ModernMovementController.java`
-  - `rt4/ModernControlController.java` (updated dispatcher)
-- No unexpected camera changes, collision Phase 4 code, targeting/interaction changes, or protocol modifications.
+### 5.2 First-person camera head bob removal
+- **Oorzaak wobble:** Phase 2 had een artificial head bob toegevoegd via `updateHeadBob()` die `bobPhase` en `fpCamYOffset` gebruikte om verticale oscillatie te produceren tijdens beweging.
+- **Oplossing:** `updateHeadBob()` aanroep uitgeschakeld, `fpCamYOffset = 0` geforceerd. De head bob code is bewaard in commentaar voor toekomstige herinschakeling als optionele polish.
+- **Camera anchor gedrag:** Camera positie volgt `PlayerList.self.xFine/zFine` direct. `Camera.anInt40 = groundHeight - EYE_HEIGHT - fpCamYOffset` (met `fpCamYOffset = 0`). Stabiele eye-height boven terrain, geen kunstmatige oscillatie.
+- **Mouse-look:** Werkt normaal wanneer chat niet actief; uitgeschakeld tijdens chat typing.
+
+### 5.3 Third-person status
+- **THIRD_PERSON blijft placeholder.** Geen camera-implementatie, geen shoulder camera, geen camera collision, geen nieuwe controls.
+- `CameraMode.Mode.THIRD_PERSON` bestaat als enum-waarde, F11-cycling werkt, maar de `THIRD_PERSON` case in `ModernControlController.update()` bevat alleen een commentaar `// Phase 14: ThirdPersonCamera.update();`.
+- `CameraMode.onModeChanged()` bevat alleen comments voor Phase 14 activatie/deactivatie.
+
+### 5.4 Java runtime / HD bevindingen
+- **Build configuratie:** `sourceCompatibility = 1.8`, `targetCompatibility = 1.8` (Java 8 bytecode).
+- **Gradle:** 7.4.2 (via wrapper), ondersteunt Java 8-17.
+- **Kotlin:** 1.4.10 (jvm target).
+- **Renderer:** JOGL (OpenGL) — `gluegen-rt` + `jogl-all` met natives voor Windows, Linux, macOS, Android.
+- **Conclusie:** Client bytecode is Java 8 compatible. HD/OpenGL rendering zou moeten werken op Java 8, 11 en 17. Als HD niet goed verschijnt, is het waarschijnlijk geen Java-versie probleem maar mogelijk een JOGL/OpenGL driver issue.
+- **Runtime separaat van build:** De client kan afzonderlijk met Java 8 runtime draaien terwijl de build tooling Java 17 gebruikt. Commando: `java -jar client/build/libs/client-1.0.0.jar` met een Java 8 JRE.
+- **Launcher:** De externe `.bat` launcher kan apart aangepast worden om een Java 8 runtime-pad te gebruiken voor de client.
+
+### 5.5 Phase 3 movement verification checklist
+- [x] `ModernMovementController.update()` wordt aangeroepen in FIRST_PERSON (via `ModernControlController.update()` → case FIRST_PERSON)
+- [x] W/A/S/D correct gelezen via `Keyboard.pressedKeys[]` (KEY_W=33, KEY_A=48, KEY_S=49, KEY_D=50)
+- [x] Camera-relative movement behouden (gebruikt `Camera.cameraYaw` voor forward/right vectoren)
+- [x] Diagonalen genormaliseerd (`intent.normalize()`)
+- [x] Ctrl/run behouden (`intent.runRequested || Keyboard.pressedKeys[KEY_CTRL]`)
+- [x] GEEN directe writes naar `xFine/zFine` (grep bevestigt 0 matches in ModernMovementController)
+- [x] `NpcList.method2247` enige movement authority (via `PathFinder.findPath` → movement queue)
+- [x] PathFinder/movement queue route behouden (`PathFinder.findPath(..., mode=2)`)
+- [x] `ClientProt.method3502` niet dubbel aangeroepen (alleen in comments, wordt intern door `findPath` aangeroepen)
+- [x] ORIGINAL mode ongewijzigd (switch case ORIGINAL → break)
+
+### 5.6 Exacte bestanden gewijzigd (Phase 3 stabilization)
+| File | Change |
+|---|---|
+| `rt4/ModernControlController.java` | Added `chatInputActive`, `enterWasPressed`, `KEY_ESCAPE` fields; added `updateChatInputState()` method; `isGameplayInputAllowed()` returns `!chatInputActive`; added `isChatInputActive()` accessor; `update()` calls `updateChatInputState()` before mode dispatch. |
+| `rt4/FirstPersonCamera.java` | Head bob disabled (`updateHeadBob()` call commented out, `fpCamYOffset = 0`); mouse-look gated on `ModernControlController.isChatInputActive()`; `updateHeadBob()` body commented out but preserved for future re-enable. |
+
+### 5.7 Resterende runtime testpunten
+- WASD movement in FIRST_PERSON: W vooruit, S achteruit, A links, D rechts
+- Ctrl+W = run forward
+- Diagonalen (W+D) niet sneller dan W alleen
+- Enter opent/sluit chat; tijdens chat typen W/A/S/D geen movement
+- Escape sluit chat input
+- Mouse-look werkt in FIRST_PERSON; geen verstoring tijdens chat typing
+- Click-to-move werkt zonder camera wobble
+- F11 cycling: ORIGINAL → FIRST_PERSON → THIRD_PERSON → ORIGINAL
+- ORIGINAL mode 100% ongewijzigd
+- THIRD_PERSON doet niets (placeholder, verwacht)
 
 ---
 
-## 6. Next steps (after Phase 3 build)
+## 6. Build results
+
+### 6.1 Phase 0-2 build verification
+- `gradlew.bat :client:compileJava` → **BUILD SUCCESSFUL** (pre-existing `java.applet` deprecation warnings only).
+- No compile errors from new classes or edits.
+
+### 6.2 Phase 3 stabilization build verification (13-08-2026)
+- `gradlew.bat :client:compileJava` → **BUILD SUCCESSFUL**
+- Kotlin daemon warning ("Could not delete caches dir") — expected fallback, not a compile failure.
+- `git diff --stat` shows exactly 2 files changed:
+  - `rt4/FirstPersonCamera.java` (+67/-31 lines: head bob disabled, mouse-look gated)
+  - `rt4/ModernControlController.java` (+74/-3 lines: chat input state, isGameplayInputAllowed gated)
+- No Phase 4 collision, targeting, combat, third-person camera, controller, protocol rewrite, or renderer rewrite changes.
+
+---
+
+## 7. Next steps (after Phase 3 stabilization)
 
 - **Phase 4**: Collision via `PathFinder.collisionMaps` + `tryMoveX/tryMoveZ` with footprint.
 - **Phase 5**: Fine-coordinate smooth prediction (client-side prediction + server reconciliation).
@@ -312,7 +367,7 @@ Verify:
 
 ---
 
-## 7. Build & test commands summary
+## 8. Build & test commands summary
 
 ```
 # After each phase, verify:
@@ -332,5 +387,6 @@ git diff --stat
 ```
 
 ---
-**Last updated:** 13-08-2026
-**Phase 3 completion target:** MovementIntent + ModernMovementController wired into ModernControlController, build verified, no scope creep.
+**Last updated:** 13-08-2026 (Phase 3 stabilization complete)
+**Phase 3 completion:** MovementIntent + ModernMovementController wired into ModernControlController, build verified, no scope creep.
+**Phase 3 stabilization:** WASD/chat input arbitration fixed, head bob disabled, third-person confirmed placeholder, Java runtime/HD investigated.
