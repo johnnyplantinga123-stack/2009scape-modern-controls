@@ -103,6 +103,35 @@ public final class FirstPersonCamera {
 	}
 
 	/**
+	 * Resets camera state to safe defaults when transitioning away from
+	 * FIRST_PERSON mode. This prevents extreme pitch/yaw values from being
+	 * inherited by the next camera mode (e.g., camera ending up under terrain
+	 * after looking straight up in FPS and pressing F11).
+	 *
+	 * <p>Called from {@link CameraMode#onModeChanged} when leaving FIRST_PERSON.
+	 */
+	public static void resetToSafeDefaults() {
+		// Reset pitch to a neutral forward-looking value.
+		// The original camera system uses pitch 128..383 (down from horizon).
+		// 256 is a moderate downward angle, safe for the original camera.
+		Camera.cameraPitch = 256;
+		Camera.pitchTarget = 256;
+
+		// Keep the current yaw (player's facing direction) — this is natural.
+		// The original camera system will take over and adjust from here.
+
+		// Reset height offset to zero (no FP eye offset).
+		Camera.anInt40 = 0;
+
+		// Reset FP-specific state so re-entering FPS starts clean.
+		fpCamPitch = 0;
+		fpCamYOffset = 0;
+		bobPhase = 0;
+		lastMouseLookX = -1;
+		lastMouseLookY = -1;
+	}
+
+	/**
 	 * Called every frame when FIRST_PERSON is active.
 	 * Updates camera state and writes to Camera fields.
 	 */

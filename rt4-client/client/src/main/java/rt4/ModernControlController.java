@@ -63,6 +63,12 @@ public final class ModernControlController {
 	/** Previous frame's Enter-key state, used for edge-detection. */
 	private static boolean enterWasPressed = false;
 
+	// ---- WASD key codes (must match ModernMovementController) ----
+	private static final int KEY_W = 33;
+	private static final int KEY_A = 48;
+	private static final int KEY_S = 49;
+	private static final int KEY_D = 50;
+
 	private ModernControlController() {
 	}
 
@@ -111,6 +117,52 @@ public final class ModernControlController {
 	 */
 	public static boolean isChatInputActive() {
 		return chatInputActive;
+	}
+
+	/**
+	 * Resets the chat input state to inactive. Called on camera mode
+	 * transitions to prevent stale chat state from crossing mode boundaries.
+	 */
+	public static void resetChatState() {
+		chatInputActive = false;
+		enterWasPressed = Keyboard.pressedKeys[Keyboard.KEY_ENTER];
+	}
+
+	/**
+	 * Returns whether the given typed key entry should be forwarded to the
+	 * interface/chat system. When in a modern camera mode with gameplay input
+	 * allowed (chat not active), WASD movement keys are filtered out so they
+	 * do not reach the CS2 chatbox script as typed characters.
+	 *
+	 * <p>This is the correct fix for the WASD/chat conflict: instead of just
+	 * blocking movement (which the previous approach did), we prevent the
+	 * character codes from reaching the chat text insertion path entirely.
+	 *
+	 * @param keyCode the game keycode from {@link Keyboard#keyCode}, or -1 for char-only entries.
+	 * @param keyChar the character from {@link Keyboard#keyChar}, or -1 for code-only entries.
+	 * @return {@code true} if the entry should be delivered to interface onKey handlers.
+	 */
+	public static boolean shouldForwardKeyToChat(int keyCode, int keyChar) {
+		if (CameraMode.getCurrent() == CameraMode.Mode.ORIGINAL) {
+			return true; // Original mode: never filter
+		}
+		if (chatInputActive) {
+			return true; // Chat typing active: allow all keys through
+		}
+		// In modern gameplay mode with chat closed, block movement keys
+		// from reaching the chatbox. Both the keycode entry (from keyPressed)
+		// and the character entry (from keyTyped) must be filtered.
+		if (keyCode == KEY_W || keyCode == KEY_A || keyCode == KEY_S || keyCode == KEY_D) {
+			return false;
+		}
+		// Also filter the character-only entries (keyCode == -1) for w/a/s/d
+		if (keyCode < 0) {
+			if (keyChar == 'w' || keyChar == 'W' || keyChar == 'a' || keyChar == 'A'
+					|| keyChar == 's' || keyChar == 'S' || keyChar == 'd' || keyChar == 'D') {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	// ---- Private helpers ----

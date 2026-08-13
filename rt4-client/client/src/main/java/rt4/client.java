@@ -1153,9 +1153,15 @@ public final class client extends GameShell {
 
 	@OriginalMember(owner = "client!client", name = "d", descriptor = "(B)V")
 	private void mainUpdate() {
-		for (InterfaceList.keyQueueSize = 0; Keyboard.nextKey() && InterfaceList.keyQueueSize < 128; InterfaceList.keyQueueSize++) {
+		for (InterfaceList.keyQueueSize = 0; Keyboard.nextKey() && InterfaceList.keyQueueSize < 128; ) {
+			// Filter movement keys from chat when in modern gameplay mode
+			// (Phase 3 stabilization pass 2 - WASD/chat input fix)
+			if (!ModernControlController.shouldForwardKeyToChat(Keyboard.keyCode, Keyboard.keyChar)) {
+				continue;
+			}
 			InterfaceList.keyCodes[InterfaceList.keyQueueSize] = Keyboard.keyCode;
 			InterfaceList.keyChars[InterfaceList.keyQueueSize] = Keyboard.keyChar;
+			InterfaceList.keyQueueSize++;
 		}
 		Protocol.sceneDelta++;
 		if (InterfaceList.topLevelInterface != -1) {

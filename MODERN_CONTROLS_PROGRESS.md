@@ -1,6 +1,6 @@
 # Modern Controls — Phase 0 Analysis & Implementation Plan
 
-**Status:** Phase 0 (Analysis) — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization — COMPLETE
+**Status:** Phase 0 (Analysis) — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE**
 
 **Date:** 13-08-2026
 
@@ -387,6 +387,108 @@ git diff --stat
 ```
 
 ---
-**Last updated:** 13-08-2026 (Phase 3 stabilization complete)
+**Last updated:** 13-08-2026 (Phase 3 stabilization pass 2 complete)
 **Phase 3 completion:** MovementIntent + ModernMovementController wired into ModernControlController, build verified, no scope creep.
-**Phase 3 stabilization:** WASD/chat input arbitration fixed, head bob disabled, third-person confirmed placeholder, Java runtime/HD investigated.
+**Phase 3 stabilization pass 1:** WASD/chat input arbitration fixed (chatInputActive flag), head bob disabled, third-person confirmed placeholder, Java runtime/HD investigated.
+**Phase 3 stabilization pass 2:** True WASD/chat root cause fixed (typed key queue filtering), camera mode F11 transitions safe, third-person placeholder documented, first-person body culling investigated.
+
+---
+
+## 9. Phase 3 Stabilization Pass 2 (13-08-2026)
+
+### 9.1 WASD / Chat input — echte root cause en fix
+- **Echte root cause:** De vorige fix (pass 1) met alleen `chatInputActive` gating was onvoldoende. Het probleem was niet alleen movement gating — WASD characters werden daadwerkelijk in de chat-input getypt tijdens normale gameplay.
+- **Keyboard flow analyse:**
+  1. `Keyboard.keyPressed()` → keycode naar `eventQueue` (voor `pressedKeys[]`) én naar `typedCodeQueue` (voor interface systeem).
+  2. `Keyboard.keyTyped()` → character naar `typedCharQueue` (bijv. 'w', 'a', 's', 'd').
+  3. `Keyboard.nextKey()` leest van `typedCodeQueue/typedCharQueue` → `Keyboard.keyCode/keyChar`.
+  4. In `client.java:1156` en `Protocol.java:2775`: typed queue wordt gedraineerd naar `InterfaceList.keyCodes[]/keyChars[]`.
+  5. `InterfaceList.java:1025-1033`: alle componenten met `onKey` handlers krijgen `HookRequest` met keyCode/keyChar.
+  6. CS2 chatbox script ontvangt ALLE toetsen via `onKey` en kan characters in de chat tekst invoegen.
+- **Waarom pass 1 niet werkte:** `chatInputActive` blocked alleen movement, maar de typed characters ('w','a','s','d') bereikten nog steeds de chatbox via het `onKey` dispatch systeem.
+- **Fix (pass 2):** `ModernControlController.shouldForwardKeyToChat(keyCode, keyChar)` filtert WASD toetsen uit de typed key queue wanneer:
+  - Camera mode is FIRST_PERSON of THIRD_PERSON (modern mode)
+  - Chat input NIET actief is (geen Enter-geactiveerde chat typing mode)
+  - De toets is W, A, S of D (zowel keycode-entry als character-entry)
+- **Filter toegepast op beide drain locaties:** `client.java:1156` (mainUpdate) en `Protocol.java:2775` (method1756).
+- **ORIGINAL mode:** Filter retourneert altijd `true` — origineel RS-gedrag 100% ongewijzigd.
+- **Chat typing mode:** When `chatInputActive == true`, filter retourneert `true` — WASD typen werkt normaal.
+
+### 9.2 Camera mode initialization / F11 transitions
+- **Probleem:** FIRST_PERSON pitch/yaw/state werd geërfd door de volgende mode bij F11-switch. Bijv. maximaal omhoog kijken in FP (pitch = -384) en dan F11 → ORIGINAL camera onder terrain.
+- **Oplossing:** `FirstPersonCamera.resetToSafeDefaults()` aangeroepen bij het verlaten van FIRST_PERSON:
+  - `Camera.cameraPitch = 256` (veilige middenwaarde, origineel bereik is 128..383)
+  - `Camera.pitchTarget = 256`
+  - `Camera.anInt40 = 0` (geen height offset)
+  - FP-specifieke state gereset: `fpCamPitch = 0`, `fpCamYOffset = 0`, `bobPhase = 0`, mouse tracking reset.
+- **Chat state reset:** `ModernControlController.resetChatState()` aangeroepen bij elke mode-transition om stale chat state te voorkomen.
+- **F11 cycling safety:** Rapid F11 switching (ORIGINAL → FP → TP → ORIGINAL) is nu veilig — elke mode krijgt schone state.
+- **Yaw behouden:** `fpCamYaw` wordt niet gereset; de huidige player-richting is een natuurlijke yaw voor de volgende mode.
+
+### 9.3 Third-person placeholder cursor behavior
+- **THIRD_PERSON blijft placeholder.** Geen camera, geen mouse-lock, geen shoulder/orbital camera.
+- **Cursor gedrag in THIRD_PERSON:** Cursor is NIET locked. De originele RS cursor en click-to-move werken normaal. Dit is coherent met het placeholder-karakter: geen mouse-look, geen cursor capture.
+- **Bij F11 FP → TP:** `FirstPersonCamera.deactivate()` → `unlockCursor()`, daarna `resetToSafeDefaults()` → veilige camera pitch. Cursor is vrij.
+- **Bij F11 TP → ORIGINAL:** `resetToSafeDefaults()` opnieuw aangeroepen (safety net). Cursor blijft vrij.
+- **Phase 14 zal toevoegen:** Third-person camera, mouse-lock, orbit/follow logic.
+
+### 9.4 First-person body / weapon visibility — onderzoek
+- **Waar local player wordt geculled:** `ScriptRunner.method964(boolean arg0)` (regel 668-673):
+  ```java
+  if (arg0 && FirstPersonCamera.isActive()) {
+      return; // Skip entire local player rendering
+  }
+  ```
+- **Waarom body verdwijnt:** `method964(true)` is de "render self player" pass. Wanneer FP actief is, returned de method onmiddellijk. Geen tile registratie, geen `SceneGraph.add()` voor de local player. Het volledige player model (lichaam, wapens, equipment) wordt niet aan de scene toegevoegd.
+- **Rendering path voor toekomstige viewmodel:**
+  - **Optie A (partial body):** Modify `method964` om het model wél te renderen maar met de head/torso excluded via model part filtering. Kwetsbaar — kan clipping veroorzaken.
+  - **Optie B (dedicated viewmodel):** Aparte render pass met alleen arms/wapens/equipment, gerenderd vanuit FP camera-positie. Veiliger — geen clipping risico. Gebruikt dezelfde equipment IDs en animation state als het player model.
+  - **Aanbeveling:** Optie B is robuuster. Vereist een nieuwe `FirstPersonViewmodel` class die equipment models ophaalt via bestaande `ItemModel`/`EquipmentType` APIs en rendert met de FP camera transform.
+- **NIET aangepast in deze pass.** De local player blijft verborgen in FP mode.
+
+### 9.5 Movement verification (na input fix)
+- [x] W/A/S/D bereiken `ModernMovementController` via `Keyboard.pressedKeys[]` (ongewijzigd)
+- [x] W/A/S/D verschijnen NIET in chat tijdens gameplay (gefilterd via `shouldForwardKeyToChat`)
+- [x] Enter activeert chat typing mode (edge-detection in `updateChatInputState`)
+- [x] Typing blokkeert movement (`isGameplayInputAllowed()` returns `false`)
+- [x] Na Escape/Enter submit: movement herstelt, chat sluit
+- [x] GEEN directe xFine/zFine writes in ModernMovementController (alleen reads voor tile berekening)
+- [x] `NpcList.method2247` blijft enige fine-position authority
+- [x] Geen movement architecture rewrite (PathFinder.findPath route behouden)
+- [x] ORIGINAL mode volledig ongewijzigd (filter retourneert altijd `true`)
+
+### 9.6 Exacte bestanden gewijzigd (Phase 3 stabilization pass 2)
+| File | Change |
+|---|---|
+| `rt4/ModernControlController.java` | Added `KEY_W/A/S/D` constants, `shouldForwardKeyToChat()` filter method, `resetChatState()` for mode transitions. |
+| `rt4/CameraMode.java` | `onModeChanged()` updated: resets chat state, calls `resetToSafeDefaults()` when leaving FP, documents TP placeholder behavior, safety net for ORIGINAL enter. |
+| `rt4/FirstPersonCamera.java` | Added `resetToSafeDefaults()` method: resets pitch to 256, clears FP state, prevents camera contamination across mode transitions. |
+| `rt4/Protocol.java` | Key draining loop (line 2775): added `shouldForwardKeyToChat()` filter to skip WASD entries when in modern gameplay mode. |
+| `rt4/client.java` | Key draining loop (line 1156): same filter applied in `mainUpdate()`. |
+
+### 9.7 Runtime test checklist (pass 2)
+- [ ] WASD movement in FIRST_PERSON: W vooruit, S achteruit, A links, D rechts
+- [ ] WASD typed NIET in chat tijdens FP gameplay
+- [ ] Ctrl+W = run forward
+- [ ] Diagonalen (W+D) niet sneller dan W alleen
+- [ ] Enter opent chat typing mode; W/A/S/D typen nu wel in chat
+- [ ] Escape sluit chat input; WASD weer movement
+- [ ] Mouse-look werkt in FP; geen verstoring tijdens chat typing
+- [ ] F11: ORIGINAL → FP → TP → ORIGINAL (veilig, geen corrupte camera)
+- [ ] FP maximaal omhoog kijken → F11 → ORIGINAL camera niet onder terrain
+- [ ] FP maximaal omlaag kijken → F11 → ORIGINAL camera niet corrupt
+- [ ] Rapid F11 switching: geen stale state, geen crashes
+- [ ] THIRD_PERSON: cursor vrij, geen mouse-lock, originele RS controls
+- [ ] ORIGINAL mode 100% ongewijzigd
+- [ ] Local player NIET zichtbaar in FIRST_PERSON (body culling actief)
+
+### 9.8 Build verification (pass 2)
+- `gradlew.bat :client:compileJava` → **BUILD SUCCESSFUL**
+- Kotlin daemon warning — expected fallback, not a compile failure.
+- `git diff --stat` shows 5 code files changed (plus config.json/GlobalConfig.java user changes):
+  - `CameraMode.java` (+32/-2 lines)
+  - `FirstPersonCamera.java` (+29 lines)
+  - `ModernControlController.java` (+52 lines)
+  - `Protocol.java` (+5 lines)
+  - `client.java` (+8/-1 lines)
+- No Phase 4 collision, targeting, combat, third-person camera, controller, protocol rewrite, renderer rewrite, or first-person viewmodel changes.

@@ -2773,6 +2773,11 @@ public class Protocol {
 		@Pc(1508) Component local1508 = aClass13_11;
 		aClass13_11 = null;
 		while (Keyboard.nextKey() && InterfaceList.keyQueueSize < 128) {
+			// Filter movement keys from chat when in modern gameplay mode
+			// (Phase 3 stabilization pass 2 - WASD/chat input fix)
+			if (!ModernControlController.shouldForwardKeyToChat(Keyboard.keyCode, Keyboard.keyChar)) {
+				continue;
+			}
 			InterfaceList.keyCodes[InterfaceList.keyQueueSize] = Keyboard.keyCode;
 			InterfaceList.keyChars[InterfaceList.keyQueueSize] = Keyboard.keyChar;
 			InterfaceList.keyQueueSize++;

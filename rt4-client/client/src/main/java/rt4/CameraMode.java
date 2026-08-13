@@ -86,19 +86,47 @@ public final class CameraMode {
 
 	/**
 	 * Handles activation/deactivation when mode changes.
+	 *
+	 * <p>Each camera mode gets its own clean state on entry:
+	 * <ul>
+	 *   <li>FIRST_PERSON: anchors at player position, safe pitch, cursor locked.</li>
+	 *   <li>THIRD_PERSON: placeholder — resets camera to safe defaults, cursor unlocked.
+	 *       No actual third-person camera is built yet (Phase 14).</li>
+	 *   <li>ORIGINAL: restores legacy camera system, releases cursor lock,
+	 *       resets pitch to safe value so FP state doesn't contaminate.</li>
+	 * </ul>
 	 */
 	private static void onModeChanged(Mode previous, Mode next) {
+		// Reset chat input state on any mode transition to prevent
+		// inconsistent state across mode boundaries.
+		ModernControlController.resetChatState();
+
 		// Deactivate previous mode's camera
 		if (previous == Mode.FIRST_PERSON) {
 			FirstPersonCamera.deactivate();
+			// Reset camera pitch/yaw to safe values so the next mode
+			// doesn't inherit extreme FP pitch (e.g., looking straight up
+			// could put the camera underground in ORIGINAL/THIRD_PERSON).
+			FirstPersonCamera.resetToSafeDefaults();
 		}
-		// Third-person deactivation would go here in Phase 14
+		// THIRD_PERSON deactivation: nothing to do (placeholder, no camera state)
 
 		// Activate new mode's camera
 		if (next == Mode.FIRST_PERSON) {
 			FirstPersonCamera.activate();
 		}
-		// Third-person activation would go here in Phase 14
+		// THIRD_PERSON activation: placeholder only.
+		// The camera state was already reset to safe defaults above when
+		// leaving the previous mode. No mouse-lock, no camera override.
+		// The original camera system runs in its default state.
+		// Phase 14 will add actual third-person camera here.
+
+		if (next == Mode.ORIGINAL) {
+			// Ensure cursor is fully unlocked for original RS controls.
+			// FirstPersonCamera.deactivate() already calls unlockCursor(),
+			// but this is a safety net for edge cases (e.g., rapid F11 spam).
+			FirstPersonCamera.resetToSafeDefaults();
+		}
 	}
 
 	/**
