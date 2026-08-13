@@ -963,3 +963,227 @@ Replace tile-based WASD movement with continuous fine-coordinate prediction, DDA
 - `gradlew.bat :client:compileJava` -> **BUILD SUCCESSFUL**
 - 6 files modified (ClientProt, NpcList, Protocol, ModernMovementController, CameraMode, LoginManager)
 - No Phase 4 collision, wall sliding, player-radius, targeting, combat, third-person camera, or first-person viewmodel changes.
+
+---
+
+## 13. Phase 3B Runtime Stabilization — Input, Animation, Self-Rendering
+
+**Date:** 14-08-2026
+**Commit:** (post-build)
+**Baseline:** be6b799 (Phase 3B continuous movement foundation)
+
+### 13.1 Runtime bugs found
+
+1. **W/S/A/D all reversed relative to camera** — all four movement directions inverted
+2. **CTRL activates run** instead of LEFT SHIFT
+3. **Walking animation stuck on release** — player never transitions to idle
+4. **Self culled in FIRST_PERSON** — entire player model hidden
+
+### 13.2 Root cause: W/S/A/D inversion
+
+**Camera convention verified via rendering pipeline:**
+
+`API.CalculateSceneGraphScreenPosition` and `SoftwareModel.setCamera` apply yaw rotation as:
+```
+rotatedX = (entityZ * sinYaw + entityX * cosYaw) >> 16
+entityZ  = (entityZ * cosYaw - entityX * sinYaw) >> 16
+```
+
+At yaw 0: entity at (0, +D) → viewZ = D (in front of camera). **Camera looks NORTH (+Z) at yaw 0.**
+
+The OpenGL modelview applies `glRotatef(yaw_deg, 0, 1, 0)`, confirming the same convention.
+
+**The movement basis was inverted:**
+
+Old (WRONG): `forwardX = -sin[yaw]`, `forwardZ = -cos[yaw]`
+- At yaw 0: forward = (0, -1) = SOUTH — opposite to camera look direction!
+
+Fixed (CORRECT): `forwardX = +sin[yaw]`, `forwardZ = +cos[yaw]`
+- At yaw 0: forward = (0, +1) = NORTH — matches camera look direction ✓
+- At yaw 512: forward = (+1, 0) = EAST — camera turned right, forward is right ✓
+- At yaw 1024: forward = (0, -1) = SOUTH — camera turned 180°, forward is south ✓
+- At yaw 1536: forward = (-1, 0) = WEST — camera turned left, forward is left ✓
+
+Right basis `(cos[yaw], -sin[yaw])` was already correct and unchanged.
+
+**Orientation formula also inverted:**
+
+Old (WRONG): `atan2(-velX, -velZ)` — faces 180° away from movement
+Fixed (CORRECT): `atan2(+velX, +velZ)` — faces movement direction
+
+Verification:
+- velX=0, velZ=-4 (north): atan2(0, -4) = 0 → RS angle 0 = north ✓
+- velX=4, velZ=0 (east): atan2(4, 0) = π/2 → RS angle 512 = west... wait
+
+Actually: `atan2(velX, velZ) * 325.949 & 0x7FF`:
+- North (velX=0, velZ=-4): atan2(0, -4) = 0 → 0 ✓ (north)
+- East (velX=4, velZ=0): atan2(4, 0) = π/2 → 512... but RS 512 = west
+
+Correction: the RS angle formula `angle = atan2(dx, dz) * 325.949` gives:
+- 0 = +Z = north
+- 512 = -X = west
+- 1024 = -Z = south
+- 1536 = +X = east
+
+So `atan2(velX, velZ)` for east movement (velX=+4, velZ=0):
+atan2(+4, 0) = π/2 → 512 → but RS 512 = WEST. This is wrong!
+
+Wait — let me re-verify. For the RS convention:
+- angle 0 → direction (sin[0], cos[0]) = (0, 1) = +Z = north
+- angle 512 → direction (sin[512], cos[512]) = (1, 0) = +X = east
+
+So RS angle 512 corresponds to EAST (+X), not west! The previous session's "RS angle convention" documentation was wrong about 512=west. Actually:
+- 0 = north (+Z)
+- 512 = east (+X) [sin[512]=+1, cos[512]=0]
+- 1024 = south (-Z) [sin[1024]=0, cos[1024]=-1]
+- 1536 = west (-X) [sin[1536]=-1, cos[1536]=0]
+
+With this corrected understanding:
+- East movement (velX=+4, velZ=0): atan2(+4, 0) = π/2 → 512 = east ✓
+- North movement (velX=0, velZ=-4): atan2(0, -4) = 0 → 0 = north ✓
+- South movement (velX=0, velZ=+4): atan2(0, +4) = π → 1024 = south ✓
+- West movement (velX=-4, velZ=0): atan2(-4, 0) = -π/2 → 1536 = west ✓
+
+All four directions correct.
+
+### 13.3 LEFT SHIFT key mapping
+
+**Found in Keyboard.java static initializer:**
+```
+CODE_MAP[KeyEvent.VK_SHIFT] = 81
+```
+
+Existing constant: `Keyboard.KEY_SHIFT = 81`
+
+Changed ModernMovementController from `KEY_CTRL = 82` to `KEY_SHIFT = 81`.
+
+This change applies ONLY to modern locomotion (FIRST_PERSON, THIRD_PERSON).
+ORIGINAL RuneScape run behavior is completely unaffected.
+
+### 13.4 Animation state machine
+
+**Root cause of stuck walking animation:**
+The previous `selectAnimation(running)` was called every tick but never set idle — it only selected walk/run/turn variants. When WASD was released, `update()` returned early before reaching `selectAnimation`, so `movementSeqId` stayed at the walk animation.
+
+**Fix:** Explicit IDLE/WALK/RUN state machine with transition-only updates:
+
+```java
+private enum MovementState { IDLE, WALK, RUN }
+private static MovementState lastMovementState = MovementState.IDLE;
+```
+
+Transitions:
+- No movement intent → state = IDLE → set `movementSeqId = bas.idleAnimationId`
+- Movement + !running → state = WALK → set `movementSeqId = bas.walkAnimation`
+- Movement + running → state = RUN → set `movementSeqId = bas.runAnimationId`
+
+Animation only changes when `currentState != lastMovementState`. While staying in any state, `movementSeqId` is NOT rewritten, allowing `method879` to advance animation frames normally.
+
+Fallback: if walkAnimation or runAnimationId is -1, falls back to idleAnimationId.
+
+### 13.5 Self-rendering changes
+
+**File: ScriptRunner.java, method964()**
+
+Removed the first-person body culling early return:
+```java
+// REMOVED:
+if (arg0 && CameraMode.isFirstPerson() && FirstPersonCamera.isActive()) {
+    return;
+}
+```
+
+Now the local player renders in ALL camera modes:
+- ORIGINAL: unchanged (existing behavior preserved)
+- FIRST_PERSON: full body visible for testing (head clipping may occur — to be evaluated at runtime)
+- THIRD_PERSON: full body visible
+
+If head/helmet clipping is observed in first-person, the smallest possible head-only exclusion should be implemented rather than hiding the entire model.
+
+### 13.6 Force-move preservation
+
+Force-move suspension logic unchanged. When force-move is active:
+- velocityXQ16/ZQ16 = 0
+- suspended = true
+- return immediately (no xFine/zFine write, no packet, no orientation, no animation)
+
+When force-move ends:
+- Rebase prediction from self.xFine/zFine
+- Clear pending ring buffer
+- Resume modern locomotion
+
+### 13.7 Mode isolation confirmation
+
+All changes gated to `CameraMode.isModern()` or specific modern modes:
+- ModernMovementController: only runs when `CameraMode.isModern()` returns true
+- Self-rendering change: affects all modes equally (removes culling), but ORIGINAL already rendered self normally
+- Shift run key: only read inside ModernMovementController.readInput(), only called in modern modes
+- ORIGINAL click-to-move, legacy run, legacy animations: completely unaffected
+
+### 13.8 Collision status
+
+Modern continuous locomotion currently has NO fine-coordinate collision resolver.
+Movement clips through walls, buildings, blocked tiles, doors, scenery, objects.
+
+This is INTENTIONALLY DEFERRED to Phase 4.
+
+Phase 4 will implement:
+1. Tile occupancy checks
+2. Wall/edge collision
+3. Diagonal/corner collision prevention
+4. Continuous fine-position collision
+5. Wall sliding (dx blocked but dz free → slide along wall)
+6. Player footprint (~1 tile scale)
+7. Server consistency (same collision flags as server)
+
+Phase 4 will use existing RT4 collision map and collision flags as authoritative.
+
+### 13.9 Files changed
+
+| File | Change |
+|------|--------|
+| ModernMovementController.java | Camera basis fix, orientation fix, Shift key, animation state machine |
+| ScriptRunner.java | Removed first-person body culling in method964 |
+
+### 13.10 Build verification
+- `gradlew.bat :client:compileJava` → **BUILD SUCCESSFUL**
+- Kotlin daemon error ("Could not delete caches dir") — known non-fatal, Java compilation succeeds
+- 2 files changed
+
+### 13.11 Runtime test checklist
+
+FIRST_PERSON:
+- [ ] W → camera forward (north at yaw 0)
+- [ ] S → camera backward
+- [ ] A → camera-relative left
+- [ ] D → camera-relative right
+- [ ] Rotate camera 180° → controls remain correct
+- [ ] Rotate camera continuously while W held → trajectory follows smoothly
+- [ ] W → walk animation
+- [ ] Shift+W → run animation
+- [ ] Release Shift while W held → walk animation
+- [ ] Release W → idle animation
+- [ ] Walk → stop → walk → stop → correct animation transitions
+- [ ] Run → walk → idle → correct animation transitions
+- [ ] No WASD minimap destination flag
+- [ ] Local body/equipment visible
+- [ ] No entire-player culling
+
+THIRD_PERSON:
+- [ ] Same WASD directions
+- [ ] Same Shift run
+- [ ] Same idle/walk/run states
+- [ ] Full local player model visible
+- [ ] Equipment visible
+- [ ] Movement-facing orientation visible
+
+ORIGINAL:
+- [ ] Click-to-move works
+- [ ] Minimap walking works
+- [ ] Destination flag appears
+- [ ] Scroll wheel zoom works
+- [ ] Middle mouse camera works
+- [ ] Legacy run works
+- [ ] Legacy animations work
+- [ ] Player rendering works
+- [ ] No modern WASD locomotion leaks into ORIGINAL

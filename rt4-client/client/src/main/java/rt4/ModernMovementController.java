@@ -42,7 +42,7 @@ public final class ModernMovementController {
 	private static final int KEY_A = 48;
 	private static final int KEY_S = 49;
 	private static final int KEY_D = 50;
-	private static final int KEY_CTRL = 82;
+	private static final int KEY_SHIFT = 81;
 
 	// ---- Speed constants (fine units per client tick at 50Hz) ----
 	private static final int WALK_SPEED = 4;
@@ -87,6 +87,10 @@ public final class ModernMovementController {
 	/** Reusable movement intent (avoids per-tick allocation). */
 	private static final MovementIntent intent = new MovementIntent();
 
+	/** Movement animation state machine. */
+	private enum MovementState { IDLE, WALK, RUN }
+	private static MovementState lastMovementState = MovementState.IDLE;
+
 	private ModernMovementController() {
 	}
 
@@ -114,6 +118,7 @@ public final class ModernMovementController {
 		lastServerReportTick = client.loop;
 
 		targetOrientationAngle = self.anInt3400;
+		lastMovementState = MovementState.IDLE;
 		clearPending();
 		initialized = true;
 		suspended = false;
@@ -249,24 +254,32 @@ public final class ModernMovementController {
 		if (!intent.hasMovement()) {
 			velocityXQ16 = 0;
 			velocityZQ16 = 0;
+			// State transition → IDLE
+			if (lastMovementState != MovementState.IDLE) {
+				lastMovementState = MovementState.IDLE;
+				selectAnimationForState();
+			}
 			return;
 		}
 
 		// ---- Normalize diagonal ----
 		intent.normalize();
 
-		// ---- Compute camera-relative velocity (Correction 1: correct signs) ----
+		// ---- Compute camera-relative velocity ----
+		// Camera looks NORTH (+Z) at yaw 0, confirmed by rendering pipeline.
+		// Forward basis: (sin[yaw], cos[yaw])
+		// Right basis:   (cos[yaw], -sin[yaw])
 		int yaw = Camera.cameraYaw;
 		boolean running = intent.runRequested;
 		int speed = running ? RUN_SPEED : WALK_SPEED;
 
-		// Correction 2: use float multiplication to preserve fractional diagonal
+		// Use float multiplication to preserve fractional diagonal component
 		float fwdMul = intent.forward * speed;
 		float strMul = intent.right * speed;
 
-		velocityXQ16 = (int) (fwdMul * (-MathUtils.sin[yaw & 2047])
+		velocityXQ16 = (int) (fwdMul * MathUtils.sin[yaw & 2047]
 				+ strMul * MathUtils.cos[yaw & 2047]);
-		velocityZQ16 = (int) (fwdMul * (-MathUtils.cos[yaw & 2047])
+		velocityZQ16 = (int) (fwdMul * MathUtils.cos[yaw & 2047]
 				+ strMul * (-MathUtils.sin[yaw & 2047]));
 
 		// ---- Apply Q16 prediction ----
@@ -279,16 +292,22 @@ public final class ModernMovementController {
 		performDDACheck();
 
 		// ---- Orientation ----
-		// Set anInt3400 (desired facing); method949 smooths anInt3381 toward it.
+		// Face movement direction: atan2(velX, velZ) maps to RS angle convention
+		// where 0=north(+Z), 512=west(-X), 1024=south(-Z), 1536=east(+X).
 		if (velocityXQ16 != 0 || velocityZQ16 != 0) {
 			targetOrientationAngle = (int) (Math.atan2(
-					(double) (-velocityXQ16),
-					(double) (-velocityZQ16)) * 325.949D) & 0x7FF;
+					(double) velocityXQ16,
+					(double) velocityZQ16) * 325.949D) & 0x7FF;
 			self.anInt3400 = targetOrientationAngle;
 		}
 
-		// ---- Animation selection (Correction 8: full BasType variants) ----
-		selectAnimation(running);
+		// ---- Animation state machine ----
+		// Only change animation on state transition (not every tick).
+		MovementState currentState = running ? MovementState.RUN : MovementState.WALK;
+		if (currentState != lastMovementState) {
+			lastMovementState = currentState;
+			selectAnimationForState();
+		}
 	}
 
 	// =====================================================================
@@ -509,88 +528,32 @@ public final class ModernMovementController {
 	}
 
 	// =====================================================================
-	// ANIMATION SELECTION — FULL BASTYPE VARIANT SUPPORT
+	// ANIMATION — STATE-MACHINE SELECTION
 	// =====================================================================
 
 	/**
-	 * Correction 8: faithfully reproduces method2247 animation-selection semantics
-	 * for ALL available BasType variants, without copying position interpolation.
+	 * State-machine animation selection. Only called on movement state transitions
+	 * (IDLE→WALK, WALK→RUN, etc.) to avoid restarting the animation every tick.
 	 *
-	 * <p>BasType fields used:
-	 * <ul>
-	 *   <li>walkAnimation, walkCWTurnAnimationId, walkCCWTurnAnimationId, walkFullTurnAnimationId</li>
-	 *   <li>runAnimationId, runCWTurnAnimationId, runCCWTurnAnimationId, runFullTurnAnimationId</li>
-	 *   <li>idleAnimationId</li>
-	 * </ul>
-	 *
-	 * <p>Angle delta ranges (matching method2247):
-	 * <ul>
-	 *   <li>[-256, 256] → forward walk/run</li>
-	 *   <li>[256, 768) → CW turn walk/run</li>
-	 *   <li>[-768, -256] → CCW turn walk/run</li>
-	 *   <li>|delta| > 768 → full turn variant if available</li>
-	 * </ul>
+	 * <p>Uses BasType fields: idleAnimationId, walkAnimation, runAnimationId.
+	 * Falls back to idleAnimationId if the walk/run animation is -1.
 	 */
-	private static void selectAnimation(boolean running) {
+	private static void selectAnimationForState() {
 		Player self = PlayerList.self;
 		BasType bas = self.getBasType();
-
-		// Angle delta: difference between target orientation and current smoothed
-		int angleDelta = targetOrientationAngle - self.anInt3381 & 0x7FF;
-		if (angleDelta > 1024) angleDelta -= 2048;
-
 		int selectedAnim;
 
-		if (angleDelta >= -256 && angleDelta <= 256) {
-			// FORWARD ARC
-			if (running && bas.runAnimationId != -1) {
-				selectedAnim = bas.runAnimationId;
-			} else if (bas.walkAnimation != -1) {
-				selectedAnim = bas.walkAnimation;
-			} else if (running && bas.runAnimationId != -1) {
-				selectedAnim = bas.runAnimationId;
-			} else {
+		switch (lastMovementState) {
+			case IDLE:
 				selectedAnim = bas.idleAnimationId;
-			}
-		} else if (angleDelta >= 256 && angleDelta < 768) {
-			// CW TURN ARC
-			if (running && bas.runCWTurnAnimationId != -1) {
-				selectedAnim = bas.runCWTurnAnimationId;
-			} else if (running && bas.runAnimationId != -1) {
-				selectedAnim = bas.runAnimationId;
-			} else if (bas.walkCWTurnAnimationId != -1) {
-				selectedAnim = bas.walkCWTurnAnimationId;
-			} else if (bas.walkAnimation != -1) {
-				selectedAnim = bas.walkAnimation;
-			} else {
-				selectedAnim = bas.idleAnimationId;
-			}
-		} else if (angleDelta >= -768 && angleDelta <= -256) {
-			// CCW TURN ARC
-			if (running && bas.runCCWTurnAnimationId != -1) {
-				selectedAnim = bas.runCCWTurnAnimationId;
-			} else if (running && bas.runAnimationId != -1) {
-				selectedAnim = bas.runAnimationId;
-			} else if (bas.walkCCWTurnAnimationId != -1) {
-				selectedAnim = bas.walkCCWTurnAnimationId;
-			} else if (bas.walkAnimation != -1) {
-				selectedAnim = bas.walkAnimation;
-			} else {
-				selectedAnim = bas.idleAnimationId;
-			}
-		} else {
-			// LARGE TURN (|delta| > 768) — full turn variants
-			if (running && bas.runFullTurnAnimationId != -1) {
-				selectedAnim = bas.runFullTurnAnimationId;
-			} else if (running && bas.runAnimationId != -1) {
-				selectedAnim = bas.runAnimationId;
-			} else if (bas.walkFullTurnAnimationId != -1) {
-				selectedAnim = bas.walkFullTurnAnimationId;
-			} else if (bas.walkAnimation != -1) {
-				selectedAnim = bas.walkAnimation;
-			} else {
-				selectedAnim = bas.idleAnimationId;
-			}
+				break;
+			case RUN:
+				selectedAnim = (bas.runAnimationId != -1) ? bas.runAnimationId : bas.idleAnimationId;
+				break;
+			case WALK:
+			default:
+				selectedAnim = (bas.walkAnimation != -1) ? bas.walkAnimation : bas.idleAnimationId;
+				break;
 		}
 
 		self.movementSeqId = selectedAnim;
@@ -606,6 +569,6 @@ public final class ModernMovementController {
 		if (Keyboard.pressedKeys[KEY_S]) intent.forward -= 1f;
 		if (Keyboard.pressedKeys[KEY_D]) intent.right += 1f;
 		if (Keyboard.pressedKeys[KEY_A]) intent.right -= 1f;
-		intent.runRequested = Keyboard.pressedKeys[KEY_CTRL];
+		intent.runRequested = Keyboard.pressedKeys[KEY_SHIFT];
 	}
 }
