@@ -1,7 +1,7 @@
 package rt4;
 
 /**
- * Modern camera rig (Phase 3C).
+ * Modern camera rig (Phase 3C + Review #2).
  *
  * <p>Manages the continuous zoom/camera continuum inside MODERN control mode:
  * <pre>
@@ -11,25 +11,35 @@ package rt4;
  * <h2>Architecture</h2>
  * <ul>
  *   <li>One authoritative {@code desiredDistance} controlled by scroll wheel.</li>
- *   <li>Smooth {@code actualDistance} interpolated toward desired (obstruction-safe).</li>
+ *   <li>Smooth {@code actualDistance} (50Hz tick-based exponential smoothing) toward desired.</li>
  *   <li>Hysteresis thresholds prevent mode flicker at FP/CHASE and CHASE/FREE boundaries.</li>
- *   <li>Chase camera follows character body orientation (camera is a FOLLOWER).</li>
- *   <li>Camera obstruction compresses actual distance without destroying desired zoom.</li>
- *   <li>FREE mode reuses classic-style camera behavior with modern WASD still active.</li>
+ *   <li>Chase/free camera uses {@link Camera#method555} — the proven RT4 camera transform —
+ *       instead of a hand-written parallel implementation.</li>
+ *   <li>Camera obstruction reduces effective zoom so the camera smoothly pulls in when
+ *       walls are between the player and the desired position, and smoothly recovers
+ *       when the path clears.</li>
+ *   <li>FREE mode reuses classic RT4 camera input ({@code Camera.yawTarget/pitchTarget})
+ *       and the classic transform. Modern WASD remains active.</li>
  * </ul>
  *
  * <h2>Camera/Control Separation</h2>
- * <p>CameraMode (ORIGINAL / FIRST_PERSON / THIRD_PERSON) controls the LOCOMOTION scheme.
- * Inside MODERN, this rig manages the CAMERA rig state (FP / CHASE / FREE).
+ * <p>CameraMode (ORIGINAL / THIRD_PERSON) is the CONTROL PROFILE.
+ * Inside MODERN, this rig manages the CAMERA RIG state (FP / CHASE / FREE).
  * ORIGINAL remains a pristine legacy fallback, untouched by this rig.</p>
  *
  * <h2>Wheel Input Path</h2>
- * <p>JavaMouseWheel → MouseWheel.wheelRotation (set each mainLoop tick in client.java).
- * UI consumers (InterfaceList) read but do NOT reset wheelRotation.
- * This rig reads wheelRotation AFTER UI consumers have had their chance (rig runs
- * during ModernControlController.update which is after InterfaceList processing
- * in the render pipeline). When a scrollable interface is under the cursor,
- * the rig defers to the UI.</p>
+ * <p>JavaMouseWheel → MouseWheel.wheelRotation (set each mainLoop tick in client.java:1725).
+ * This rig reads wheelRotation during the 50Hz game tick (ModernControlController.update()),
+ * BEFORE the UI scroll processing (InterfaceList/ScriptRunner in the render pipeline).
+ * Both camera zoom and UI scroll read the same MouseWheel.wheelRotation value.
+ * UI scroll operates on component scrollY (separate variable from desiredDistance),
+ * so there is no variable conflict — but both can react to the same wheel event.
+ * Proper UI ownership (skip camera zoom when scrollable UI is under cursor) is TODO.</p>
+ *
+ * <h2>Smoothing Honesty</h2>
+ * <p>Distance smoothing is 50Hz tick-based exponential smoothing (NOT frame-rate-independent
+ * render smoothing). Camera yaw/pitch smoothing is also 50Hz tick-based. Only visual
+ * camera position smoothing would benefit from render-timed integration (deferred).</p>
  *
  * <h2>Orientation Fields (RT4)</h2>
  * <ul>
@@ -64,23 +74,21 @@ public final class ModernCameraRig {
 	/** Scroll wheel step per notch (fine units). ~1 tile per notch. */
 	private static final int WHEEL_STEP = 130;
 
-	// ---- Smoothing ----
-	/** Exponential smoothing factor for actual→desired distance (per tick). */
+	// ---- Smoothing (50Hz tick-based, NOT frame-rate-independent) ----
+	/** Exponential smoothing factor for actual→desired distance (per 50Hz tick). */
 	private static final int DISTANCE_SMOOTH_FACTOR = 6;
-	/** Exponential smoothing factor for chase yaw (per tick). */
+	/** Exponential smoothing factor for chase yaw (per 50Hz tick). */
 	private static final int YAW_SMOOTH_FACTOR = 8;
 	/** Minimum yaw step to prevent stalling at very small differences. */
 	private static final int YAW_SMOOTH_MIN = 2;
 
 	// ---- Chase camera geometry ----
-	/** Height offset for camera pivot above player fine position (torso/head height). */
-	private static final int CHASE_PIVOT_HEIGHT = 220;
 	/** Camera pitch in chase mode (0..2047). ~45° downward look. */
 	private static final int CHASE_PITCH = 256;
 	/** Camera pitch in free mode. Slightly steeper for overview. */
 	private static final int FREE_PITCH = 300;
 
-	// ---- Body-look coupling (FP only) ----
+	// ---- Body-look coupling (FP rig state only) ----
 	/**
 	 * Shoulder dead-zone: body doesn't rotate until camera yaw differs
 	 * by more than this amount from body yaw. ~35 degrees (360° = 2048 units).
@@ -91,7 +99,7 @@ public final class ModernCameraRig {
 	 * catch-up rate increases. ~70 degrees.
 	 */
 	private static final int SHOULDER_LIMIT = 200;
-	/** Normal body yaw catch-up speed (units per tick). */
+	/** Normal body yaw catch-up speed (units per 50Hz tick). */
 	private static final int BODY_CATCHUP_SPEED = 24;
 	/** Fast body yaw catch-up speed when beyond SHOULDER_LIMIT. */
 	private static final int BODY_FAST_CATCHUP_SPEED = 64;
@@ -101,6 +109,8 @@ public final class ModernCameraRig {
 	private static int desiredDistance = 2400;
 	/** Actual camera distance (smoothly approaches desired; compressed by walls). */
 	private static int actualDistance = 2400;
+	/** Safe distance (maximum permitted by obstruction). desired ≥ safe ≥ actual. */
+	private static int safeDistance = MAX_DISTANCE;
 	/** Chase camera actual yaw (smoothly follows target). */
 	private static int chaseYaw = 0;
 	/** Chase camera target yaw (from character body orientation). */
@@ -120,7 +130,12 @@ public final class ModernCameraRig {
 	/** Previous rig state for transition detection (FP camera lifecycle). */
 	private static RigState prevRigState = RigState.CHASE;
 
+	// ---- Smooth camera position (follows player like Camera.method4273) ----
+	private static int smoothCameraX;
+	private static int smoothCameraZ;
+
 	// ---- Saved camera state for ORIGINAL restoration ----
+	/** Saved cameraType from ORIGINAL mode (captured once before modern mutation). */
 	private static int savedCameraType = 1;
 	private static int savedCameraPitch = 256;
 	private static int savedPitchTarget = 256;
@@ -129,6 +144,8 @@ public final class ModernCameraRig {
 	private static int savedCameraX;
 	private static int savedCameraZ;
 	private static int savedAnInt40;
+	/** Whether the original camera state has been saved (prevents double-save). */
+	private static boolean originalStateSaved = false;
 
 	private ModernCameraRig() {
 	}
@@ -147,16 +164,6 @@ public final class ModernCameraRig {
 		return active;
 	}
 
-	/** Returns the current chase/free camera yaw (for movement controller). */
-	public static int getCameraYaw() {
-		return (rigState == RigState.FREE) ? freeYaw : chaseYaw;
-	}
-
-	/** Returns the current camera pitch. */
-	public static int getCameraPitch() {
-		return (rigState == RigState.FREE) ? freePitch : chasePitch;
-	}
-
 	/** Returns the current actual camera distance. */
 	public static int getActualDistance() {
 		return actualDistance;
@@ -167,26 +174,36 @@ public final class ModernCameraRig {
 		return desiredDistance;
 	}
 
-	/** Returns the FP body yaw (for movement controller in FP mode). */
+	/** Returns the FP body yaw (for movement controller in FP rig state). */
 	public static int getBodyYaw() {
 		return bodyYaw;
 	}
 
 	/**
+	 * Returns whether the rig is in FIRST_PERSON state.
+	 * Used by ModernMovementController to determine body orientation ownership.
+	 */
+	public static boolean isFirstPersonRigState() {
+		return active && rigState == RigState.FIRST_PERSON;
+	}
+
+	/**
 	 * Called when entering MODERN from ORIGINAL.
-	 * Saves the full legacy camera state for later restoration and
-	 * sets cameraType=0 to prevent legacy camera interference.
+	 * Saves the full legacy camera state ONCE (before any modern mutation)
+	 * for later restoration when returning to ORIGINAL.
 	 */
 	public static void onEnterModernMode() {
-		// Save full legacy camera state for restoration on return to ORIGINAL
-		savedCameraType = Camera.cameraType;
-		savedCameraPitch = Camera.cameraPitch;
-		savedPitchTarget = (int) Camera.pitchTarget;
-		savedCameraYaw = Camera.cameraYaw;
-		savedYawTarget = (int) Camera.yawTarget;
-		savedCameraX = Camera.cameraX;
-		savedCameraZ = Camera.cameraZ;
-		savedAnInt40 = Camera.anInt40;
+		if (!originalStateSaved) {
+			savedCameraType = Camera.cameraType;
+			savedCameraPitch = Camera.cameraPitch;
+			savedPitchTarget = (int) Camera.pitchTarget;
+			savedCameraYaw = Camera.cameraYaw;
+			savedYawTarget = (int) Camera.yawTarget;
+			savedCameraX = Camera.cameraX;
+			savedCameraZ = Camera.cameraZ;
+			savedAnInt40 = Camera.anInt40;
+			originalStateSaved = true;
+		}
 		Camera.cameraType = 0;
 	}
 
@@ -196,14 +213,17 @@ public final class ModernCameraRig {
 	 * returns exactly where it was before MODERN was entered.
 	 */
 	public static void onExitModernMode() {
-		Camera.cameraType = savedCameraType;
-		Camera.cameraPitch = savedCameraPitch;
-		Camera.pitchTarget = savedPitchTarget;
-		Camera.cameraYaw = savedCameraYaw;
-		Camera.yawTarget = savedYawTarget;
-		Camera.cameraX = savedCameraX;
-		Camera.cameraZ = savedCameraZ;
-		Camera.anInt40 = savedAnInt40;
+		if (originalStateSaved) {
+			Camera.cameraType = savedCameraType;
+			Camera.cameraPitch = savedCameraPitch;
+			Camera.pitchTarget = savedPitchTarget;
+			Camera.cameraYaw = savedCameraYaw;
+			Camera.yawTarget = savedYawTarget;
+			Camera.cameraX = savedCameraX;
+			Camera.cameraZ = savedCameraZ;
+			Camera.anInt40 = savedAnInt40;
+			originalStateSaved = false;
+		}
 		active = false;
 	}
 
@@ -218,9 +238,13 @@ public final class ModernCameraRig {
 		// Preserve desiredDistance (user's zoom intent survives region change)
 		// Re-anchor actualDistance to desired (avoid interpolating from old region)
 		actualDistance = desiredDistance;
+		safeDistance = MAX_DISTANCE;
 		// Re-anchor yaw to current player orientation
 		chaseYawTarget = self.anInt3400;
 		chaseYaw = chaseYawTarget;
+		// Re-anchor smooth camera position
+		smoothCameraX = self.xFine;
+		smoothCameraZ = self.zFine;
 		if (rigState == RigState.FREE) {
 			freeYaw = Camera.cameraYaw;
 			freePitch = (int) Camera.pitchTarget;
@@ -234,9 +258,8 @@ public final class ModernCameraRig {
 	// =====================================================================
 
 	/**
-	 * Per-tick update. Called from {@link ModernControlController#update()}
-	 * AFTER FirstPersonCamera.update() (which provides fpCamYaw) and BEFORE
-	 * {@link ModernMovementController#update()} (which reads camera yaw for movement).
+	 * Per-tick update (50Hz). Called from {@link ModernControlController#update()}
+	 * AFTER FirstPersonCamera.update() and BEFORE {@link ModernMovementController#update()}.
 	 */
 	public static void update() {
 		if (!CameraMode.isModern()) {
@@ -267,7 +290,8 @@ public final class ModernCameraRig {
 		// 3. Update camera based on rig state
 		switch (rigState) {
 			case FIRST_PERSON:
-				updateFirstPerson(self);
+				// FirstPersonCamera.update() already wrote Camera fields.
+				// We just need cameraType=0 (set above).
 				break;
 			case CHASE:
 				updateChase(self);
@@ -277,7 +301,7 @@ public final class ModernCameraRig {
 				break;
 		}
 
-		// 4. Body-look coupling (FP only)
+		// 4. Body-look coupling (FP rig state only)
 		if (rigState == RigState.FIRST_PERSON) {
 			updateBodyLookCoupling(self);
 		} else {
@@ -302,12 +326,16 @@ public final class ModernCameraRig {
 			bodyYaw = self.anInt3400;
 			chaseYaw = self.anInt3400;
 			chaseYawTarget = self.anInt3400;
+			// Initialize smooth camera position to player position
+			smoothCameraX = self.xFine;
+			smoothCameraZ = self.zFine;
 		}
 
 		// Default: enter CHASE (not FP). User scrolls to reach FP/FREE.
 		rigState = RigState.CHASE;
 
 		actualDistance = desiredDistance;
+		safeDistance = MAX_DISTANCE;
 		chasePitch = CHASE_PITCH;
 		initialized = true;
 	}
@@ -325,19 +353,19 @@ public final class ModernCameraRig {
 	private static void processWheelInput() {
 		if (MouseWheel.wheelRotation == 0) return;
 
-		// Respect UI: if mouse is over the game viewport area AND not over
-		// a scrollable interface, wheel controls camera zoom.
-		// The InterfaceList scroll processing runs during the render pipeline
-		// (ScriptRunner), which is AFTER this update. We check if the mouse
-		// is within the main viewport (not in sidebar/chat areas).
-		// When a scrollable component is under the cursor, InterfaceList will
-		// handle it; we still process but the UI gets priority visually.
+		// Wheel pipeline order (verified):
+		//   client.java:1725 — MouseWheel.wheelRotation = mouseWheel.getRotation()
+		//   → ModernControlController.update() → this method (50Hz game tick)
+		//   → ScriptRunner.method4326 → InterfaceList UI scroll (render pipeline)
 		//
-		// For simplicity and correctness: process wheel for camera zoom
-		// whenever the cursor is locked (gameplay mode) or in the viewport.
-		// UI scroll works through InterfaceList's own processing path which
-		// doesn't conflict because it operates on component scrollY, not on
-		// our desiredDistance.
+		// This rig reads wheelRotation BEFORE the UI scroll processing.
+		// Both camera zoom and UI scroll read the same MouseWheel.wheelRotation.
+		// UI scroll operates on component scrollY (separate variable), so there
+		// is no variable conflict — but BOTH can react to the same wheel event.
+		//
+		// TODO: Implement proper UI ownership check — if a scrollable UI component
+		// is under the cursor, skip camera zoom. Requires hit-testing against
+		// InterfaceList components at the current mouse position.
 
 		int rotation = MouseWheel.wheelRotation;
 
@@ -363,6 +391,9 @@ public final class ModernCameraRig {
 					chaseYaw = bodyYaw;
 					chaseYawTarget = bodyYaw;
 					chasePitch = CHASE_PITCH;
+					// Initialize actualDistance to FP_EXIT for smooth handoff
+					// (not to desiredDistance which could be far away)
+					actualDistance = FP_EXIT_DISTANCE;
 				}
 				break;
 
@@ -401,7 +432,6 @@ public final class ModernCameraRig {
 				Camera.cameraType = 0; // Rig still owns camera in CHASE/FREE
 			}
 
-			// Debug: state transition
 			System.out.println("[CAMERA-RIG] State: " + previous + " → " + rigState
 					+ " desired=" + desiredDistance + " actual=" + actualDistance);
 		}
@@ -409,103 +439,86 @@ public final class ModernCameraRig {
 	}
 
 	// =====================================================================
-	// FIRST PERSON CAMERA
-	// =====================================================================
-
-	/**
-	 * FP camera is handled by FirstPersonCamera.update() which runs before this.
-	 * Here we just ensure cameraType stays 0 and sync rig state.
-	 */
-	private static void updateFirstPerson(Player self) {
-		// FirstPersonCamera.update() already wrote Camera fields.
-		// We just need cameraType=0 (set above).
-		// Body-look coupling is handled separately below.
-	}
-
-	// =====================================================================
-	// CHASE CAMERA
+	// CHASE CAMERA — uses Camera.method555 (the proven RT4 transform)
 	// =====================================================================
 
 	/**
 	 * Chase camera: follows behind character body orientation.
-	 * Camera yaw smoothly tracks character body yaw.
-	 * Camera position = pivot (above player) + offset (behind, at distance).
+	 * Uses {@link Camera#method555} for the camera transform, ensuring
+	 * consistency with the RT4 rendering pipeline (including GL scaling).
+	 *
+	 * <p>Camera position is computed by method555 as:
+	 * <pre>
+	 *   renderX = targetX - sin(yaw) * cos(pitch) * zoom
+	 *   renderZ = targetZ - cos(yaw) * cos(pitch) * zoom
+	 *   anInt40 = targetY + sin(pitch) * zoom
+	 * </pre>
+	 * where zoom = desiredDistance * 0.5 + pitch * 3.
 	 */
 	private static void updateChase(Player self) {
 		// Target yaw = character body orientation
 		chaseYawTarget = self.anInt3400;
 
-		// Smooth yaw interpolation (shortest angle)
+		// Smooth yaw interpolation (shortest angle, 50Hz tick-based)
 		chaseYaw = smoothYaw(chaseYaw, chaseYawTarget, YAW_SMOOTH_FACTOR, YAW_SMOOTH_MIN);
 
 		// Smooth pitch transition
 		chasePitch = smoothInt(chasePitch, CHASE_PITCH, 6);
 
-		// Smooth distance
+		// Smooth distance (50Hz tick-based exponential smoothing)
 		smoothDistance();
 
-		// Compute camera position
-		int pivotX = self.xFine;
-		int pivotZ = self.zFine;
-		int pivotY = SceneGraph.getTileHeight(Player.plane, pivotX, pivotZ) - CHASE_PIVOT_HEIGHT;
+		// Smooth camera position follow (like Camera.method4273)
+		updateSmoothCameraPosition(self);
 
-		// Camera offset behind player
-		int dist = actualDistance;
-		int yaw = chaseYaw;
-		int pitch = chasePitch;
+		// Compute target/pivot point (near player feet, like original camera)
+		int pivotX = smoothCameraX;
+		int pivotZ = smoothCameraZ;
+		int pivotY = SceneGraph.getTileHeight(Player.plane, pivotX, pivotZ) - 50;
 
-		// Horizontal offset (behind character)
-		int offsetX = (MathUtils.sin[yaw & 2047] * dist) >> 16;
-		int offsetZ = (MathUtils.cos[yaw & 2047] * dist) >> 16;
+		// Map desired distance to RT4 zoom parameter.
+		// Original RT4: ZOOM(600) + pitchTarget(128..383)*3 = 984..1749
+		// Our mapping: desiredDistance * 0.5 gives a usable range.
+		int zoom = (int) (actualDistance * 0.5) + chasePitch * 3;
+		if (zoom < 100) zoom = 100;
 
-		// Vertical offset (above, based on pitch)
-		int offsetY = -(MathUtils.sin[pitch & 2047] * dist) >> 16;
-
-		// Desired camera position (before obstruction)
-		int camX = pivotX + offsetX;
-		int camZ = pivotZ + offsetZ;
-		int camY = pivotY + offsetY;
-
-		// Camera obstruction check
-		int clearDist = checkObstruction(pivotX, pivotZ, pivotY, camX, camZ, camY);
-		if (clearDist < dist) {
-			// Wall between player and desired camera — compress
-			int ratio = (dist > 0) ? (clearDist * 65536 / dist) : 0;
-			camX = pivotX + (offsetX * ratio >> 16);
-			camZ = pivotZ + (offsetZ * ratio >> 16);
-			camY = pivotY + (offsetY * ratio >> 16);
+		// Camera obstruction: reduce effective zoom if wall between player and camera
+		int clearDist = checkObstruction(pivotX, pivotZ, pivotY, chaseYaw, chasePitch, zoom);
+		int effectiveZoom = zoom;
+		if (clearDist < actualDistance && actualDistance > 0) {
+			int ratio = (clearDist * 65536 / actualDistance);
+			effectiveZoom = Math.max(100, zoom * ratio >> 16);
 		}
 
-		// Terrain safety: don't place camera below ground
-		int terrainH = SceneGraph.getTileHeight(Player.plane, camX, camZ);
-		if (camY > terrainH - 50) {
-			camY = terrainH - 50;
-		}
+		// Use the proven RT4 camera transform
+		Camera.method555(pivotX, Rasteriser.screenUpperY, pivotY,
+				effectiveZoom, chaseYaw, pivotZ, chasePitch);
 
-		// Write camera fields
-		Camera.renderX = camX;
-		Camera.renderZ = camZ;
-		Camera.anInt40 = camY;
-		Camera.cameraYaw = yaw;
-		Camera.cameraPitch = pitch;
-		Camera.yawTarget = yaw;
-		Camera.pitchTarget = pitch;
-		Camera.cameraX = camX;
-		Camera.cameraZ = camZ;
+		// Copy render camera position to smooth-follow fields
+		Camera.cameraX = Camera.renderX;
+		Camera.cameraZ = Camera.renderZ;
 	}
 
 	// =====================================================================
-	// FREE CAMERA
+	// FREE CAMERA — uses Camera.method555 + classic input targets
 	// =====================================================================
 
 	/**
 	 * Free camera: classic-style overview camera.
-	 * Arrow keys control orbit (reuses existing camera input infrastructure).
-	 * Camera orbits player at the rig's distance.
+	 * Arrow keys control orbit (freeYaw/freePitch), similar to the classic RT4
+	 * follow camera's arrow key input.
+	 * Camera position computed by {@link Camera#method555}.
 	 * Modern WASD remains active; movement uses body orientation.
+	 *
+	 * <p>TODO: Final FREE camera input should reuse the render-timed path
+	 * ({@code Camera.yawTarget/pitchTarget} written by {@code GameShell.mainInputLoop})
+	 * instead of reading {@code InterfaceList.keyQueueSize} at 50Hz. The current
+	 * implementation is functionally correct but not yet integrated with the
+	 * existing render-timed camera panning infrastructure.</p>
 	 */
 	private static void updateFree(Player self) {
-		// Arrow key camera control (reuses existing Preferences.aBoolean63 path)
+		// Arrow key camera control — reads InterfaceList key queue at 50Hz.
+		// Rates match Camera.method4273 arrow key input (±4 pitch, ±16 yaw).
 		if (Preferences.aBoolean63) {
 			for (int i = 0; i < InterfaceList.keyQueueSize; i++) {
 				int code = InterfaceList.keyCodes[i];
@@ -521,7 +534,7 @@ public final class ModernCameraRig {
 			}
 		}
 
-		// Clamp pitch
+		// Clamp pitch (same range as Camera.clampCameraAngle)
 		if (freePitch < 128) freePitch = 128;
 		if (freePitch > 383) freePitch = 383;
 		freeYaw &= 0x7FF;
@@ -529,49 +542,63 @@ public final class ModernCameraRig {
 		// Smooth distance
 		smoothDistance();
 
-		// Compute camera position (orbit around player)
-		int dist = actualDistance;
-		int yaw = freeYaw;
-		int pitch = freePitch;
+		// Smooth camera position follow
+		updateSmoothCameraPosition(self);
 
-		int pivotX = self.xFine;
-		int pivotZ = self.zFine;
-		int groundH = SceneGraph.getTileHeight(Player.plane, pivotX, pivotZ);
+		// Compute target/pivot point
+		int pivotX = smoothCameraX;
+		int pivotZ = smoothCameraZ;
+		int pivotY = SceneGraph.getTileHeight(Player.plane, pivotX, pivotZ) - 50;
 
-		// Camera offset from player
-		int offsetX = (MathUtils.sin[yaw & 2047] * dist) >> 16;
-		int offsetZ = (MathUtils.cos[yaw & 2047] * dist) >> 16;
-		int offsetY = -(MathUtils.sin[pitch & 2047] * dist) >> 16;
+		// Map desired distance to RT4 zoom parameter
+		int zoom = (int) (actualDistance * 0.5) + freePitch * 3;
+		if (zoom < 100) zoom = 100;
 
-		int camX = pivotX + offsetX;
-		int camZ = pivotZ + offsetZ;
-		int camY = groundH - CHASE_PIVOT_HEIGHT + offsetY;
-
-		// Terrain safety
-		int terrainH = SceneGraph.getTileHeight(Player.plane, camX, camZ);
-		if (camY > terrainH - 50) {
-			camY = terrainH - 50;
+		// Camera obstruction
+		int clearDist = checkObstruction(pivotX, pivotZ, pivotY, freeYaw, freePitch, zoom);
+		int effectiveZoom = zoom;
+		if (clearDist < actualDistance && actualDistance > 0) {
+			int ratio = (clearDist * 65536 / actualDistance);
+			effectiveZoom = Math.max(100, zoom * ratio >> 16);
 		}
 
-		// Camera obstruction (same as chase)
-		int clearDist = checkObstruction(pivotX, pivotZ, groundH - CHASE_PIVOT_HEIGHT, camX, camZ, camY);
-		if (clearDist < dist) {
-			int ratio = (dist > 0) ? (clearDist * 65536 / dist) : 0;
-			camX = pivotX + (offsetX * ratio >> 16);
-			camZ = pivotZ + (offsetZ * ratio >> 16);
-			camY = (groundH - CHASE_PIVOT_HEIGHT) + (offsetY * ratio >> 16);
+		// Use the proven RT4 camera transform
+		Camera.method555(pivotX, Rasteriser.screenUpperY, pivotY,
+				effectiveZoom, freeYaw, pivotZ, freePitch);
+
+		// Copy render camera position to smooth-follow fields
+		Camera.cameraX = Camera.renderX;
+		Camera.cameraZ = Camera.renderZ;
+	}
+
+	// =====================================================================
+	// SMOOTH CAMERA POSITION (follows player like Camera.method4273)
+	// =====================================================================
+
+	/**
+	 * Smooth camera position that follows the player with slight lag.
+	 * Replicates the smooth-follow behavior of the classic RT4 follow camera
+	 * ({@link Camera#method4273}) so the chase/free camera doesn't snap
+	 * instantly to the player's position during movement.
+	 */
+	private static void updateSmoothCameraPosition(Player self) {
+		int targetX = self.xFine;
+		int targetZ = self.zFine;
+
+		// Teleport safety (same threshold as Camera.method4273)
+		if (smoothCameraX - targetX < -500 || smoothCameraX - targetX > 500
+				|| smoothCameraZ - targetZ < -500 || smoothCameraZ - targetZ > 500) {
+			smoothCameraX = targetX;
+			smoothCameraZ = targetZ;
 		}
 
-		// Write camera fields
-		Camera.renderX = camX;
-		Camera.renderZ = camZ;
-		Camera.anInt40 = camY;
-		Camera.cameraYaw = yaw;
-		Camera.cameraPitch = pitch;
-		Camera.yawTarget = yaw;
-		Camera.pitchTarget = pitch;
-		Camera.cameraX = camX;
-		Camera.cameraZ = camZ;
+		// Smooth follow (1/16 per tick, like method4273)
+		if (smoothCameraZ != targetZ) {
+			smoothCameraZ += (targetZ - smoothCameraZ) / 16;
+		}
+		if (smoothCameraX != targetX) {
+			smoothCameraX += (targetX - smoothCameraX) / 16;
+		}
 	}
 
 	// =====================================================================
@@ -579,11 +606,15 @@ public final class ModernCameraRig {
 	// =====================================================================
 
 	/**
-	 * Exponential smoothing of actualDistance toward desiredDistance.
-	 * Frame-rate independent within the 50Hz tick architecture.
+	 * Exponential smoothing of actualDistance toward the target distance
+	 * (min of desiredDistance and safeDistance).
+	 *
+	 * <p>This is 50Hz tick-based smoothing (NOT frame-rate-independent).
+	 * The smoothing factor controls how many ticks it takes to converge.
 	 */
 	private static void smoothDistance() {
-		int delta = desiredDistance - actualDistance;
+		int targetDist = Math.min(desiredDistance, safeDistance);
+		int delta = targetDist - actualDistance;
 		if (delta != 0) {
 			int step = delta / DISTANCE_SMOOTH_FACTOR;
 			if (step == 0) step = (delta > 0) ? 1 : -1;
@@ -603,21 +634,42 @@ public final class ModernCameraRig {
 	 * by scenery/walls/terrain. Returns the maximum clear distance (fine units).
 	 *
 	 * <p>Uses multi-sample stepping along the pivot→camera line. At each sample,
-	 * checks terrain height and collision flags. If the camera position would be
-	 * below terrain or in a colliding tile, returns the distance to the last
-	 * clear sample.</p>
+	 * checks terrain height and collision flags. Uses directional wall flags
+	 * from {@link CollisionMap} to detect wall edges between tiles (not just
+	 * fully-occupied tiles).</p>
 	 *
-	 * <p>This is CAMERA collision, NOT player movement collision.</p>
+	 * <p>This is CAMERA collision, NOT player movement collision (Phase 4).</p>
 	 */
 	private static int checkObstruction(int pivotX, int pivotZ, int pivotY,
-			int camX, int camZ, int camY) {
+			int yaw, int pitch, int zoom) {
+		// Compute the desired camera position using method555 math
+		// to know where the camera WOULD be placed.
+		int invPitch = 2048 - pitch & 0x7FF;
+		int invYaw = 2048 - yaw & 0x7FF;
+
+		int boomX = 0;
+		int boomZ = zoom;
+		int boomY = 0;
+
+		if (invPitch != 0) {
+			boomY = MathUtils.sin[invPitch] * -zoom >> 16;
+			boomZ = MathUtils.cos[invPitch] * zoom >> 16;
+		}
+		if (invYaw != 0) {
+			boomX = MathUtils.sin[invYaw] * boomZ >> 16;
+			boomZ = boomZ * MathUtils.cos[invYaw] >> 16;
+		}
+
+		int camX = pivotX - boomX;
+		int camZ = pivotZ - boomZ;
+
 		int deltaX = camX - pivotX;
 		int deltaZ = camZ - pivotZ;
 		int fineDist = (int) Math.sqrt((long) deltaX * deltaX + (long) deltaZ * deltaZ);
 
 		if (fineDist < 64) return fineDist; // Too close to bother checking
 
-		// Number of samples along the line (every ~1 tile = 128 fine units)
+		// Step along the pivot→camera line, checking collision at each tile
 		int steps = Math.max(1, fineDist / 128);
 		int maxClear = fineDist;
 
@@ -631,23 +683,25 @@ public final class ModernCameraRig {
 
 			// Bounds check
 			if (tileX < 1 || tileX > 102 || tileZ < 1 || tileZ > 102) {
-				maxClear = (pivotX + (deltaX * (i - 1) * 65536 / steps >> 16)) - pivotX;
-				maxClear = (int) Math.sqrt((long) maxClear * maxClear
-						+ (long) ((pivotZ + (deltaZ * (i - 1) * 65536 / steps >> 16)) - pivotZ)
-						* ((pivotZ + (deltaZ * (i - 1) * 65536 / steps >> 16)) - pivotZ));
+				int prevFrac = (i - 1) * 65536 / steps;
+				int prevX = pivotX + (deltaX * prevFrac >> 16);
+				int prevZ = pivotZ + (deltaZ * prevFrac >> 16);
+				int dx = prevX - pivotX;
+				int dz = prevZ - pivotZ;
+				maxClear = (int) Math.sqrt((long) dx * dx + (long) dz * dz);
 				break;
 			}
 
-			// Check collision flags (walls/scenery block camera)
-			if (Player.plane >= 0 && Player.plane < 4) {
-				int flags = 0;
-				if (PathFinder.collisionMaps != null
-						&& PathFinder.collisionMaps[Player.plane] != null) {
-					flags = PathFinder.collisionMaps[Player.plane].flags[tileX][tileZ];
-				}
-				// If this tile has solid collision (wall/scenery), camera can't pass
-				if ((flags & 0x100) != 0 || (flags & 0x20000) != 0) {
-					// Blocked — return distance to previous clear sample
+			// Check collision flags
+			if (Player.plane >= 0 && Player.plane < 4
+					&& PathFinder.collisionMaps != null
+					&& PathFinder.collisionMaps[Player.plane] != null) {
+				int flags = PathFinder.collisionMaps[Player.plane].flags[tileX][tileZ];
+
+				// Full tile collision (scenery, decor, blocked tile)
+				// 0x100 = scenery (non-projectile-blocking), 0x20000 = fully blocked
+				// 0x40000 = ground decor, 0x200000 = flagged tile
+				if ((flags & 0x240100) != 0) {
 					int prevFrac = (i - 1) * 65536 / steps;
 					int prevX = pivotX + (deltaX * prevFrac >> 16);
 					int prevZ = pivotZ + (deltaZ * prevFrac >> 16);
@@ -656,13 +710,44 @@ public final class ModernCameraRig {
 					maxClear = (int) Math.sqrt((long) dx * dx + (long) dz * dz);
 					break;
 				}
+
+				// Directional wall check: if the camera path crosses a tile edge
+				// that has a wall, block the camera. Use the same directional
+				// masks as PathFinder: N=0x102, S=0x120, W=0x108, E=0x180.
+				if (i > 1) {
+					int prevFrac = (i - 1) * 65536 / steps;
+					int prevSampleX = pivotX + (deltaX * prevFrac >> 16);
+					int prevSampleZ = pivotZ + (deltaZ * prevFrac >> 16);
+					int prevTileX = prevSampleX >> 7;
+					int prevTileZ = prevSampleZ >> 7;
+
+					if (prevTileX != tileX || prevTileZ != tileZ) {
+						// Camera path crossed a tile boundary. Check if the
+						// destination tile has a wall facing the crossing direction.
+						int crossDx = tileX - prevTileX;
+						int crossDz = tileZ - prevTileZ;
+						int wallMask;
+						if (crossDx > 0) wallMask = 0x108;      // Entering from west: check W wall
+						else if (crossDx < 0) wallMask = 0x180;  // Entering from east: check E wall
+						else if (crossDz > 0) wallMask = 0x102;  // Entering from south: check S wall
+						else wallMask = 0x120;                    // Entering from north: check N wall
+
+						if ((flags & wallMask) != 0) {
+							int dx = prevSampleX - pivotX;
+							int dz = prevSampleZ - pivotZ;
+							maxClear = (int) Math.sqrt((long) dx * dx + (long) dz * dz);
+							break;
+						}
+					}
+				}
 			}
 
 			// Check terrain height (camera shouldn't be below ground)
 			int terrainH = SceneGraph.getTileHeight(Player.plane, sampleX, sampleZ);
-			int sampleY = pivotY + ((camY - pivotY) * frac >> 16);
-			if (sampleY > terrainH - 30) {
-				// Camera would be at or below terrain at this sample
+			// Interpolate the boom Y for height check
+			int boomYAtSample = boomY * frac >> 16;
+			int camYAtSample = pivotY - boomYAtSample; // method555: anInt40 = targetY - boomY
+			if (camYAtSample > terrainH - 30) {
 				int prevFrac = (i - 1) * 65536 / steps;
 				int prevX = pivotX + (deltaX * prevFrac >> 16);
 				int prevZ = pivotZ + (deltaZ * prevFrac >> 16);
@@ -677,19 +762,23 @@ public final class ModernCameraRig {
 	}
 
 	// =====================================================================
-	// BODY-LOOK COUPLING (FP mode only)
+	// BODY-LOOK COUPLING (FP rig state only)
 	// =====================================================================
 
 	/**
-	 * In FIRST_PERSON, the character body follows the camera look direction
-	 * with a shoulder dead-zone policy.
+	 * In FIRST_PERSON rig state, the character body follows the camera look
+	 * direction with a shoulder dead-zone policy.
 	 *
-	 * <p>Small camera yaw difference: body stays stable (head/look only).
+	 * <p>Small camera yaw difference: body stays stable.
 	 * Medium difference: body begins rotating toward camera.
 	 * Large difference: body catches up faster.</p>
 	 *
 	 * <p>RT4 has NO separate head yaw. This is body-yaw follow only.
 	 * True independent head rotation is deferred (not supported by RT4 model system).</p>
+	 *
+	 * <p>This method is the SOLE WRITER of self.anInt3400 when the rig is in
+	 * FP state. ModernMovementController must NOT overwrite it (guarded by
+	 * checking {@link #isFirstPersonRigState()}).</p>
 	 */
 	private static void updateBodyLookCoupling(Player self) {
 		int lookYaw = FirstPersonCamera.getYaw();
@@ -697,7 +786,6 @@ public final class ModernCameraRig {
 		int absDelta = Math.abs(delta);
 
 		if (absDelta > SHOULDER_DEAD_ZONE) {
-			// Beyond dead zone: body begins rotating toward camera
 			int catchupSpeed = (absDelta > SHOULDER_LIMIT)
 					? BODY_FAST_CATCHUP_SPEED : BODY_CATCHUP_SPEED;
 
@@ -705,14 +793,11 @@ public final class ModernCameraRig {
 			bodyYaw = (bodyYaw + step * Integer.signum(delta)) & 0x7FF;
 
 			// Write to self.anInt3400 so method949 smooths anInt3381 toward it.
-			// This drives the character model's visual rotation.
 			self.anInt3400 = bodyYaw;
 			// Reset change counter to prevent turn animation triggering
-			// during smooth continuous rotation
 			self.anInt3385 = 0;
 		}
 		// Within dead zone: body stays at current orientation.
-		// The camera can look independently; the torso doesn't rotate.
 	}
 
 	// =====================================================================

@@ -267,17 +267,16 @@ public final class ModernMovementController {
 			if (lastMovementState != MovementState.IDLE) {
 				lastMovementState = MovementState.IDLE;
 				selectAnimationForState();
-				// Phase 3C: In FIRST_PERSON mode, body-look coupling owns
-				// self.anInt3400. Do NOT snap it here — that would fight
-				// the rig's shoulder-dead-zone body rotation.
-				if (CameraMode.getCurrent() != CameraMode.Mode.FIRST_PERSON) {
+				// Review #2: In FP rig state (including scroll-FP within THIRD_PERSON
+				// CameraMode), body-look coupling owns self.anInt3400. Do NOT snap it.
+				if (!ModernCameraRig.isFirstPersonRigState()) {
 					// Phase 3B fix #1: snap visual orientation to target so
 					// method949 (orientation smoothing) does not see a yaw error
 					// and replace the idle animation with walk/turn animation.
 					self.anInt3381 = self.anInt3400;
 					self.anInt3385 = 0;
 				} else {
-					// In FP: sync smoothed to target to prevent method949
+					// In FP rig state: sync smoothed to target to prevent method949
 					// turn animation, but don't change anInt3400 (body-look owns it)
 					self.anInt3385 = 0;
 				}
@@ -332,10 +331,11 @@ public final class ModernMovementController {
 		performDDACheck();
 
 		// ---- Orientation ----
-		// Phase 3C: In FIRST_PERSON mode, body-look coupling (ModernCameraRig)
-		// owns self.anInt3400. Do NOT overwrite it from velocity.
-		// In CHASE/FREE (THIRD_PERSON), movement direction determines body facing.
-		if (CameraMode.getCurrent() != CameraMode.Mode.FIRST_PERSON) {
+		// Review #2: In FP rig state (including scroll-FP within THIRD_PERSON
+		// CameraMode), body-look coupling (ModernCameraRig) owns self.anInt3400.
+		// Do NOT overwrite it from velocity.
+		// In CHASE/FREE rig state, movement direction determines body facing.
+		if (!ModernCameraRig.isFirstPersonRigState()) {
 			// Face movement direction. The RT4 angle convention uses a NEGATIVE
 			// multiplier (same as Camera.method3849): angle = atan2(velX, velZ) * -325.949
 			// This maps: north=0, west=512, south=1024, east=1536.

@@ -75,12 +75,10 @@ public final class CameraMode {
 	 * Returns the camera-relative yaw for locomotion movement basis.
 	 *
 	 * <ul>
-	 *   <li>FIRST_PERSON: returns FirstPersonCamera's live yaw (the mouse-look direction).
-	 *       The body-look coupling in ModernCameraRig separately manages the visual
-	 *       body orientation, but movement uses the camera yaw as its orthonormal basis.</li>
-	 *   <li>THIRD_PERSON: returns the rig's chase/free camera yaw when the rig is in
-	 *       CHASE or FREE state (camera-relative movement). When the rig is in FP state
-	 *       (scroll-zoom continuum), returns FirstPersonCamera yaw.</li>
+	 *   <li>FIRST_PERSON (CameraMode): returns FirstPersonCamera's live yaw.</li>
+	 *   <li>THIRD_PERSON + rig FP state (reached via scroll): returns FP camera yaw.</li>
+	 *   <li>THIRD_PERSON + rig CHASE/FREE: returns -1 (movement uses body orientation,
+	 *       NOT camera yaw — the camera is a follower, not the movement authority).</li>
 	 *   <li>ORIGINAL: returns -1 (modern controller is inactive).</li>
 	 * </ul>
 	 */
@@ -89,12 +87,11 @@ public final class CameraMode {
 			return FirstPersonCamera.getYaw();
 		}
 		if (current == Mode.THIRD_PERSON && ModernCameraRig.isActive()) {
-			// In CHASE/FREE: movement uses camera yaw as basis.
-			// In rig FP state (reached via scroll): uses FP camera yaw.
+			// Only in rig FP state does the camera yaw drive locomotion.
+			// In CHASE/FREE: body/locomotion drives camera (return -1).
 			if (ModernCameraRig.getRigState() == ModernCameraRig.RigState.FIRST_PERSON) {
 				return FirstPersonCamera.getYaw();
 			}
-			return ModernCameraRig.getCameraYaw();
 		}
 		return -1;
 	}

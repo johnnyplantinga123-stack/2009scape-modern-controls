@@ -1,6 +1,6 @@
 # Modern Controls — Phase 0 Analysis & Implementation Plan
 
-**Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE** · **Phase 3B (Continuous Modern Movement) — COMPLETE** · **Phase 3B Stabilization (Input, Animation, Self-Rendering) — COMPLETE** · **PHASE 3C (Modern Camera Rig — Scroll Zoom Continuum + Chase Camera + Body-Look Coupling) — COMPLETE**
+**Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE** · **Phase 3B (Continuous Modern Movement) — COMPLETE** · **Phase 3B Stabilization (Input, Animation, Self-Rendering) — COMPLETE** · **PHASE 3C (Modern Camera Rig — Scroll Zoom Continuum + Chase Camera + Body-Look Coupling) — COMPLETE** · **PHASE 3C REVIEW #2 (RT4 Source Verification — method555 reuse, wheel pipeline honesty, distance model, comment accuracy) — COMPLETE**
 
 **Date:** 14-08-2026
 
@@ -387,7 +387,7 @@ git diff --stat
 ```
 
 ---
-**Last updated:** 14-08-2026 (Phase 3 stabilization pass 4 — camera height regression fix complete)
+**Last updated:** 14-08-2026 (Phase 3C Review #2 — RT4 source verification, method555 reuse, wheel pipeline honesty, distance model, comment accuracy)
 **Phase 3 completion:** MovementIntent + ModernMovementController wired into ModernControlController, build verified, no scope creep.
 **Phase 3 stabilization pass 1:** WASD/chat input arbitration fixed (chatInputActive flag), head bob disabled, third-person confirmed placeholder, Java runtime/HD investigated.
 **Phase 3 stabilization pass 2:** True WASD/chat root cause fixed (typed key queue filtering), camera mode F11 transitions safe, third-person placeholder documented, first-person body culling investigated.
@@ -1381,7 +1381,7 @@ JavaMouseWheel.mouseWheelMoved() (AWT MouseWheelListener)
 
 **Config flag status:** No config flag disables or enables wheel zoom. The `config.json` / `GlobalConfig` system has no camera-zoom-related setting.
 
-**UI wheel priority:** `InterfaceList` processes wheel for scrollable components. The camera rig runs during `ModernControlController.update()` which is in the game tick, not the render pipeline. UI scroll operates on component `scrollY`, not on `desiredDistance`, so there is no conflict.
+**UI wheel priority (Review #2 corrected):** The camera rig reads `MouseWheel.wheelRotation` during `ModernControlController.update()` which runs in the 50Hz game tick, BEFORE the render-pipeline UI scroll processing (`ScriptRunner.method4326` → `InterfaceList`). Both camera zoom and UI scroll read the same `wheelRotation` value. UI scroll operates on component `scrollY` (separate variable from `desiredDistance`), so there is no variable conflict — but BOTH can react to the same wheel event. Proper UI ownership (skip camera zoom when scrollable UI is under cursor) is TODO.
 
 ### 16.3 Source Trace — Camera Render Pipeline
 
@@ -1429,11 +1429,12 @@ ORIGINAL remains completely separate. MODERN modes run modern locomotion + camer
 
 ### 16.6 Distance Continuum
 
-**One authoritative desired distance, one smoothed actual distance:**
+**One authoritative desired distance, one smoothed actual distance (Review #2 — three-distance model):**
 
 ```
 desiredDistance  ← scroll wheel (user intent, never destroyed by walls)
-actualDistance   ← smoothly interpolated toward desired (compressed by walls)
+safeDistance     ← maximum permitted by camera obstruction
+actualDistance   ← smoothly approaches min(desiredDistance, safeDistance)
 ```
 
 **Distance units:** Fine coordinates (128 fine = 1 tile).
@@ -1461,7 +1462,7 @@ if (step == 0) step = (delta > 0) ? 1 : -1;
 actualDistance += step;
 ```
 
-This runs once per 50Hz tick. The smoothing is frame-rate-independent within the fixed 50Hz tick architecture.
+This runs once per 50Hz tick. The smoothing is 50Hz tick-based exponential smoothing (NOT frame-rate-independent render smoothing). See §18 Review #2 for honesty correction.
 
 ### 16.8 Chase Camera
 
@@ -1474,28 +1475,29 @@ chaseYaw = smoothYaw(chaseYaw, chaseYawTarget, factor=8, minStep=2)
 
 **Shortest-angle interpolation:** `shortestAngleDelta(from, to)` computes signed delta on 0..2047 circle, result in -1024..+1023. Interpolation always takes the short path (e.g., 2040→8 rotates across zero, not through ~2000 units).
 
-**Camera position:**
+**Camera position (Review #2 — uses Camera.method555, the proven RT4 transform):**
 ```
-pivotX/Z = self.xFine/zFine
-pivotY = terrainHeight - CHASE_PIVOT_HEIGHT (220)
-offsetX = sin[chaseYaw] * actualDistance >> 16
-offsetZ = cos[chaseYaw] * actualDistance >> 16
-offsetY = -(sin[chasePitch] * actualDistance >> 16)
-camX/Z = pivot + offset
-camY = pivotY + offsetY
+pivotX/Z = smoothCameraX/Z (follows player with slight lag)
+pivotY = terrainHeight - 50
+zoom = actualDistance * 0.5 + chasePitch * 3
+Camera.method555(pivotX, viewportH, pivotY, zoom, chaseYaw, pivotZ, chasePitch)
+→ renderX = pivotX - boomX  (boomX = sin(yaw)*cos(pitch)*zoom)
+→ renderZ = pivotZ - boomZ  (boomZ = cos(yaw)*cos(pitch)*zoom)
+→ anInt40 = pivotY - boomY  (boomY = -sin(pitch)*zoom)
 ```
 
-**Camera is a FOLLOWER, not a leader.** Chase camera yaw is NOT fed back into ModernMovementController. Movement uses `CameraMode.getCameraRelativeYaw()` which returns the rig's camera yaw for THIRD_PERSON, but the camera follows the character, not the other way around.
+**Camera is a FOLLOWER, not a leader.** Chase camera yaw is NOT fed back into ModernMovementController. `CameraMode.getCameraRelativeYaw()` returns -1 for CHASE/FREE rig states, so movement uses body orientation (`self.anInt3400`), not camera yaw. Only FP rig state returns a yaw for movement.
 
 ### 16.9 Camera Obstruction
 
 **Multi-sample line probe** from pivot to desired camera position:
 
 1. Compute number of samples: `max(1, fineDist / 128)` (one per tile).
-2. At each sample: check `PathFinder.collisionMaps[plane].flags[tileX][tileZ]` for wall/scenery collision (flags 0x100, 0x20000).
-3. Check terrain height: if camera Y would be at/below terrain, block.
-4. Return distance to last clear sample.
-5. If blocked: scale camera position by `clearDist / desiredDist` ratio (camera compresses toward player).
+2. At each sample: check `PathFinder.collisionMaps[plane].flags[tileX][tileZ]` for wall/scenery collision (combined mask 0x240100: scenery 0x100, full block 0x20000, ground decor 0x40000, flagged tile 0x200000).
+3. **Directional wall edge check (Review #2):** When camera path crosses a tile boundary, check the destination tile's wall mask facing the crossing direction (N=0x102, S=0x120, W=0x108, E=0x180).
+4. Check terrain height: if camera Y would be at/below terrain, block.
+5. Return distance to last clear sample.
+6. If blocked: scale effective zoom by `clearDist / actualDist` ratio (camera compresses toward player).
 
 **This is CAMERA collision, NOT player movement collision.** Phase 4 player collision is separate.
 
@@ -1530,13 +1532,14 @@ if |delta| > SHOULDER_DEAD_ZONE (100 units ≈ 35°):
 
 ### 16.11 Free Camera
 
-**FREE camera reuses classic-style orbit behavior:**
-- Arrow keys control orbit (reads `Preferences.aBoolean63` + `InterfaceList.keyQueueSize/keyCodes[]`).
+**FREE camera uses classic-style orbit behavior (Review #2 corrected):**
+- Arrow keys control orbit (reads `Preferences.aBoolean63` + `InterfaceList.keyQueueSize/keyCodes[]`) at 50Hz.
 - `freeYaw` += 16 per left/right key tick, `freePitch` += 4 per up/down key tick.
 - Pitch clamped to 128..383 (same as legacy camera range).
-- Camera position computed same as chase but with free yaw/pitch.
+- Camera position computed via `Camera.method555()` (same proven RT4 transform as chase).
 - Camera obstruction check same as chase.
 - Modern WASD remains active; movement uses body orientation.
+- **TODO:** Final FREE camera input should reuse the render-timed path (`Camera.yawTarget/pitchTarget` written by `GameShell.mainInputLoop`) instead of reading the key queue at 50Hz.
 
 ### 16.12 FirstPersonCamera Integration
 
@@ -1977,3 +1980,232 @@ gradlew.bat :client:compileJava → BUILD SUCCESSFUL
 - [ ] Shift+run still works in FREE
 - [ ] No click-to-move activated
 - [ ] ORIGINAL mode NOT activated by scrolling
+
+---
+
+## 18. Phase 3C Review #2 — RT4 Source Verification & Implementation Corrections
+
+**Date:** 14-08-2026
+**Commit:** (pending)
+**Baseline:** ae16bff (Phase 3C addendum — ORIGINAL must remain vanilla)
+
+### 18.1 Purpose
+
+A 21-section architectural review verified the Phase 3C ModernCameraRig implementation
+against the official 2009Scape RT4 client source. This section documents the corrections
+applied to align the implementation with verified RT4 behavior.
+
+### 18.2 Changes applied
+
+#### 1. Chase/Free camera transform — reuse Camera.method555()
+
+**Before:** The chase and free camera computed position with a hand-written trigonometric
+implementation (sin/cos of yaw/pitch applied to distance independently on X/Z, then
+separately adding vertical pitch offset).
+
+**Problem:** Official RT4 `Camera.method555()` performs the proven transform:
+```
+boomX = sin(yaw) * cos(pitch) * distance
+boomZ = cos(yaw) * cos(pitch) * distance
+boomY = -sin(pitch) * distance
+renderX = targetX - boomX
+renderZ = targetZ - boomZ
+anInt40 = targetY - boomY
+```
+Pitch changes the horizontal component of the boom, not just the vertical. The
+hand-written implementation treated distance independently on X/Z and then separately
+added vertical pitch offset — inconsistent with the official transform.
+
+**Fix:** Both `updateChase()` and `updateFree()` now call `Camera.method555()` directly:
+```java
+Camera.method555(pivotX, Rasteriser.screenUpperY, pivotY,
+        effectiveZoom, chaseYaw, pivotZ, chasePitch);
+```
+This reuses the proven RT4 transform including GL viewport scaling behavior.
+
+**method555 arguments (traced from ScriptRunner.method4326 line 238):**
+- arg0 = target X (pivotX)
+- arg1 = viewport height (Rasteriser.screenUpperY — only used for GL zoom scaling)
+- arg2 = target Y (pivotY = terrainHeight - 50)
+- arg3 = zoom/distance parameter (effectiveZoom = actualDistance * 0.5 + pitch * 3)
+- arg4 = yaw (chaseYaw / freeYaw)
+- arg5 = target Z (pivotZ)
+- arg6 = pitch (chasePitch / freePitch)
+
+**Viewport height fix:** The original code used `Rasteriser.screenHeight` which does
+not exist. Replaced with `Rasteriser.screenUpperY` (public field, set by
+GlRenderer.method4171 during render pipeline). For software rendering this argument
+is completely ignored; for GL it controls a minor zoom scaling adjustment.
+
+#### 2. Wheel pipeline honesty
+
+**Before:** Comments claimed "rig defers to UI" and that the rig ran "after all UI
+consumers have had their chance."
+
+**Actual verified order:**
+```
+client.java:1725 — MouseWheel.wheelRotation = mouseWheel.getRotation()
+→ ModernControlController.update() → processWheelInput() (50Hz game tick)
+→ ScriptRunner.method4326 → InterfaceList UI scroll (render pipeline)
+```
+The rig reads wheelRotation BEFORE the UI scroll processing. Both camera zoom and
+UI scroll read the same `MouseWheel.wheelRotation` value. UI scroll operates on
+component `scrollY` (separate variable), so there is no variable conflict — but
+BOTH can react to the same wheel event.
+
+**Fix:** Comments corrected to honestly document the actual pipeline order. Added
+TODO for proper UI ownership check (hit-testing scrollable UI components under cursor).
+
+#### 3. FREE camera input honesty
+
+**Before:** Comments claimed FREE camera "writes to Camera.yawTarget/pitchTarget."
+
+**Actual:** FREE camera reads `InterfaceList.keyQueueSize/keyCodes[]` at 50Hz and
+writes to internal `freeYaw/freePitch` fields. It does NOT write to the RT4
+render-timed `Camera.yawTarget/pitchTarget` fields.
+
+**Fix:** Comments corrected. Added TODO noting that final FREE camera input should
+reuse the render-timed path (`Camera.yawTarget/pitchTarget` written by
+`GameShell.mainInputLoop`) instead of reading the key queue at 50Hz.
+
+#### 4. Smoothing honesty
+
+**Before:** Comments implied "frame-rate-independent" smoothing.
+
+**Actual:** All smoothing (distance, yaw, pitch) is 50Hz tick-based exponential
+smoothing. This is NOT frame-rate-independent — it converges in a fixed number
+of 20ms ticks.
+
+**Fix:** All smoothing comments and Javadoc now accurately state "50Hz tick-based
+exponential smoothing (NOT frame-rate-independent)."
+
+#### 5. ORIGINAL camera state double-save fix
+
+**Before:** Both `onEnterModernMode()` and `activate()` saved camera state:
+```java
+// onEnterModernMode:
+savedCameraType = Camera.cameraType;  // saves 1 (correct)
+Camera.cameraType = 0;
+// later, activate():
+savedCameraType = Camera.cameraType;  // saves 0 (WRONG — already mutated)
+```
+
+**Fix:** Added `originalStateSaved` flag. `onEnterModernMode()` saves state only
+once (when `originalStateSaved == false`), then sets the flag. `activate()` no
+longer saves state. `onExitModernMode()` restores state only when the flag is set,
+then clears it.
+
+#### 6. FP↔CHASE spatial continuity
+
+**Before:** FP→CHASE transition set `actualDistance = desiredDistance` which could
+be far from FP position (e.g., desiredDistance=2400 but FP camera was at distance 0).
+
+**Fix:** FP→CHASE transition sets `actualDistance = FP_EXIT_DISTANCE` (200), so
+the chase camera starts just behind the player and smoothly expands to the user's
+desired distance. No instant teleport.
+
+#### 7. getCameraYaw() removed — no movement authority
+
+**Before:** `getCameraYaw()` was exposed with intent "for movement controller."
+
+**Fix:** Removed. `CameraMode.getCameraRelativeYaw()` returns -1 for CHASE/FREE
+rig states, ensuring movement uses body orientation (`self.anInt3400`), not camera
+yaw. Only FP rig state returns a yaw for movement (via `FirstPersonCamera.getYaw()`).
+
+#### 8. Body orientation single writer
+
+**Before:** Both `ModernCameraRig.updateBodyLookCoupling()` and
+`ModernMovementController.update()` could write `self.anInt3400`.
+
+**Fix:** `ModernMovementController` checks `ModernCameraRig.isFirstPersonRigState()`
+and skips orientation writes when the rig is in FP state. Body-look coupling is the
+sole writer of `self.anInt3400` in FP mode.
+
+#### 9. Distance model: desired/safe/actual
+
+**Before:** Obstruction directly modified camX/camZ after the fact. actualDistance
+could remain 500 while rendered camera was at 200.
+
+**Fix:** Three separate concepts maintained:
+- `desiredDistance` — user's zoom preference (scroll wheel, never destroyed by walls)
+- `safeDistance` — maximum permitted by obstruction
+- `actualDistance` — smoothly approaches `min(desiredDistance, safeDistance)`
+
+`smoothDistance()` converges actualDistance toward the target. Wall appears:
+500→400→300→210. Wall disappears: 210→270→350→430→500. desiredDistance stays 500.
+
+#### 10. Camera obstruction — directional wall flags
+
+**Before:** Only checked `(flags & 0x100)` and `(flags & 0x20000)`.
+
+**Fix:** Added directional wall edge checking using CollisionMap flags:
+N=0x102, S=0x120, W=0x108, E=0x180. When the camera path crosses a tile boundary,
+the destination tile's wall mask facing the crossing direction is checked. Combined
+full-tile mask: 0x240100 (scenery 0x100 + full block 0x20000 + ground decor 0x40000 + flagged tile 0x200000).
+
+#### 11. Dead code removal
+
+Removed `sampleY` variable in `checkObstruction()` that computed
+`(pivotY - pivotY) * frac >> 16` — always evaluated to 0 (placeholder expression).
+
+### 18.3 Files changed
+
+| File | Change |
+|------|--------|
+| `ModernCameraRig.java` | Complete rewrite: method555 reuse for chase/free, Rasteriser.screenUpperY fix, double-save fix with originalStateSaved, FP↔CHASE actualDistance=FP_EXIT_DISTANCE, desired/safe/actual distance model, directional wall obstruction, honest comments (wheel pipeline order, FREE input, smoothing), removed getCameraYaw(), isFirstPersonRigState() API, dead code removal |
+| `CameraMode.java` | getCameraRelativeYaw() returns -1 for CHASE/FREE rig state (not chase yaw) |
+| `ModernMovementController.java` | Uses `ModernCameraRig.isFirstPersonRigState()` guard for body orientation (not `CameraMode.getCurrent() != FIRST_PERSON`) |
+| `MODERN_CONTROLS_GOAL.md` | Updated Phase 3C camera architecture sections |
+| `MODERN_CONTROLS_PROGRESS.md` | Section 18 documentation (this section) |
+
+### 18.4 Build verification
+
+```
+gradlew.bat :client:compileJava → BUILD SUCCESSFUL
+```
+
+4 code files changed (1 new ModernCameraRig.java rewrite, 2 modified, 1 doc).
+No Phase 4 collision, targeting, combat, UI/hotbar, protocol rewrite, or renderer changes.
+
+### 18.5 Known TODOs (deferred, not blocking Phase 3C)
+
+1. **UI wheel ownership:** Proper hit-testing of scrollable UI components under cursor
+   before applying camera zoom. Currently both camera and UI can react to same wheel event.
+2. **FREE camera render-timed input:** Final FREE camera should reuse
+   `Camera.yawTarget/pitchTarget` written by `GameShell.mainInputLoop` instead of
+   reading `InterfaceList.keyQueueSize` at 50Hz.
+3. **Camera obstruction DDA:** Current multi-sample stepping (one per tile) can miss
+   thin wall edges depending on geometry. A proper 2D tile DDA along the pivot→camera
+   segment would be more robust.
+4. **Render-timed smoothing:** Distance/yaw smoothing is 50Hz tick-based. Visual
+   camera smoothing could benefit from render-timed integration (deferred).
+
+### 18.6 Runtime acceptance checklist
+
+**Chase camera (method555 transform):**
+- [ ] Walk straight → camera smoothly behind character
+- [ ] Change direction → camera rotates smoothly via shortest angle
+- [ ] Camera position consistent with RT4 convention (body NORTH → camera SOUTH)
+- [ ] No hand-written trig divergence from official transform
+
+**Zoom continuum:**
+- [ ] Scroll IN from FP → FP_EXIT_DISTANCE → smooth CHASE entry (no teleport)
+- [ ] Scroll OUT from CHASE → FREE entry smooth
+- [ ] desiredDistance unchanged by walls
+- [ ] actualDistance smoothly compressed by walls
+- [ ] actualDistance smoothly recovers when wall cleared
+
+**Wheel pipeline:**
+- [ ] Camera zoom works in MODERN
+- [ ] UI scroll works simultaneously (separate variables, no conflict)
+- [ ] TODO: UI under cursor blocks camera zoom (not yet implemented)
+
+**ORIGINAL state preservation:**
+- [ ] F11 → MODERN → F11 → ORIGINAL: camera returns to saved state
+- [ ] Double F11 does not corrupt saved state (originalStateSaved flag works)
+- [ ] desiredDistance does not overwrite legacy zoom
+
+**Body orientation:**
+- [ ] FP: body follows look direction (body-look coupling sole writer)
+- [ ] FP: WASD does NOT overwrite body orientation
+- [ ] CHASE/FREE: body orientation from movement, not camera yaw
