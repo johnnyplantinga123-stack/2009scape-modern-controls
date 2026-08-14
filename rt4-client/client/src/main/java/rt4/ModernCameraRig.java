@@ -80,10 +80,10 @@ public final class ModernCameraRig {
 	// ---- Smoothing (50Hz tick-based, NOT frame-rate-independent) ----
 	/** Exponential smoothing factor for actual→desired distance (per 50Hz tick). */
 	private static final int DISTANCE_SMOOTH_FACTOR = 6;
-	/** Exponential smoothing factor for chase yaw (per 50Hz tick). */
-	private static final int YAW_SMOOTH_FACTOR = 8;
+	/** Exponential smoothing factor for chase yaw (per 50Hz tick). Lower = tighter. */
+	private static final int YAW_SMOOTH_FACTOR = 3;
 	/** Minimum yaw step to prevent stalling at very small differences. */
-	private static final int YAW_SMOOTH_MIN = 2;
+	private static final int YAW_SMOOTH_MIN = 4;
 
 	// ---- Chase camera geometry ----
 	/** Camera pitch in chase mode (0..2047). ~45° downward look. */
@@ -94,18 +94,19 @@ public final class ModernCameraRig {
 	// ---- Body-look coupling (FP rig state only) ----
 	/**
 	 * Shoulder dead-zone: body doesn't rotate until camera yaw differs
-	 * by more than this amount from body yaw. ~35 degrees (360° = 2048 units).
+	 * by more than this amount from body yaw. ~5.5 degrees (360° = 2048 units).
+	 * Small dead zone so FP body closely follows look direction.
 	 */
-	private static final int SHOULDER_DEAD_ZONE = 100;
+	private static final int SHOULDER_DEAD_ZONE = 32;
 	/**
 	 * Maximum yaw difference before body snaps faster. Beyond this, the
-	 * catch-up rate increases. ~70 degrees.
+	 * catch-up rate increases. ~35 degrees.
 	 */
-	private static final int SHOULDER_LIMIT = 200;
+	private static final int SHOULDER_LIMIT = 128;
 	/** Normal body yaw catch-up speed (units per 50Hz tick). */
-	private static final int BODY_CATCHUP_SPEED = 24;
+	private static final int BODY_CATCHUP_SPEED = 48;
 	/** Fast body yaw catch-up speed when beyond SHOULDER_LIMIT. */
-	private static final int BODY_FAST_CATCHUP_SPEED = 64;
+	private static final int BODY_FAST_CATCHUP_SPEED = 96;
 
 	// ---- State fields ----
 	/** User's desired camera distance (scroll wheel controls this). Maps to vanilla ZOOM space. */
@@ -189,6 +190,11 @@ public final class ModernCameraRig {
 	/** Returns the current desired camera distance. */
 	public static int getDesiredDistance() {
 		return desiredDistance;
+	}
+
+	/** Returns the current safe camera distance (obstruction-limited). */
+	public static int getSafeDistance() {
+		return safeDistance;
 	}
 
 	/** Returns the FP body yaw (for movement controller in FP rig state). */
@@ -467,10 +473,11 @@ public final class ModernCameraRig {
 			case FREE:
 				if (desiredDistance <= FREE_EXIT_DISTANCE) {
 					rigState = RigState.CHASE;
+					// Seed chaseYaw from current free camera to avoid pop
+					chaseYaw = freeYaw;
 					// Smoothly acquire character orientation
 					chaseYawTarget = (PlayerList.self != null)
 							? PlayerList.self.anInt3400 : chaseYaw;
-					// Don't snap chaseYaw — let it smoothly interpolate
 					chasePitch = CHASE_PITCH;
 				}
 				break;
@@ -539,6 +546,7 @@ public final class ModernCameraRig {
 		Camera.cameraX = fineX;
 		Camera.cameraZ = fineZ;
 		Camera.cameraType = 0; // Prevent legacy camera interference
+		DebugOverlay.lastCameraWriter = "fp_immediate_transition";
 	}
 
 	// =====================================================================
@@ -596,6 +604,7 @@ public final class ModernCameraRig {
 		// Use the proven RT4 camera transform
 		Camera.method555(pivotX, Rasteriser.screenUpperY, pivotY,
 				effectiveZoom, chaseYaw, pivotZ, chasePitch);
+		DebugOverlay.lastCameraWriter = "rig_chase";
 
 		// Copy render camera position to smooth-follow fields
 		Camera.cameraX = Camera.renderX;
@@ -682,6 +691,7 @@ public final class ModernCameraRig {
 		// Use the proven RT4 camera transform
 		Camera.method555(pivotX, Rasteriser.screenUpperY, pivotY,
 				effectiveZoom, freeYaw, pivotZ, freePitch);
+		DebugOverlay.lastCameraWriter = "rig_free";
 
 		// Copy render camera position to smooth-follow fields
 		Camera.cameraX = Camera.renderX;
@@ -970,6 +980,7 @@ public final class ModernCameraRig {
 
 			// Write to self.anInt3400 so method949 smooths anInt3381 toward it.
 			self.anInt3400 = bodyYaw;
+			DebugOverlay.lastBodyYawWriter = "fp_body_coupling";
 			// Reset change counter to prevent turn animation triggering
 			self.anInt3385 = 0;
 		}

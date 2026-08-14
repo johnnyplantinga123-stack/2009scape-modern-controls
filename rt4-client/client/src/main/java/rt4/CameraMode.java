@@ -163,6 +163,7 @@ public final class CameraMode {
 	 * Called from {@link Keyboard#keyPressed} at the AWT boundary. A key-pressed
 	 * event fires once per physical press, providing natural edge-triggering so
 	 * F11 toggles ORIGINAL ↔ MODERN exactly once per keypress.
+	 * F12 toggles the debug overlay (Phase 3C).
 	 *
 	 * @param keyCode the mapped game keycode, or {@code -1} for unmapped keys.
 	 */
@@ -170,5 +171,7 @@ public final class CameraMode {
 		if (keyCode == KEY_F11) {
 			cycle();
 		}
+		// F12 debug overlay toggle — works in any mode, edge-triggered
+		DebugOverlay.onKeyPressed(keyCode);
 	}
 }

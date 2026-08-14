@@ -310,6 +310,7 @@ public final class FirstPersonCamera {
 		// Also set cameraX/cameraZ so normal camera system doesn't snap
 		Camera.cameraX = fpCamX;
 		Camera.cameraZ = fpCamZ;
+		DebugOverlay.lastCameraWriter = "fp_camera";
 	}
 
 	/**

@@ -934,6 +934,8 @@ public final class client extends GameShell {
 			Preferences.write(GameShell.signLink);
 		}
 		PluginRepository.LateDraw();
+		// Phase 3C: F12 debug overlay (drawn last, on top of everything)
+		DebugOverlay.draw();
 	}
 
 	@OriginalMember(owner = "client!client", name = "c", descriptor = "(B)V")

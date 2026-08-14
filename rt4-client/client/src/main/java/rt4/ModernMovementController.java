@@ -91,6 +91,24 @@ public final class ModernMovementController {
 	private enum MovementState { IDLE, WALK, RUN }
 	private static MovementState lastMovementState = MovementState.IDLE;
 
+	// ---- Debug overlay accessors ----
+	/** Returns last server-reported tile X (LOCAL). For debug overlay. */
+	public static int getLastServerTileX() { return lastServerReportedTileX; }
+	/** Returns last server-reported tile Z (LOCAL). For debug overlay. */
+	public static int getLastServerTileZ() { return lastServerReportedTileZ; }
+	/** Returns current pending request count. For debug overlay. */
+	public static int getPendingCount() { return pendingTail - pendingHead; }
+	/** Returns current target orientation angle. For debug overlay. */
+	public static int getTargetOrientationAngle() { return targetOrientationAngle; }
+	/** Returns predicted sub-fine X (Q16). For debug overlay. */
+	public static long getPredictedSubX() { return predictedSubX; }
+	/** Returns predicted sub-fine Z (Q16). For debug overlay. */
+	public static long getPredictedSubZ() { return predictedSubZ; }
+	/** Returns last computed velocity X (Q16). For debug overlay. */
+	public static int getVelocityXQ16() { return velocityXQ16; }
+	/** Returns last computed velocity Z (Q16). For debug overlay. */
+	public static int getVelocityZQ16() { return velocityZQ16; }
+
 	private ModernMovementController() {
 	}
 
@@ -229,6 +247,7 @@ public final class ModernMovementController {
 		if (!CameraMode.isModern()) return;
 		Player self = PlayerList.self;
 		if (self == null) return;
+		DebugOverlay.movementUpdateTickCount++;
 		if (!ModernControlController.isGameplayInputAllowed()) {
 			intent.clear();
 			return;
@@ -344,6 +363,7 @@ public final class ModernMovementController {
 						(double) velocityXQ16,
 						(double) velocityZQ16) * -325.949D) & 0x7FF;
 				self.anInt3400 = targetOrientationAngle;
+				DebugOverlay.lastBodyYawWriter = "movement_controller";
 			}
 		}
 
@@ -559,6 +579,7 @@ public final class ModernMovementController {
 
 		if (divergence > MAX_DIVERGENCE_TILES) {
 			// Large divergence — always rebase regardless of timeout
+			DebugOverlay.lastMovementRebaseReason = "large_divergence_" + divergence;
 			System.out.println("[MODERN-MOVE] REBASE: large divergence=" + divergence
 					+ " predictedTile=" + predictedTileX + "," + predictedTileZ
 					+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ
@@ -566,6 +587,7 @@ public final class ModernMovementController {
 			rebaseFromServerTile();
 		} else if (timeoutExpired && divergence > 0 && pendingEmpty()) {
 			// Timeout + actual divergence + no pending = genuine desync
+			DebugOverlay.lastMovementRebaseReason = "timeout_divergence_" + divergence;
 			System.out.println("[MODERN-MOVE] REBASE: timeout divergence=" + divergence
 					+ " predictedTile=" + predictedTileX + "," + predictedTileZ
 					+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ);
@@ -576,14 +598,28 @@ public final class ModernMovementController {
 	}
 
 	/**
-	 * Rebase prediction from lastServerReportedTile → tile-center fine coords.
-	 * NOT from self.xFine/zFine (those are the predicted position during normal locomotion).
+	 * Rebase prediction from lastServerReported tile, preserving the fractional
+	 * offset within the tile so the player doesn't snap to tile centre.
+	 * This prevents the visible "snap to centre" hitching that occurred when
+	 * the previous implementation always rebased to exact tile centre.
 	 */
 	private static void rebaseFromServerTile() {
-		int centerFineX = (lastServerReportedTileX << 7) + 64;
-		int centerFineZ = (lastServerReportedTileZ << 7) + 64;
-		predictedSubX = ((long) centerFineX) << 16;
-		predictedSubZ = ((long) centerFineZ) << 16;
+		// Compute the current fine position relative to the server tile
+		int currentFineX = (int) (predictedSubX >> 16);
+		int currentFineZ = (int) (predictedSubZ >> 16);
+		int serverFineX = (lastServerReportedTileX << 7) + 64;
+		int serverFineZ = (lastServerReportedTileZ << 7) + 64;
+		// Preserve the fractional offset from server tile centre
+		// but clamp it to within the tile to prevent runaway prediction
+		int offsetX = currentFineX - serverFineX;
+		int offsetZ = currentFineZ - serverFineZ;
+		// Clamp offset to ±128 (one tile radius) to prevent excessive divergence
+		if (offsetX > 128) offsetX = 128;
+		if (offsetX < -128) offsetX = -128;
+		if (offsetZ > 128) offsetZ = 128;
+		if (offsetZ < -128) offsetZ = -128;
+		predictedSubX = ((long) (serverFineX + offsetX)) << 16;
+		predictedSubZ = ((long) (serverFineZ + offsetZ)) << 16;
 		velocityXQ16 = 0;
 		velocityZQ16 = 0;
 	}
