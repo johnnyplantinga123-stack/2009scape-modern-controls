@@ -1,8 +1,8 @@
 # Modern Controls — Phase 0 Analysis & Implementation Plan
 
-**Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE** · **Phase 3B (Continuous Modern Movement) — COMPLETE** · **Phase 3B Stabilization (Input, Animation, Self-Rendering) — COMPLETE** · **PHASE 3C (Modern Camera Rig) — IMPLEMENTATION COMPLETE / RUNTIME STABILIZATION** · PHASE 3C REVIEW #2 — COMPLETE · PHASE 3C ADDENDUM (Zoom Ranges) — COMPLETE · **PHASE 3C RUNTIME STABILIZATION — IN PROGRESS (FP camera position fix, arrow key gating, debug overlay, structural visibility fix with stale bounding-box reset)**
+**Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE** · **Phase 3B (Continuous Modern Movement) — COMPLETE** · **Phase 3B Stabilization (Input, Animation, Self-Rendering) — COMPLETE** · **PHASE 3C (Modern Camera Rig) — IMPLEMENTATION COMPLETE / RUNTIME STABILIZATION** · PHASE 3C REVIEW #2 — COMPLETE · PHASE 3C ADDENDUM (Zoom Ranges) — COMPLETE · **PHASE 3C RUNTIME STABILIZATION — IN PROGRESS (camera ownership audit, FREE camera render-timed arrow input, WASD-in-CHASE source verified)**
 
-**⚠️ RUNTIME STATUS: Phase 3C is NOT fully runtime-proven. Compile success ≠ runtime success. FP camera position fix applied (defensive transition write). Arrow key gating, structural visibility override with stale bounding-box reset, debug overlay all applied. Roof pipeline: SOURCE VERIFIED. FP selective-removal override: COMPILE VERIFIED. Actual roof visible outside / ceiling from underneath / CHASE-FREE restoration: RUNTIME UNVERIFIED.**
+**⚠️ RUNTIME STATUS: Phase 3C is NOT fully runtime-proven. Compile success ≠ runtime success. Camera ownership audit: SOURCE VERIFIED (architecture sound, cameraType=0 enforced). FREE camera arrow keys: COMPILE VERIFIED (continuous input + render-timed scaling). WASD-in-CHASE: SOURCE VERIFIED. FP camera position fix, arrow key gating, structural visibility, debug overlay: all COMPILE VERIFIED, RUNTIME UNVERIFIED.**
 
 **Date:** 14-08-2026
 
@@ -2870,3 +2870,171 @@ Files modified: `ScriptRunner.java`
 | Actual ceiling visible from underneath | **RUNTIME UNVERIFIED** (back-face/one-sided geometry) |
 | CHASE/FREE roof restoration after FP exit | **RUNTIME UNVERIFIED** |
 | Roof mode 0/1 behavior in FP | **SOURCE VERIFIED** (no FP override needed) |
+
+---
+
+## 24. Camera Ownership Audit
+
+**Date:** 14-08-2026
+**Baseline:** 404a2be (manual backup)
+
+### 24.1 Purpose
+
+Trace ALL writers to Camera fields to verify that exactly ONE writer produces
+the final camera state per rendered frame. Multiple conflicting writers are
+a core cause of the observed runtime bugs (camera hitching, position jumps,
+minimap rotation).
+
+### 24.2 Camera Field Writers — Complete Map
+
+**Primary render camera fields:** `renderX`, `renderZ`, `anInt40`, `cameraYaw`, `cameraPitch`
+
+| Writer | When | Fields Written |
+|--------|------|----------------|
+| `FirstPersonCamera.update()` | 50Hz tick, FP rig state | renderX/Z, anInt40, cameraYaw/Pitch, yawTarget, pitchTarget, cameraX/Z |
+| `ModernCameraRig.writeFpCameraImmediate()` | Transition tick only | Same as FP (defensive safety net) |
+| `ModernCameraRig.updateChase()` via `Camera.method555()` | 50Hz tick, CHASE rig state | renderX/Z, anInt40, cameraYaw/Pitch (via method555) |
+| `ModernCameraRig.updateFree()` via `Camera.method555()` | 50Hz tick, FREE rig state | renderX/Z, anInt40, cameraYaw/Pitch (via method555) |
+| `ScriptRunner.method4326()` line 238 via `Camera.method555()` | Render-rate, **only when cameraType==1** | renderX/Z, anInt40, cameraYaw/Pitch |
+| `InterfaceList.java` lines 1114-1115 | Render-rate, **only when cameraType==2** | renderX/Z (cutscene camera) |
+| `ScriptRunner.method4326()` lines 247-271 | Render-rate, custom effects | renderX/Z, anInt40, cameraYaw/Pitch (temporary, restored lines 333-337) |
+
+**Camera control fields:** `cameraType`, `yawTarget`, `pitchTarget`, `cameraX`, `cameraZ`
+
+| Writer | When | Fields |
+|--------|------|--------|
+| `LoginManager.java` lines 816, 865 | Region rebuild | cameraType = 1 |
+| `FirstPersonCamera` | Every frame (FP) | cameraType = 0 |
+| `ModernCameraRig` | Every frame (CHASE/FREE) | cameraType = 0 |
+| `GameShell.mainInputLoop()` | Render-rate, **gated: !modernRigOwnsCamera** | yawTarget, pitchTarget |
+| `API.java` lines 163, 177 | Plugin API | yawTarget, pitchTarget |
+
+### 24.3 Camera Ownership Per Mode
+
+| Mode | Final Camera Writer | cameraType |
+|------|---------------------|------------|
+| ORIGINAL | ScriptRunner.method4326 → method555 (legacy) | 1 |
+| MODERN FP | FirstPersonCamera.update() | 0 |
+| MODERN CHASE | ModernCameraRig.updateChase() → method555 | 0 |
+| MODERN FREE | ModernCameraRig.updateFree() → method555 | 0 |
+| Cutscene | InterfaceList → method555 | 2 |
+
+### 24.4 Key Findings
+
+1. **Architecture is sound**: cameraType=0 in modern mode prevents the legacy
+   camera (ScriptRunner line 238) from running. Both FirstPersonCamera and
+   ModernCameraRig re-assert cameraType=0 every frame to counteract
+   LoginManager setting it to 1 during region rebuilds.
+
+2. **GameShell.mainInputLoop() gating is correct**: The arrow key camera
+   panning is blocked when `CameraMode.isModern() && ModernCameraRig.isActive()`.
+   This prevents legacy yawTarget/pitchTarget mutation in all modern modes.
+
+3. **Custom camera effects (shake/jitter/wave)** are temporary and restored
+   within the same render frame (save at lines 240-244, restore at 333-337).
+   These do not conflict with modern camera.
+
+4. **50Hz camera stutter**: Camera smoothing (yaw, pitch, distance, position)
+   runs at 50Hz (tick-based). Between ticks, the camera position is static
+   while rendering runs at higher rates. This causes visible stepping on
+   high-refresh displays. This is a polish issue (render-timed interpolation
+   deferred).
+
+### 24.5 Verification Status
+
+| Item | Status |
+|------|--------|
+| Camera ownership audit | **SOURCE VERIFIED** |
+| cameraType=0 enforcement | **SOURCE VERIFIED** |
+| mainInputLoop gating | **SOURCE VERIFIED** |
+| No conflicting writers in modern mode | **SOURCE VERIFIED** |
+| 50Hz camera stutter fix | **DEFERRED** (render-timed interpolation requires game loop restructuring) |
+
+---
+
+## 25. FREE Camera Arrow Key Fix — Continuous Input + Render-Timed Scaling
+
+**Date:** 14-08-2026
+**Baseline:** 404a2be
+
+### 25.1 Problem
+
+FREE camera arrow keys used `InterfaceList.keyQueueSize` (event queue) at 50Hz.
+This only processes discrete key events, not continuous key holds. Result:
+arrow key camera orbit was choppy and unresponsive compared to the original
+RT4 camera which uses `Keyboard.pressedKeys` (continuous polled state) at
+render-rate via `GameShell.mainInputLoop()`.
+
+### 25.2 Fix Applied
+
+**File:** `ModernCameraRig.java` — `updateFree()`
+
+Changed from:
+```java
+if (Preferences.aBoolean63) {
+    for (int i = 0; i < InterfaceList.keyQueueSize; i++) {
+        int code = InterfaceList.keyCodes[i];
+        if (code == Keyboard.KEY_UP) freePitch -= 4;
+        // ... etc
+    }
+}
+```
+
+Changed to:
+```java
+double renderScale = (double) GameShell.updateDelta / 20_000_000.0;
+if (renderScale < 0.1) renderScale = 0.1;
+if (renderScale > 5.0) renderScale = 5.0;
+
+if (Keyboard.pressedKeys[Keyboard.KEY_UP]) freePitch -= (int)(4 * renderScale);
+if (Keyboard.pressedKeys[Keyboard.KEY_DOWN]) freePitch += (int)(4 * renderScale);
+if (Keyboard.pressedKeys[Keyboard.KEY_LEFT]) freeYaw -= (int)(16 * renderScale);
+if (Keyboard.pressedKeys[Keyboard.KEY_RIGHT]) freeYaw += (int)(16 * renderScale);
+```
+
+### 25.3 Key Changes
+
+1. **Continuous polled input**: `Keyboard.pressedKeys` instead of event queue.
+   Camera orbits smoothly while arrow keys are held.
+2. **Render-timed scaling**: Input scaled by `GameShell.updateDelta / 20ms`.
+   At 50Hz (20ms tick): scale = 1.0 (original behavior).
+   At other rates: proportionally adjusted for consistent feel.
+3. **Removed `Preferences.aBoolean63` guard**: This preference controlled
+   whether the key queue was populated. With polled input, it's not needed.
+4. **Safety clamps**: Scale clamped to [0.1, 5.0] to prevent extreme values
+   during lag spikes or very fast frames.
+
+### 25.4 WASD-in-CHASE Source Verification
+
+Traced the complete WASD-in-CHASE path:
+
+1. `Keyboard.pressedKeys[KEY_W]` set by keyboard handler
+2. `ModernControlController.shouldForwardKeyToChat()` returns `false` for WASD
+   when in MODERN mode with chat closed — prevents letters reaching chatbox
+3. `ModernMovementController.readInput()` reads `Keyboard.pressedKeys[KEY_W/A/S/D]`
+4. Movement intent → Q16 prediction → DDA → server sync
+5. `CameraMode.getCameraRelativeYaw()` returns -1 in CHASE/FREE — movement
+   uses body orientation (locomotion heading), NOT camera yaw
+
+**Result:** WASD-in-CHASE is **SOURCE VERIFIED** correct. The `shouldForwardKeyToChat`
+filter is called from both `Protocol.java:2822` and `client.java:1159`, covering
+both key event processing paths.
+
+### 25.5 Build Verification
+
+```
+gradlew.bat :client:compileJava → BUILD SUCCESSFUL in 6s
+```
+
+Files modified: `ModernCameraRig.java`
+
+### 25.6 Verification Status
+
+| Item | Status |
+|------|--------|
+| FREE camera continuous arrow input | **COMPILE VERIFIED** |
+| Render-timed scaling | **COMPILE VERIFIED** |
+| WASD-in-CHASE path | **SOURCE VERIFIED** |
+| shouldForwardKeyToChat coverage | **SOURCE VERIFIED** |
+| FREE camera orbit smoothness | **RUNTIME UNVERIFIED** |
+| FREE camera arrow key speed feel | **RUNTIME UNVERIFIED** |

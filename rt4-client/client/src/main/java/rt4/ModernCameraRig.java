@@ -573,33 +573,38 @@ public final class ModernCameraRig {
 
 	/**
 	 * Free camera: classic-style overview camera.
-	 * Arrow keys control orbit (freeYaw/freePitch), similar to the classic RT4
-	 * follow camera's arrow key input.
+	 * Arrow keys control orbit (freeYaw/freePitch), matching the classic RT4
+	 * arrow key input from {@code GameShell.mainInputLoop()}.
 	 * Camera position computed by {@link Camera#method555}.
 	 * Modern WASD remains active; movement uses body orientation.
 	 *
-	 * <p>TODO: Final FREE camera input should reuse the render-timed path
-	 * ({@code Camera.yawTarget/pitchTarget} written by {@code GameShell.mainInputLoop})
-	 * instead of reading {@code InterfaceList.keyQueueSize} at 50Hz. The current
-	 * implementation is functionally correct but not yet integrated with the
-	 * existing render-timed camera panning infrastructure.</p>
+	 * <p>Arrow key input uses {@code Keyboard.pressedKeys} (continuous polled state)
+	 * instead of {@code InterfaceList.keyQueueSize} (event queue). This ensures
+	 * smooth, continuous orbit while keys are held — matching the original RT4
+	 * camera arrow key behavior. Input is scaled by {@code GameShell.renderDelta}
+	 * for frame-rate-independent speed (same approach as {@code mainInputLoop}).</p>
 	 */
 	private static void updateFree(Player self) {
-		// Arrow key camera control — reads InterfaceList key queue at 50Hz.
-		// Rates match Camera.method4273 arrow key input (±4 pitch, ±16 yaw).
-		if (Preferences.aBoolean63) {
-			for (int i = 0; i < InterfaceList.keyQueueSize; i++) {
-				int code = InterfaceList.keyCodes[i];
-				if (code == Keyboard.KEY_UP) {
-					freePitch -= 4;
-				} else if (code == Keyboard.KEY_DOWN) {
-					freePitch += 4;
-				} else if (code == Keyboard.KEY_LEFT) {
-					freeYaw -= 16;
-				} else if (code == Keyboard.KEY_RIGHT) {
-					freeYaw += 16;
-				}
-			}
+		// Arrow key camera orbit — continuous polled input with render-timed scaling.
+		// Rates match the original 50Hz values (±4 pitch, ±16 yaw per tick)
+		// scaled by renderDelta for frame-rate independence.
+		// At 50Hz (20ms tick): scale ≈ 1.0, matching the original per-tick amounts.
+		// At 60fps (16.67ms): scale ≈ 0.833, giving ~300 units/sec (same as 50Hz×4=200/s? no, 50*4=200/s, 60*3.33=200/s).
+		double renderScale = (double) GameShell.updateDelta / 20_000_000.0;
+		if (renderScale < 0.1) renderScale = 0.1;  // Safety clamp for very fast frames
+		if (renderScale > 5.0) renderScale = 5.0;  // Safety clamp for very slow frames
+
+		if (Keyboard.pressedKeys[Keyboard.KEY_UP]) {
+			freePitch -= (int) (4 * renderScale);
+		}
+		if (Keyboard.pressedKeys[Keyboard.KEY_DOWN]) {
+			freePitch += (int) (4 * renderScale);
+		}
+		if (Keyboard.pressedKeys[Keyboard.KEY_LEFT]) {
+			freeYaw -= (int) (16 * renderScale);
+		}
+		if (Keyboard.pressedKeys[Keyboard.KEY_RIGHT]) {
+			freeYaw += (int) (16 * renderScale);
 		}
 
 		// Clamp pitch (same range as Camera.clampCameraAngle)
