@@ -1,15 +1,25 @@
 package rt4;
 
 /**
- * Camera mode framework (Phase 1).
+ * Control profile and camera mode framework (Phase 1 + 3C).
  *
- * <p>Defines the three playable camera modes and the F11 cycling
- * {@code ORIGINAL -> FIRST_PERSON -> THIRD_PERSON -> ORIGINAL}.
+ * <p>F11 toggles between two control profiles:
+ * <ul>
+ *   <li>{@link Mode#ORIGINAL} — pure vanilla RuneScape experience (click-to-move,
+ *       legacy camera, scroll zoom, middle-mouse, minimap, animations).</li>
+ *   <li>{@link Mode#THIRD_PERSON} — MODERN control profile (WASD movement,
+ *       modern camera rig with FP/CHASE/FREE scroll continuum).</li>
+ * </ul>
  *
- * <p>Phase 1 only implements the mode <em>state machine</em>. The actual
- * first-person / third-person camera, WASD movement, targeting and networking
- * are added in later phases. While the mode is {@code ORIGINAL} the client runs
- * its original, untouched behaviour.
+ * <p>Inside MODERN, the {@link ModernCameraRig} manages the camera continuum:
+ * <pre>
+ *   FIRST_PERSON  ←scroll→  CHASE  ←scroll→  FREE
+ * </pre>
+ * Scrolling only changes the camera rig INSIDE MODERN. It never switches
+ * the control profile. Only F11 switches between ORIGINAL and MODERN.
+ *
+ * <p>{@link Mode#FIRST_PERSON} is retained as a legacy enum value but is no
+ * longer reached via F11. The rig manages FP camera state internally.
  *
  * <p>F11 is edge-triggered via {@link Keyboard#keyPressed} (the AWT boundary),
  * so it responds exactly once per physical key press.
@@ -20,12 +30,13 @@ public final class CameraMode {
 	private static final int KEY_F11 = 11;
 
 	/**
-	 * The three camera modes.
+	 * Control profiles.
 	 *
 	 * <ul>
-	 *     <li>{@link #ORIGINAL} — classic RuneScape camera & controls, fully preserved.</li>
-	 *     <li>{@link #FIRST_PERSON} — first-person camera (Phase 2+).</li>
-	 *     <li>{@link #THIRD_PERSON} — third-person camera (Phase 14).</li>
+	 *     <li>{@link #ORIGINAL} — pure vanilla RuneScape. No modern controls.</li>
+	 *     <li>{@link #FIRST_PERSON} — legacy value; no longer reached via F11.
+	 *         The camera rig manages FP state internally within MODERN.</li>
+	 *     <li>{@link #THIRD_PERSON} — MODERN control profile: WASD + modern camera rig.</li>
 	 * </ul>
 	 */
 	public enum Mode {
@@ -89,83 +100,64 @@ public final class CameraMode {
 	}
 
 	/**
-	 * Cycles the camera mode:
-	 * {@code ORIGINAL -> FIRST_PERSON -> THIRD_PERSON -> ORIGINAL}.
+	 * Toggles between ORIGINAL and MODERN control profiles.
+	 *
+	 * <p>F11 from ORIGINAL → enters MODERN (THIRD_PERSON).
+	 * F11 from MODERN → returns to ORIGINAL.
+	 *
+	 * <p>Inside MODERN, scroll wheel controls the camera rig
+	 * (FP ↔ CHASE ↔ FREE). Scrolling never switches control profile.
 	 *
 	 * <p>Mode switching is designed not to teleport or reset the player's
-	 * position; only the camera-mode state changes here.
+	 * position; only the control profile changes here.
 	 */
 	public static void cycle() {
 		Mode previous = current;
-		switch (current) {
-			case ORIGINAL:
-				current = Mode.FIRST_PERSON;
-				break;
-			case FIRST_PERSON:
-				current = Mode.THIRD_PERSON;
-				break;
-			case THIRD_PERSON:
-			default:
-				current = Mode.ORIGINAL;
-				break;
+		if (current == Mode.ORIGINAL) {
+			current = Mode.THIRD_PERSON; // Enter MODERN
+		} else {
+			current = Mode.ORIGINAL; // Return to vanilla
 		}
 		onModeChanged(previous, current);
 	}
 
 	/**
-	 * Handles activation/deactivation when mode changes.
+	 * Handles activation/deactivation when control profile changes.
 	 *
-	 * <p>Each camera mode gets its own clean state on entry:
-	 * <ul>
-	 *   <li>FIRST_PERSON: anchors at player position, safe pitch, cursor locked.</li>
-	 *   <li>THIRD_PERSON: placeholder — resets camera to safe defaults, cursor unlocked.
-	 *       No actual third-person camera is built yet (Phase 14).</li>
-	 *   <li>ORIGINAL: restores legacy camera system, releases cursor lock,
-	 *       resets pitch to safe value so FP state doesn't contaminate.</li>
-	 * </ul>
+	 * <p>ORIGINAL → MODERN: saves legacy camera state, activates modern
+	 * movement and camera rig. Camera rig starts in CHASE state.
+	 *
+	 * <p>MODERN → ORIGINAL: deactivates FP camera if active, deactivates
+	 * rig and movement, restores saved legacy camera state so the vanilla
+	 * camera returns exactly where it was before MODERN was entered.
 	 */
 	private static void onModeChanged(Mode previous, Mode next) {
 		// Reset chat input state on any mode transition to prevent
 		// inconsistent state across mode boundaries.
 		ModernControlController.resetChatState();
 
-		// Phase 3B: lifecycle hooks for modern movement controller
 		if (previous == Mode.ORIGINAL && next != Mode.ORIGINAL) {
+			// ORIGINAL → MODERN
 			ModernMovementController.enterModernMode();
-			ModernCameraRig.onEnterModernMode();
+			ModernCameraRig.onEnterModernMode(); // saves legacy camera state
 		} else if (previous != Mode.ORIGINAL && next == Mode.ORIGINAL) {
+			// MODERN → ORIGINAL
+			// Deactivate FP camera first if the rig was in FP state
+			if (FirstPersonCamera.isActive()) {
+				FirstPersonCamera.deactivate();
+			}
 			ModernMovementController.exitModernMode();
-			ModernCameraRig.onExitModernMode();
+			ModernCameraRig.onExitModernMode(); // restores legacy camera state
 		} else if (previous != next) {
-			// e.g. FIRST_PERSON ↔ THIRD_PERSON: locomotion unchanged, camera only
+			// Modern mode switch (e.g. FP ↔ TP): locomotion unchanged
 			ModernMovementController.onModernModeSwitch();
-			// Rig stays active across FP/TP transitions (both are MODERN)
 		}
 
-		// Deactivate previous mode's camera
-		if (previous == Mode.FIRST_PERSON) {
-			FirstPersonCamera.deactivate();
-			// Reset camera pitch/yaw to safe values so the next mode
-			// doesn't inherit extreme FP pitch (e.g., looking straight up
-			// could put the camera underground in ORIGINAL/THIRD_PERSON).
-			FirstPersonCamera.resetToSafeDefaults();
-		}
-		// THIRD_PERSON deactivation: nothing to do (placeholder, no camera state)
-
-		// Activate new mode's camera
-		if (next == Mode.FIRST_PERSON) {
-			FirstPersonCamera.activate();
-		}
-		// THIRD_PERSON activation: placeholder only.
-		// The camera state was already reset to safe defaults above when
-		// leaving the previous mode. No mouse-lock, no camera override.
-		// The original camera system runs in its default state.
-		// Phase 14 will add actual third-person camera here.
-
+		// Safety net for ORIGINAL: ensure clean camera state
 		if (next == Mode.ORIGINAL) {
-			// Ensure cursor is fully unlocked for original RS controls.
-			// FirstPersonCamera.deactivate() already calls unlockCursor(),
-			// but this is a safety net for edge cases (e.g., rapid F11 spam).
+			if (FirstPersonCamera.isActive()) {
+				FirstPersonCamera.deactivate();
+			}
 			FirstPersonCamera.resetToSafeDefaults();
 		}
 	}
@@ -173,7 +165,7 @@ public final class CameraMode {
 	/**
 	 * Called from {@link Keyboard#keyPressed} at the AWT boundary. A key-pressed
 	 * event fires once per physical press, providing natural edge-triggering so
-	 * F11 cycles the mode exactly once per keypress.
+	 * F11 toggles ORIGINAL ↔ MODERN exactly once per keypress.
 	 *
 	 * @param keyCode the mapped game keycode, or {@code -1} for unmapped keys.
 	 */

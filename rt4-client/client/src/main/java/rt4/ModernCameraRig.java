@@ -117,9 +117,18 @@ public final class ModernCameraRig {
 	private static boolean initialized = false;
 	/** Whether the rig is currently active (set by activate, cleared by deactivate). */
 	private static boolean active = false;
+	/** Previous rig state for transition detection (FP camera lifecycle). */
+	private static RigState prevRigState = RigState.CHASE;
 
 	// ---- Saved camera state for ORIGINAL restoration ----
 	private static int savedCameraType = 1;
+	private static int savedCameraPitch = 256;
+	private static int savedPitchTarget = 256;
+	private static int savedCameraYaw;
+	private static int savedYawTarget;
+	private static int savedCameraX;
+	private static int savedCameraZ;
+	private static int savedAnInt40;
 
 	private ModernCameraRig() {
 	}
@@ -164,20 +173,37 @@ public final class ModernCameraRig {
 	}
 
 	/**
-	 * Called when entering ANY modern mode from ORIGINAL.
-	 * Sets cameraType=0 immediately to prevent legacy camera interference.
+	 * Called when entering MODERN from ORIGINAL.
+	 * Saves the full legacy camera state for later restoration and
+	 * sets cameraType=0 to prevent legacy camera interference.
 	 */
 	public static void onEnterModernMode() {
+		// Save full legacy camera state for restoration on return to ORIGINAL
 		savedCameraType = Camera.cameraType;
+		savedCameraPitch = Camera.cameraPitch;
+		savedPitchTarget = (int) Camera.pitchTarget;
+		savedCameraYaw = Camera.cameraYaw;
+		savedYawTarget = (int) Camera.yawTarget;
+		savedCameraX = Camera.cameraX;
+		savedCameraZ = Camera.cameraZ;
+		savedAnInt40 = Camera.anInt40;
 		Camera.cameraType = 0;
 	}
 
 	/**
-	 * Called when returning to ORIGINAL mode.
-	 * Restores the saved camera type so the legacy camera system resumes.
+	 * Called when returning to ORIGINAL from MODERN.
+	 * Restores the full saved legacy camera state so the vanilla camera
+	 * returns exactly where it was before MODERN was entered.
 	 */
 	public static void onExitModernMode() {
 		Camera.cameraType = savedCameraType;
+		Camera.cameraPitch = savedCameraPitch;
+		Camera.pitchTarget = savedPitchTarget;
+		Camera.cameraYaw = savedCameraYaw;
+		Camera.yawTarget = savedYawTarget;
+		Camera.cameraX = savedCameraX;
+		Camera.cameraZ = savedCameraZ;
+		Camera.anInt40 = savedAnInt40;
 		active = false;
 	}
 
@@ -267,7 +293,8 @@ public final class ModernCameraRig {
 	private static void activate() {
 		active = true;
 		initialized = false;
-		savedCameraType = Camera.cameraType;
+		prevRigState = RigState.CHASE;
+		// cameraType is already 0 (set by onEnterModernMode before this runs)
 		Camera.cameraType = 0;
 
 		Player self = PlayerList.self;
@@ -277,16 +304,8 @@ public final class ModernCameraRig {
 			chaseYawTarget = self.anInt3400;
 		}
 
-		// Determine initial rig state from desired distance
-		if (desiredDistance <= FP_EXIT_DISTANCE) {
-			rigState = RigState.FIRST_PERSON;
-		} else if (desiredDistance >= FREE_EXIT_DISTANCE) {
-			rigState = RigState.FREE;
-			freeYaw = Camera.cameraYaw;
-			freePitch = (int) Camera.pitchTarget;
-		} else {
-			rigState = RigState.CHASE;
-		}
+		// Default: enter CHASE (not FP). User scrolls to reach FP/FREE.
+		rigState = RigState.CHASE;
 
 		actualDistance = desiredDistance;
 		chasePitch = CHASE_PITCH;
@@ -372,10 +391,21 @@ public final class ModernCameraRig {
 		}
 
 		if (previous != rigState) {
-			// Debug: state transition (temporary, remove before final commit)
+			// FP camera lifecycle: activate/deactivate on rig state transitions
+			if (rigState == RigState.FIRST_PERSON && previous != RigState.FIRST_PERSON) {
+				// Entering FP: activate mouse-look, cursor lock
+				FirstPersonCamera.activate();
+			} else if (previous == RigState.FIRST_PERSON && rigState != RigState.FIRST_PERSON) {
+				// Exiting FP: deactivate mouse-look, unlock cursor
+				FirstPersonCamera.deactivate();
+				Camera.cameraType = 0; // Rig still owns camera in CHASE/FREE
+			}
+
+			// Debug: state transition
 			System.out.println("[CAMERA-RIG] State: " + previous + " → " + rigState
 					+ " desired=" + desiredDistance + " actual=" + actualDistance);
 		}
+		prevRigState = rigState;
 	}
 
 	// =====================================================================

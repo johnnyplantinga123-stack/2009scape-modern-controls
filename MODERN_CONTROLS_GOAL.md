@@ -2163,22 +2163,44 @@ queues and packets.
 
 # PHASE 3C — MODERN CAMERA CONTINUUM (implemented)
 
-## Camera/Control Separation
+## Control Profile vs Camera Rig
 
 ```
-CONTROL SCHEME:
-    ORIGINAL (legacy) — click-to-move, PathFinder, legacy camera
-    MODERN           — WASD, modern camera rig
+CONTROL PROFILE (F11 toggle):
+    ORIGINAL — pure vanilla 2009Scape (click-to-move, legacy camera, scroll zoom)
+    MODERN   — WASD + modern camera rig
 
-CAMERA RIG inside MODERN:
+CAMERA RIG inside MODERN only:
     FIRST_PERSON  ← scroll →  CHASE  ← scroll →  FREE
 ```
 
-CameraMode enum (ORIGINAL / FIRST_PERSON / THIRD_PERSON) controls LOCOMOTION.
-ModernCameraRig (FP / CHASE / FREE) controls CAMERA inside MODERN.
-ORIGINAL remains a pristine legacy fallback, untouched by the rig.
+F11 toggles ORIGINAL ↔ MODERN. Scrolling only changes the camera rig INSIDE
+MODERN. Scrolling NEVER switches control profile.
 
-## Scroll Zoom Continuum
+CameraMode enum: ORIGINAL and THIRD_PERSON are the active profiles.
+FIRST_PERSON is a legacy enum value; the rig manages FP state internally.
+ModernCameraRig (FP / CHASE / FREE) controls CAMERA inside MODERN.
+
+## ORIGINAL Must Remain Vanilla
+
+A player who never presses F11 gets the complete vanilla 2009Scape experience:
+- Original click-to-move, PathFinder, minimap movement
+- Original camera, scroll-wheel zoom, middle-mouse pan
+- Original character orientation and animations
+- No modern camera rig behavior, no FP/CHASE/FREE transitions
+
+## MODERN FREE ≠ ORIGINAL
+
+When MODERN is active and the user scrolls fully outward, the camera becomes
+classic/free-camera-like. BUT:
+- WASD remains active
+- Shift run remains active
+- Modern locomotion and packets remain active
+- ORIGINAL is NOT activated by scrolling
+
+MODERN FREE is a CAMERA RIG state. ORIGINAL is a CONTROL PROFILE.
+
+## Scroll Zoom Continuum (MODERN only)
 
 ```
 SCROLL IN:
@@ -2188,7 +2210,7 @@ SCROLL OUT:
     FIRST_PERSON → close chase → normal chase → far chase → FREE → max clamp
 ```
 
-No F11 needed for normal transitions. F11 remains debug/direct mode cycle.
+No F11 needed for camera rig transitions. F11 only toggles control profile.
 
 ## Desired vs Actual Distance
 
@@ -2244,3 +2266,11 @@ scripts (cutscenes), never from mouse wheel for the default camera.
 
 ORIGINAL mode: zero changes. Legacy camera, click-to-move, scroll zoom via
 Ctrl+Shift+wheel, middle-mouse pan, legacy animations all work unchanged.
+The modern camera rig is completely inactive in ORIGINAL.
+
+## Camera State Preservation
+
+When entering MODERN (F11): full legacy camera state is saved
+(pitch, yaw, position, cameraType). When returning to ORIGINAL (F11):
+saved state is restored so the vanilla camera returns exactly where
+it was before MODERN was entered.

@@ -1834,3 +1834,146 @@ ORIGINAL:
 - [ ] Click-to-move works
 - [ ] Legacy animations unchanged
 - [ ] No modern WASD leaks
+
+---
+
+## 17. Phase 3C Addendum — ORIGINAL Must Remain Vanilla + F11 Profile Toggle
+
+**Date:** 14-08-2026
+**Commit:** (pending)
+**Baseline:** 3e88cd7 (Phase 3C - modern camera rig and character look coupling)
+
+### 17.1 Problem statement
+
+The Phase 3C implementation had F11 cycling through three modes:
+ORIGINAL → FIRST_PERSON → THIRD_PERSON → ORIGINAL.
+
+This was architecturally incorrect because:
+
+1. Regular 2009Scape players who never press F11 must get a completely vanilla experience.
+2. Scroll-wheel continuum must only exist inside MODERN, not globally.
+3. MODERN FREE (camera rig) is NOT the same as ORIGINAL (control profile).
+4. F11 should be the sole switch between ORIGINAL and MODERN control profiles.
+
+### 17.2 Changes applied
+
+#### F11 toggle (CameraMode.java)
+
+**Before:** `cycle()` was a 3-way cycle: ORIGINAL → FIRST_PERSON → THIRD_PERSON → ORIGINAL.
+
+**After:** `cycle()` is a 2-way toggle:
+```java
+if (current == Mode.ORIGINAL) {
+    current = Mode.THIRD_PERSON; // Enter MODERN
+} else {
+    current = Mode.ORIGINAL; // Return to vanilla
+}
+```
+
+F11 from ORIGINAL → enters MODERN (THIRD_PERSON).
+F11 from MODERN → returns to ORIGINAL.
+Inside MODERN, scroll wheel controls the camera rig (FP/CHASE/FREE).
+
+#### onModeChanged rework (CameraMode.java)
+
+**ORIGINAL → MODERN:**
+- `ModernMovementController.enterModernMode()` — initialize prediction
+- `ModernCameraRig.onEnterModernMode()` — save full legacy camera state
+
+**MODERN → ORIGINAL:**
+- `FirstPersonCamera.deactivate()` if active (rig may have been in FP state)
+- `ModernMovementController.exitModernMode()` — rebase prediction
+- `ModernCameraRig.onExitModernMode()` — restore full legacy camera state
+- Safety net: `FirstPersonCamera.resetToSafeDefaults()`
+
+#### FP camera lifecycle (ModernCameraRig.java)
+
+The rig now manages `FirstPersonCamera` activation/deactivation when
+scrolling into/out of FP rig state:
+
+- Scroll IN to FP: `FirstPersonCamera.activate()` (cursor lock, mouse-look)
+- Scroll OUT from FP: `FirstPersonCamera.deactivate()` + `Camera.cameraType = 0`
+
+This means F11 entering MODERN no longer directly activates FP camera.
+The rig starts in CHASE state. User scrolls to reach FP.
+
+#### Camera state preservation (ModernCameraRig.java)
+
+**onEnterModernMode()** now saves ALL camera fields:
+- cameraType, cameraPitch, pitchTarget, cameraYaw, yawTarget, cameraX, cameraZ, anInt40
+
+**onExitModernMode()** restores ALL saved fields.
+
+Result: pressing F11 to MODERN and back leaves the vanilla camera exactly where it was.
+
+#### Rig activation default (ModernCameraRig.java)
+
+`activate()` now always starts in CHASE state (not FP based on distance).
+User must scroll inward to reach FP. This prevents unexpected FP entry
+when pressing F11.
+
+### 17.3 Architecture after addendum
+
+```
+CONTROL PROFILE (F11 toggle):
+    ORIGINAL — pure vanilla 2009Scape
+    MODERN   — WASD + modern camera rig
+
+CAMERA RIG inside MODERN only:
+    FIRST_PERSON  ←scroll→  CHASE  ←scroll→  FREE
+
+ORIGINAL state: saved on F11→MODERN, restored on F11→ORIGINAL
+MODERN state: maintained independently (desiredDistance, chaseYaw, etc.)
+```
+
+### 17.4 Files changed
+
+| File | Change |
+|------|--------|
+| `CameraMode.java` | F11 3-way cycle → 2-way toggle; onModeChanged rework; FP camera lifecycle removed from onModeChanged (now in rig) |
+| `ModernCameraRig.java` | FP camera activate/deactivate on rig state transitions; full camera state save/restore; activate() defaults to CHASE |
+| `MODERN_CONTROLS_GOAL.md` | Updated Phase 3C section: control profile vs camera rig, ORIGINAL vanilla guarantee, MODERN FREE ≠ ORIGINAL, camera state preservation |
+| `MODERN_CONTROLS_PROGRESS.md` | Section 17 documentation (this section) |
+
+### 17.5 Build verification
+
+```
+gradlew.bat :client:compileJava → BUILD SUCCESSFUL
+```
+
+### 17.6 Runtime acceptance checklist
+
+**ORIGINAL vanilla test:**
+- [ ] Launch game → ORIGINAL by default
+- [ ] Scroll inward → vanilla zoom changes normally
+- [ ] Scroll outward → vanilla zoom changes normally
+- [ ] Middle mouse camera works
+- [ ] Camera freely controllable
+- [ ] No FP transition from scrolling
+- [ ] No CHASE transition from scrolling
+- [ ] Click-to-move works
+- [ ] Minimap movement works
+- [ ] No modern WASD leak
+
+**F11 toggle test:**
+- [ ] F11 → MODERN (THIRD_PERSON mode, CHASE camera rig)
+- [ ] WASD works immediately
+- [ ] Scroll IN → close CHASE → FP (cursor locks, mouse-look activates)
+- [ ] Scroll OUT → CHASE → FREE (cursor unlocks)
+- [ ] Scroll further IN → CHASE → FP again
+- [ ] F11 → return to ORIGINAL
+- [ ] ORIGINAL camera returns to saved state (not modern zoom)
+- [ ] ORIGINAL scroll zoom works normally after return
+
+**Camera state preservation test:**
+- [ ] Set vanilla camera to specific zoom/angle
+- [ ] F11 → MODERN → scroll around → F11 → ORIGINAL
+- [ ] Vanilla camera returns to the specific zoom/angle
+- [ ] No modern distance values contaminate vanilla camera
+
+**MODERN FREE ≠ ORIGINAL test:**
+- [ ] In MODERN, scroll fully outward → FREE camera
+- [ ] WASD still works in FREE
+- [ ] Shift+run still works in FREE
+- [ ] No click-to-move activated
+- [ ] ORIGINAL mode NOT activated by scrolling
