@@ -80,6 +80,19 @@ public final class ModernMovementController {
 	/** Updated by modern controller; method949 smooths anInt3381 toward it. */
 	private static int targetOrientationAngle;
 
+	// ==== MOVEMENT-SPACE HEADING (Phase 3C round #5, P4) ====
+	/**
+	 * Stable movement-space heading in CAMERA convention (0=+Z,512=-X,
+	 * 1024=-Z,1536=+X). This is the CHASE/FREE movement basis — maintained
+	 * by THIS controller, never read back from the visual camera yaw.
+	 * Authority chain: WASD → movement heading → velocity → body yaw →
+	 * chase camera follows body. The camera yaw never feeds back into
+	 * locomotion (breaks the camera→body→movement→camera loop).
+	 */
+	private static int movementHeading;
+	/** Whether the previous tick computed velocity from the FP look yaw. */
+	private static boolean wasFirstPersonLastTick;
+
 	// ==== FLAGS ====
 	private static boolean initialized;
 	private static boolean suspended;
@@ -136,6 +149,10 @@ public final class ModernMovementController {
 		lastServerReportTick = client.loop;
 
 		targetOrientationAngle = self.anInt3400;
+		// P4: seed the stable movement heading from the current body facing
+		// (body convention → camera convention).
+		movementHeading = ModernCameraRig.bodyYawToCameraYaw(self.anInt3400);
+		wasFirstPersonLastTick = false;
 		lastMovementState = MovementState.IDLE;
 		clearPending();
 		initialized = true;
@@ -166,6 +183,7 @@ public final class ModernMovementController {
 		velocityZQ16 = 0;
 		initialized = false;
 		suspended = false;
+		wasFirstPersonLastTick = false;
 		intent.clear();
 	}
 
@@ -191,6 +209,8 @@ public final class ModernMovementController {
 		lastServerReportedTileX = self.xFine >> 7;
 		lastServerReportedTileZ = self.zFine >> 7;
 		lastServerReportTick = client.loop;
+		// P4: re-anchor the movement heading after a region rebuild.
+		movementHeading = ModernCameraRig.bodyYawToCameraYaw(self.anInt3400);
 		clearPending();
 	}
 
@@ -282,6 +302,13 @@ public final class ModernMovementController {
 		if (!intent.hasMovement()) {
 			velocityXQ16 = 0;
 			velocityZQ16 = 0;
+			// P4: while idle, keep the stable movement heading in sync with
+			// the body facing so the next WASD input starts from the current
+			// orientation. No feedback loop: no input → no velocity here.
+			if (!ModernCameraRig.isFirstPersonRigState()) {
+				movementHeading = ModernCameraRig.bodyYawToCameraYaw(self.anInt3400);
+			}
+			wasFirstPersonLastTick = false;
 			// State transition → IDLE
 			if (lastMovementState != MovementState.IDLE) {
 				lastMovementState = MovementState.IDLE;
@@ -325,9 +352,28 @@ public final class ModernMovementController {
 		//   Right   = (+cos[yaw], +sin[yaw])
 		//
 		// Phase 3B fix #3: FIRST_PERSON uses live FP camera yaw.
-		// THIRD_PERSON uses player body heading (temporary, Phase 14 will replace).
+		// Phase 3C round #5 (P4): CHASE/FREE use the stable movement-space
+		// heading maintained by this controller — NOT the body orientation
+		// and NOT the visual camera yaw. Body turns toward locomotion and
+		// the camera follows the body; locomotion never reads the camera.
+		// anInt3400 is in BODY convention; the heading is kept in CAMERA
+		// convention so the proven movement basis below operates in a
+		// single convention.
 		int camYaw = CameraMode.getCameraRelativeYaw();
-		int yaw = (camYaw >= 0) ? camYaw : self.anInt3400;
+		int yaw;
+		if (camYaw >= 0) {
+			// FP: W/S/A/D relative to the live FP look direction (proven basis).
+			yaw = camYaw;
+			wasFirstPersonLastTick = true;
+		} else {
+			if (wasFirstPersonLastTick) {
+				// FP→CHASE/FREE edge: body faced the FP look direction; sync
+				// the movement heading from it for a seamless handoff.
+				movementHeading = ModernCameraRig.bodyYawToCameraYaw(self.anInt3400);
+				wasFirstPersonLastTick = false;
+			}
+			yaw = movementHeading;
+		}
 		boolean running = intent.runRequested;
 		int speed = running ? RUN_SPEED : WALK_SPEED;
 
@@ -357,11 +403,15 @@ public final class ModernMovementController {
 		if (!ModernCameraRig.isFirstPersonRigState()) {
 			// Face movement direction. The RT4 angle convention uses a NEGATIVE
 			// multiplier (same as Camera.method3849): angle = atan2(velX, velZ) * -325.949
-			// This maps: north=0, west=512, south=1024, east=1536.
+			// This maps: north=0, west=512, south=1024, east=1536 (CAMERA convention).
+			// anInt3400 uses the BODY convention, so convert before writing
+			// (Phase 3C round #4 P1: writing camera-convention values directly
+			// made the body face the opposite direction).
 			if (velocityXQ16 != 0 || velocityZQ16 != 0) {
-				targetOrientationAngle = (int) (Math.atan2(
+				int camAngle = (int) (Math.atan2(
 						(double) velocityXQ16,
 						(double) velocityZQ16) * -325.949D) & 0x7FF;
+				targetOrientationAngle = ModernCameraRig.cameraYawToBodyYaw(camAngle);
 				self.anInt3400 = targetOrientationAngle;
 				DebugOverlay.lastBodyYawWriter = "movement_controller";
 			}

@@ -37,17 +37,30 @@ package rt4;
  * Proper UI ownership (skip camera zoom when scrollable UI is under cursor) is TODO.</p>
  *
  * <h2>Smoothing Honesty</h2>
- * <p>Distance smoothing is 50Hz tick-based exponential smoothing (NOT frame-rate-independent
- * render smoothing). Camera yaw/pitch smoothing is also 50Hz tick-based. Only visual
- * camera position smoothing would benefit from render-timed integration (deferred).</p>
+ * <p>Visual camera smoothing (pivot, yaw, pitch, boom distance) is RENDER-timed
+ * and frame-rate independent: alpha = 1 - exp(-rate * dt), using
+ * {@link GameShell#renderDelta}. Logic ticks only update the authoritative
+ * state (desiredDistance, safe zoom, rig transitions); the final camera
+ * transform happens once per render in {@link #renderUpdate()} (Phase 3C
+ * round #4, P2/P3).</p>
  *
  * <h2>Orientation Fields (RT4)</h2>
  * <ul>
- *   <li>{@code PathingEntity.anInt3400} — target orientation (0..2047, clockwise: 0=N,512=W,1024=S,1536=E)</li>
+ *   <li>{@code PathingEntity.anInt3400} — target orientation (BODY convention: 0=-Z,512=-X,1024=+Z,1536=+X,
+ *       proven from NpcList.method2247 movement mapping and NpcList.method949 positive-multiplier atan2)</li>
  *   <li>{@code PathingEntity.anInt3381} — smoothed orientation (animations use this)</li>
  *   <li>{@code PathingEntity.anInt3376} — orientation speed (default 32)</li>
  *   <li>{@code PathingEntity.anInt3385} — orientation change counter (turn animation trigger)</li>
  * </ul>
+ *
+ * <h2>Yaw Conventions (Phase 3C round #4, SOURCE VERIFIED)</h2>
+ * <p>Camera convention (Camera.method3849: cameraYaw = atan2(dx,dz) * -325.949):
+ * 0=NORTH(+Z), 512=WEST(-X), 1024=SOUTH(-Z), 1536=EAST(+X).
+ * Body convention differs: 0=-Z, 512=-X, 1024=+Z, 1536=+X.
+ * All rig-internal yaw fields (bodyYaw/chaseYaw/chaseYawTarget/freeYaw) are in
+ * CAMERA convention; conversion to/from {@code anInt3400} MUST go through
+ * {@link #cameraYawToBodyYaw(int)} / {@link #bodyYawToCameraYaw(int)} (involution
+ * (1024 - yaw) &amp; 0x7FF, verified at all 4 cardinal directions).</p>
  * <p>RT4 has NO separate head yaw. Body rotation via anInt3400→anInt3381 is the only
  * orientation mechanism. Head-look coupling is therefore deferred (body-yaw follow only).</p>
  */
@@ -71,19 +84,32 @@ public final class ModernCameraRig {
 	private static final int FREE_EXIT_DISTANCE = 1100;
 	/** Minimum allowed desired distance (FP clamped). */
 	private static final int MIN_DISTANCE = 0;
-	/** Maximum allowed desired distance (FREE clamped). (= VANILLA_ZOOM_MAX + 150) */
+	/** Maximum desired distance for CHASE (rig-specific max; Phase 3C round #5 P5). */
 	private static final int MAX_DISTANCE = 1350;
+	/**
+	 * FREE-only maximum desired distance (Phase 3C round #5, P5).
+	 * RuneLite-style clearly extended zoom. Only reachable while the rig is
+	 * in FREE state; CHASE stays clamped at {@link #MAX_DISTANCE}.
+	 * RUNTIME UNVERIFIED — first experiment value, tune after user testing.
+	 */
+	private static final int FREE_MAX_DISTANCE = 2200;
 
 	/** Scroll wheel step per notch (in ZOOM space). Matches vanilla step. */
 	private static final int WHEEL_STEP = 50;
 
-	// ---- Smoothing (50Hz tick-based, NOT frame-rate-independent) ----
-	/** Exponential smoothing factor for actual→desired distance (per 50Hz tick). */
-	private static final int DISTANCE_SMOOTH_FACTOR = 6;
-	/** Exponential smoothing factor for chase yaw (per 50Hz tick). Lower = tighter. */
-	private static final int YAW_SMOOTH_FACTOR = 3;
-	/** Minimum yaw step to prevent stalling at very small differences. */
-	private static final int YAW_SMOOTH_MIN = 4;
+	// ---- Smoothing (render-timed, frame-rate-independent; Phase 3C round #4) ----
+	// Rates calibrated to match the old 50Hz feel:
+	//   factor-6 distance smoothing @50Hz  ≈ 9/s exponential rate
+	//   factor-3 yaw smoothing @50Hz       ≈ 20/s exponential rate
+	//   1/16 pivot follow @50Hz            ≈ 3.2/s exponential rate
+	/** Exponential rate (per second) for visual boom distance approach. */
+	private static final double DIST_RATE_PER_S = 9.0;
+	/** Exponential rate (per second) for visual yaw approach. */
+	private static final double YAW_RATE_PER_S = 20.0;
+	/** Exponential rate (per second) for visual pitch approach. */
+	private static final double PITCH_RATE_PER_S = 9.0;
+	/** Exponential rate (per second) for visual pivot position follow. */
+	private static final double PIVOT_RATE_PER_S = 3.2;
 
 	// ---- Chase camera geometry ----
 	/** Camera pitch in chase mode (0..2047). ~45° downward look. */
@@ -114,7 +140,7 @@ public final class ModernCameraRig {
 	/** Actual camera distance (smoothly approaches desired; compressed by walls). */
 	private static int actualDistance = 600;
 	/** Safe distance (maximum permitted by obstruction). desired ≥ safe ≥ actual. */
-	private static int safeDistance = MAX_DISTANCE;
+	private static int safeDistance = FREE_MAX_DISTANCE;
 	/** Chase camera actual yaw (smoothly follows target). */
 	private static int chaseYaw = 0;
 	/** Chase camera target yaw (from character body orientation). */
@@ -134,9 +160,27 @@ public final class ModernCameraRig {
 	/** Previous rig state for transition detection (FP camera lifecycle). */
 	private static RigState prevRigState = RigState.CHASE;
 
-	// ---- Smooth camera position (follows player like Camera.method4273) ----
-	private static int smoothCameraX;
-	private static int smoothCameraZ;
+	// ---- Smooth camera position (render-timed visual pivot; Phase 3C round #4) ----
+	/** Visual pivot X (fine coords, double accumulator to avoid truncation stall). */
+	private static double visPivotX;
+	/** Visual pivot Z (fine coords, double accumulator). */
+	private static double visPivotZ;
+	/** Visual chase/free yaw (camera convention, smoothed per render). */
+	private static double visYawD;
+	/** Visual pitch (smoothed per render). */
+	private static double visPitchD;
+	/** Visual boom distance (smoothed per render; source of actualDistance). */
+	private static double visDistanceD;
+	/** Whether the visual state has been seeded (prevents first-frame snap). */
+	private static boolean visInitialized;
+	/**
+	 * Set on FP→CHASE transition: the next render seeds the visual camera from
+	 * the live Camera fields (the FP eye camera) — the ONLY permitted use of
+	 * previous camera position as input (explicit transition initialization).
+	 */
+	private static boolean seedVisualFromCamera;
+	/** Obstruction-limited maximum zoom (zoom space), computed each logic tick. */
+	private static int safeZoomLimit = 100000;
 
 	// ---- Middle mouse orbit (FREE rig state only) ----
 	/** Previous mouse X when middle mouse was last processed (render-timed delta). */
@@ -202,6 +246,34 @@ public final class ModernCameraRig {
 		return bodyYaw;
 	}
 
+	/** Returns the render-timed visual yaw (camera convention, 0..2047). */
+	public static int getVisualYaw() {
+		return ((int) visYawD) & 0x7FF;
+	}
+
+	/**
+	 * Converts a CAMERA-convention yaw (0=+Z,512=-X,1024=-Z,1536=+X; proven from
+	 * Camera.method3849's negative-multiplier atan2) to the BODY-convention used
+	 * by {@code PathingEntity.anInt3400} (0=-Z,512=-X,1024=+Z,1536=+X; proven from
+	 * NpcList.method2247's movement→orientation mapping and NpcList.method949's
+	 * positive-multiplier atan2).
+	 *
+	 * <p>Verified at all 4 cardinal directions. The mapping is an involution:
+	 * applying it twice returns the original value, so the same function serves
+	 * both directions.
+	 */
+	public static int cameraYawToBodyYaw(int cameraYaw) {
+		return (1024 - cameraYaw) & 0x7FF;
+	}
+
+	/**
+	 * Converts a BODY-convention yaw ({@code anInt3400}) to CAMERA convention.
+	 * Same involution as {@link #cameraYawToBodyYaw(int)}.
+	 */
+	public static int bodyYawToCameraYaw(int bodyYaw) {
+		return (1024 - bodyYaw) & 0x7FF;
+	}
+
 	/**
 	 * Returns whether the rig is in FIRST_PERSON state.
 	 * Used by ModernMovementController to determine body orientation ownership.
@@ -261,13 +333,16 @@ public final class ModernCameraRig {
 		// Preserve desiredDistance (user's zoom intent survives region change)
 		// Re-anchor actualDistance to desired (avoid interpolating from old region)
 		actualDistance = desiredDistance;
-		safeDistance = MAX_DISTANCE;
-		// Re-anchor yaw to current player orientation
-		chaseYawTarget = self.anInt3400;
+		safeDistance = FREE_MAX_DISTANCE;
+		safeZoomLimit = 100000;
+		// Re-anchor yaw to current player orientation (body -> camera convention)
+		chaseYawTarget = bodyYawToCameraYaw(self.anInt3400);
 		chaseYaw = chaseYawTarget;
-		// Re-anchor smooth camera position
-		smoothCameraX = self.xFine;
-		smoothCameraZ = self.zFine;
+		// Re-anchor visual camera state (render-timed fields)
+		visPivotX = self.xFine;
+		visPivotZ = self.zFine;
+		visDistanceD = desiredDistance;
+		seedVisualFromCamera = false;
 		if (rigState == RigState.FREE) {
 			freeYaw = Camera.cameraYaw;
 			freePitch = (int) Camera.pitchTarget;
@@ -307,14 +382,39 @@ public final class ModernCameraRig {
 		// 1. Process scroll wheel → desired distance
 		processWheelInput();
 
-		// 2. State transitions based on desired distance (with hysteresis)
+		// 2. State transitions based on distance (with hysteresis)
 		updateStateTransitions();
+
+		// 2b. Lifecycle self-heal (Phase 3C round #5, P3): rigState and
+		// FirstPersonCamera.active must ALWAYS agree. Repeated FP<->CHASE
+		// cycles must never strand either side (no stale one-shot state).
+		if (rigState == RigState.FIRST_PERSON && !FirstPersonCamera.isActive()) {
+			FirstPersonCamera.activate();
+			writeFpCameraImmediate(self);
+		} else if (rigState != RigState.FIRST_PERSON && FirstPersonCamera.isActive()) {
+			FirstPersonCamera.deactivate();
+			Camera.cameraType = 0; // Rig still owns camera in CHASE/FREE
+		}
 
 		// 3. Update camera based on rig state
 		switch (rigState) {
 			case FIRST_PERSON:
 				// FirstPersonCamera.update() already wrote Camera fields.
 				// We just need cameraType=0 (set above).
+				// Keep the obstruction-limited safe distance fresh so the
+				// visual boom (visDistanceD) stays honest for the FP<->CHASE
+				// transition thresholds (Phase 3C round #5, P2).
+				{
+					int fpPivotX = self.xFine;
+					int fpPivotZ = self.zFine;
+					int fpPivotY = SceneGraph.getTileHeight(Player.plane, fpPivotX, fpPivotZ) - 50;
+					int fpExitYaw = bodyYawToCameraYaw(self.anInt3400);
+					int fpDesiredZoom = desiredDistance + CHASE_PITCH * 3;
+					safeZoomLimit = checkObstruction(fpPivotX, fpPivotZ, fpPivotY, fpExitYaw, CHASE_PITCH, fpDesiredZoom);
+					safeDistance = safeZoomLimit - CHASE_PITCH * 3;
+					if (safeDistance < MIN_DISTANCE) safeDistance = MIN_DISTANCE;
+					if (safeDistance > FREE_MAX_DISTANCE) safeDistance = FREE_MAX_DISTANCE;
+				}
 				break;
 			case CHASE:
 				updateChase(self);
@@ -329,7 +429,8 @@ public final class ModernCameraRig {
 			updateBodyLookCoupling(self);
 		} else {
 			// In CHASE/FREE, body yaw tracks current orientation for smooth transition
-			bodyYaw = self.anInt3400;
+			// (stored in CAMERA convention; convert from body field)
+			bodyYaw = bodyYawToCameraYaw(self.anInt3400);
 		}
 
 		// 5. Throttled debug output (every 50 ticks = ~1 second)
@@ -370,19 +471,25 @@ public final class ModernCameraRig {
 
 		Player self = PlayerList.self;
 		if (self != null) {
-			bodyYaw = self.anInt3400;
-			chaseYaw = self.anInt3400;
-			chaseYawTarget = self.anInt3400;
-			// Initialize smooth camera position to player position
-			smoothCameraX = self.xFine;
-			smoothCameraZ = self.zFine;
+			bodyYaw = bodyYawToCameraYaw(self.anInt3400);
+			chaseYaw = bodyYawToCameraYaw(self.anInt3400);
+			chaseYawTarget = bodyYawToCameraYaw(self.anInt3400);
+			// Initialize visual pivot/yaw to player state (render-timed fields)
+			visPivotX = self.xFine;
+			visPivotZ = self.zFine;
+			visYawD = chaseYaw;
+			visPitchD = CHASE_PITCH;
+			visDistanceD = desiredDistance;
+			visInitialized = true;
 		}
 
 		// Default: enter CHASE (not FP). User scrolls to reach FP/FREE.
 		rigState = RigState.CHASE;
 
 		actualDistance = desiredDistance;
-		safeDistance = MAX_DISTANCE;
+		safeDistance = FREE_MAX_DISTANCE;
+		safeZoomLimit = 100000;
+		seedVisualFromCamera = false;
 		chasePitch = CHASE_PITCH;
 		initialized = true;
 	}
@@ -390,6 +497,10 @@ public final class ModernCameraRig {
 	private static void deactivate() {
 		active = false;
 		initialized = false;
+		// Phase 3C round #5 (P3): no stale one-shot state may survive a
+		// MODERN -> ORIGINAL -> MODERN cycle.
+		seedVisualFromCamera = false;
+		visInitialized = false;
 		// CameraType restoration is handled by onExitModernMode()
 	}
 
@@ -413,9 +524,12 @@ public final class ModernCameraRig {
 
 		// Scroll IN (rotation < 0) → reduce distance (zoom in)
 		// Scroll OUT (rotation > 0) → increase distance (zoom out)
+		// Rig-specific maximum (Phase 3C round #5, P5): FREE gets the
+		// extended zoom range; CHASE/FP stay clamped at MAX_DISTANCE.
 		desiredDistance += rotation * WHEEL_STEP;
+		int maxDesired = (rigState == RigState.FREE) ? FREE_MAX_DISTANCE : MAX_DISTANCE;
 		if (desiredDistance < MIN_DISTANCE) desiredDistance = MIN_DISTANCE;
-		if (desiredDistance > MAX_DISTANCE) desiredDistance = MAX_DISTANCE;
+		if (desiredDistance > maxDesired) desiredDistance = maxDesired;
 	}
 
 	/**
@@ -427,7 +541,7 @@ public final class ModernCameraRig {
 	 * If the mouse is outside the viewport bounds but inside the canvas,
 	 * it's probably over a side panel or other scrollable UI.</p>
 	 */
-	private static boolean isMouseOverScrollableUI() {
+	public static boolean isMouseOverScrollableUI() {
 		Component viewport = InterfaceList.aClass13_26;
 		if (viewport == null) return false;
 		int mx = Mouse.lastMouseX;
@@ -444,29 +558,50 @@ public final class ModernCameraRig {
 	private static void updateStateTransitions() {
 		RigState previous = rigState;
 
+		// Phase 3C round #5 (P2): the CHASE<->FP boundary is driven by the
+		// RENDERED visual boom (visDistanceD), not by desiredDistance. The
+		// user perceives ONE coherent transition: FP behavior activates at
+		// exactly the moment the camera visually reaches the eye position
+		// (and exits only once the visual boom has expanded past the
+		// hysteresis threshold). Occlusion-compressed cameras therefore
+		// enter FP at the eye position and self-correct on exit.
 		switch (rigState) {
 			case FIRST_PERSON:
-				if (desiredDistance >= FP_EXIT_DISTANCE) {
+				// Exit FP only once the visual boom has begun expanding past
+				// the hysteresis threshold. Escape hatch: if the user has
+				// scrolled all the way out (desired ≥ FREE_ENTER), force exit
+				// even if obstruction is still compressing the visual boom.
+				if (visDistanceD >= FP_EXIT_DISTANCE
+						|| desiredDistance >= FREE_ENTER_DISTANCE) {
 					rigState = RigState.CHASE;
 					// Initialize chase yaw from current body/camera direction
 					chaseYaw = bodyYaw;
 					chaseYawTarget = bodyYaw;
 					chasePitch = CHASE_PITCH;
-					// Initialize actualDistance to FP_EXIT for smooth handoff
-					// (not to desiredDistance which could be far away)
-					actualDistance = FP_EXIT_DISTANCE;
+					// §7: do NOT reset actualDistance here. Spatial state stays
+					// continuous; the render-timed boom smoothly grows outward.
+					// Seed the visual camera from the live FP eye camera so the
+					// first CHASE render frame starts exactly where FP ended.
+					seedVisualFromCamera = true;
 				}
 				break;
 
 			case CHASE:
-				if (desiredDistance <= FP_ENTER_DISTANCE) {
+				// Enter FP exactly when the visual camera reaches the eye
+				// position (P2: semantic and visual thresholds coincide).
+				if (visDistanceD <= FP_ENTER_DISTANCE) {
 					rigState = RigState.FIRST_PERSON;
-					// FP camera takes over; bodyYaw preserved for smooth handoff
+					// FP camera takes over; bodyYaw preserved for smooth handoff.
+					// Clear any stale one-shot seed (P3 lifecycle hygiene).
+					seedVisualFromCamera = false;
 				} else if (desiredDistance >= FREE_ENTER_DISTANCE) {
 					rigState = RigState.FREE;
-					// Initialize free camera from current chase orientation
-					freeYaw = chaseYaw;
-					freePitch = chasePitch;
+					// Initialize free camera from the VISUAL chase orientation
+					// (continuity: no pop at the CHASE→FREE boundary)
+					freeYaw = ((int) visYawD) & 0x7FF;
+					freePitch = clamp((int) visPitchD, 383);
+					if (freePitch < 128) freePitch = 128;
+					seedVisualFromCamera = false;
 				}
 				break;
 
@@ -475,9 +610,9 @@ public final class ModernCameraRig {
 					rigState = RigState.CHASE;
 					// Seed chaseYaw from current free camera to avoid pop
 					chaseYaw = freeYaw;
-					// Smoothly acquire character orientation
+					// Smoothly acquire character orientation (body -> camera convention)
 					chaseYawTarget = (PlayerList.self != null)
-							? PlayerList.self.anInt3400 : chaseYaw;
+							? bodyYawToCameraYaw(PlayerList.self.anInt3400) : chaseYaw;
 					chasePitch = CHASE_PITCH;
 				}
 				break;
@@ -554,66 +689,37 @@ public final class ModernCameraRig {
 	// =====================================================================
 
 	/**
-	 * Chase camera: follows behind character body orientation.
-	 * Uses {@link Camera#method555} for the camera transform, ensuring
-	 * consistency with the RT4 rendering pipeline (including GL scaling).
+	 * Chase camera — LOGIC STATE ONLY (Phase 3C round #4).
 	 *
-	 * <p>Camera position is computed by method555 as:
+	 * <p>Tick duties:
+	 * <ol>
+	 *   <li>Derive the desired chase yaw target from body orientation.</li>
+	 *   <li>Compute the obstruction-limited safe zoom for this tick.</li>
+	 * </ol>
+	 *
+	 * <p>The final camera transform happens ONCE PER RENDER in
+	 * {@link #renderUpdate()}:
 	 * <pre>
-	 *   renderX = targetX - sin(yaw) * cos(pitch) * zoom
-	 *   renderZ = targetZ - cos(yaw) * cos(pitch) * zoom
-	 *   anInt40 = targetY + sin(pitch) * zoom
+	 *   visual pivot + visual yaw + visual pitch + visual boom
+	 *   → ONE Camera.method555() → Camera fields (OUTPUT only)
 	 * </pre>
-	 * where zoom = actualDistance + pitch * 3 (actualDistance maps to vanilla ZOOM space).
+	 * Camera.renderX/renderZ are never read back as persistent input (§4).
 	 */
 	private static void updateChase(Player self) {
-		// Target yaw = character body orientation
-		chaseYawTarget = self.anInt3400;
+		// Target yaw = character body orientation (body -> camera convention)
+		chaseYawTarget = bodyYawToCameraYaw(self.anInt3400);
+		chaseYaw = chaseYawTarget;
+		chasePitch = CHASE_PITCH;
 
-		// Smooth yaw interpolation (shortest angle, 50Hz tick-based)
-		chaseYaw = smoothYaw(chaseYaw, chaseYawTarget, YAW_SMOOTH_FACTOR, YAW_SMOOTH_MIN);
-
-		// Smooth pitch transition
-		chasePitch = smoothInt(chasePitch, CHASE_PITCH, 6);
-
-		// Smooth distance (50Hz tick-based exponential smoothing)
-		smoothDistance();
-
-		// Smooth camera position follow (like Camera.method4273)
-		updateSmoothCameraPosition(self);
-
-		// Compute target/pivot point (near player feet, like original camera)
-		int pivotX = smoothCameraX;
-		int pivotZ = smoothCameraZ;
+		// Obstruction: maximum clear zoom toward the desired camera position
+		int pivotX = self.xFine;
+		int pivotZ = self.zFine;
 		int pivotY = SceneGraph.getTileHeight(Player.plane, pivotX, pivotZ) - 50;
-
-		// Map desired distance to RT4 zoom parameter.
-		// Original RT4: ZOOM(600) + pitchTarget(128..383)*3 = 984..1749
-		// Our mapping: actualDistance directly maps to ZOOM space.
-		int zoom = actualDistance + chasePitch * 3;
-		if (zoom < 100) zoom = 100;
-
-		// Camera obstruction: reduce effective zoom if wall between player and camera
-		int clearDist = checkObstruction(pivotX, pivotZ, pivotY, chaseYaw, chasePitch, zoom);
-		int effectiveZoom = zoom;
-		if (clearDist < zoom && zoom > 0) {
-			int ratio = (clearDist * 65536 / zoom);
-			effectiveZoom = Math.max(100, zoom * ratio >> 16);
-		}
-
-		// Use the proven RT4 camera transform
-		Camera.method555(pivotX, Rasteriser.screenUpperY, pivotY,
-				effectiveZoom, chaseYaw, pivotZ, chasePitch);
-		DebugOverlay.lastCameraWriter = "rig_chase";
-
-		// Copy render camera position to smooth-follow fields
-		Camera.cameraX = Camera.renderX;
-		Camera.cameraZ = Camera.renderZ;
-
-		// Sync yawTarget for minimap/compass coherence.
-		// The minimap rotation = MiniMap.anInt1814 + (int)Camera.yawTarget.
-		// Without this, the minimap would show stale yaw from the previous frame.
-		Camera.yawTarget = chaseYaw;
+		int desiredZoom = desiredDistance + CHASE_PITCH * 3;
+		safeZoomLimit = checkObstruction(pivotX, pivotZ, pivotY, chaseYawTarget, CHASE_PITCH, desiredZoom);
+		safeDistance = safeZoomLimit - CHASE_PITCH * 3;
+		if (safeDistance < MIN_DISTANCE) safeDistance = MIN_DISTANCE;
+		if (safeDistance > FREE_MAX_DISTANCE) safeDistance = FREE_MAX_DISTANCE;
 	}
 
 	// =====================================================================
@@ -665,40 +771,18 @@ public final class ModernCameraRig {
 		// Uses Mouse.currentMouseX/Y (live AWT position) for render-rate deltas.
 		processMiddleMouseOrbit();
 
-		// Smooth distance
-		smoothDistance();
-
-		// Smooth camera position follow
-		updateSmoothCameraPosition(self);
-
-		// Compute target/pivot point
-		int pivotX = smoothCameraX;
-		int pivotZ = smoothCameraZ;
+		// LOGIC STATE ONLY (Phase 3C round #4): compute the obstruction-limited
+		// safe zoom for this tick. The final camera transform happens ONCE PER
+		// RENDER in renderUpdate(). FREE distance authority is the rig's
+		// desired/safe/actual distance (§10: one FREE distance authority).
+		int pivotX = self.xFine;
+		int pivotZ = self.zFine;
 		int pivotY = SceneGraph.getTileHeight(Player.plane, pivotX, pivotZ) - 50;
-
-		// Map desired distance to RT4 zoom parameter
-		int zoom = actualDistance + freePitch * 3;
-		if (zoom < 100) zoom = 100;
-
-		// Camera obstruction
-		int clearDist = checkObstruction(pivotX, pivotZ, pivotY, freeYaw, freePitch, zoom);
-		int effectiveZoom = zoom;
-		if (clearDist < zoom && zoom > 0) {
-			int ratio = (clearDist * 65536 / zoom);
-			effectiveZoom = Math.max(100, zoom * ratio >> 16);
-		}
-
-		// Use the proven RT4 camera transform
-		Camera.method555(pivotX, Rasteriser.screenUpperY, pivotY,
-				effectiveZoom, freeYaw, pivotZ, freePitch);
-		DebugOverlay.lastCameraWriter = "rig_free";
-
-		// Copy render camera position to smooth-follow fields
-		Camera.cameraX = Camera.renderX;
-		Camera.cameraZ = Camera.renderZ;
-
-		// Sync yawTarget for minimap/compass coherence.
-		Camera.yawTarget = freeYaw;
+		int desiredZoom = desiredDistance + freePitch * 3;
+		safeZoomLimit = checkObstruction(pivotX, pivotZ, pivotY, freeYaw, freePitch, desiredZoom);
+		safeDistance = safeZoomLimit - freePitch * 3;
+		if (safeDistance < MIN_DISTANCE) safeDistance = MIN_DISTANCE;
+		if (safeDistance > FREE_MAX_DISTANCE) safeDistance = FREE_MAX_DISTANCE;
 	}
 
 	// =====================================================================
@@ -758,57 +842,162 @@ public final class ModernCameraRig {
 	}
 
 	// =====================================================================
-	// SMOOTH CAMERA POSITION (follows player like Camera.method4273)
+	// RENDER-TIMED VISUAL UPDATE (Phase 3C round #4, P2/P3)
 	// =====================================================================
 
 	/**
-	 * Smooth camera position that follows the player with slight lag.
-	 * Replicates the smooth-follow behavior of the classic RT4 follow camera
-	 * ({@link Camera#method4273}) so the chase/free camera doesn't snap
-	 * instantly to the player's position during movement.
+	 * Per-RENDER visual update (frame-rate independent). Called from
+	 * {@link GameShell#mainInputLoop()} on the render path.
+	 *
+	 * <p>Pipeline (§5 — one chase transform per render):
+	 * <pre>
+	 *   logic state (tick):  desiredDistance, safeZoomLimit, yaw/pitch targets
+	 *   visual state (render): visPivotX/Z, visYawD, visPitchD, visDistanceD
+	 *   → ONE Camera.method555() → Camera fields (OUTPUT only)
+	 * </pre>
+	 *
+	 * <p>Camera.renderX/renderZ are never read back as persistent input (§4):
+	 * the player/pivot is the authority, and the camera world position is
+	 * DERIVED every render from pivot + yaw + pitch + boom distance. The only
+	 * exception is the explicit FP→CHASE transition seed ({@code seedVisualFromCamera}).
+	 *
+	 * <p>Interpolation is frame-rate independent: alpha = 1 - exp(-rate * dt).
 	 */
-	private static void updateSmoothCameraPosition(Player self) {
-		int targetX = self.xFine;
-		int targetZ = self.zFine;
+	public static void renderUpdate() {
+		if (!active || !CameraMode.isModern()) return;
+		Player self = PlayerList.self;
+		if (self == null) return;
+
+		double dt = (double) GameShell.renderDelta / 1_000_000_000.0;
+		if (dt < 0.0) dt = 0.0;
+		if (dt > 0.25) dt = 0.25; // Safety clamp for long frames
+
+		if (rigState == RigState.FIRST_PERSON) {
+			// FirstPersonCamera owns Camera writes at tick timing in FP.
+			// Keep the visual boom continuous for the FP↔CHASE handoff (§7):
+			// no distance resets at rig threshold crossings.
+			visDistanceD = approachDouble(visDistanceD,
+					Math.min(desiredDistance, safeDistance), DIST_RATE_PER_S, dt);
+			actualDistance = (int) visDistanceD;
+			return;
+		}
+
+		// Re-assert camera ownership at RENDER timing (beats packet/region
+		// rebuild races that may re-set cameraType=1 between ticks).
+		Camera.cameraType = 0;
+
+		if (!visInitialized) {
+			visPivotX = self.xFine;
+			visPivotZ = self.zFine;
+			visYawD = (rigState == RigState.FREE) ? freeYaw : chaseYawTarget;
+			visPitchD = (rigState == RigState.FREE) ? freePitch : CHASE_PITCH;
+			visDistanceD = desiredDistance;
+			visInitialized = true;
+		}
+
+		if (seedVisualFromCamera) {
+			// Explicit FP→CHASE transition seeding: start the visual camera
+			// exactly where the FP eye camera was; the boom grows outward
+			// smoothly (spatial continuity, §7).
+			seedVisualFromCamera = false;
+			visPivotX = self.xFine;
+			visPivotZ = self.zFine;
+			visYawD = Camera.cameraYaw;
+			visPitchD = Camera.cameraPitch;
+			visDistanceD = 0;
+		}
+
+		double targetPivotX = self.xFine;
+		double targetPivotZ = self.zFine;
+		double targetYaw = (rigState == RigState.FREE) ? freeYaw : chaseYawTarget;
+		double targetPitch = (rigState == RigState.FREE) ? freePitch : CHASE_PITCH;
 
 		// Teleport safety (same threshold as Camera.method4273)
-		if (smoothCameraX - targetX < -500 || smoothCameraX - targetX > 500
-				|| smoothCameraZ - targetZ < -500 || smoothCameraZ - targetZ > 500) {
-			smoothCameraX = targetX;
-			smoothCameraZ = targetZ;
+		if (Math.abs(visPivotX - targetPivotX) > 500 || Math.abs(visPivotZ - targetPivotZ) > 500) {
+			visPivotX = targetPivotX;
+			visPivotZ = targetPivotZ;
 		}
 
-		// Smooth follow (1/16 per tick, like method4273)
-		if (smoothCameraZ != targetZ) {
-			smoothCameraZ += (targetZ - smoothCameraZ) / 16;
+		// Visual pivot follow (smooth lag like method4273)
+		visPivotX = approachDouble(visPivotX, targetPivotX, PIVOT_RATE_PER_S, dt);
+		visPivotZ = approachDouble(visPivotZ, targetPivotZ, PIVOT_RATE_PER_S, dt);
+
+		// Visual yaw (shortest-angle path)
+		visYawD = approachAngleDouble(visYawD, targetYaw, YAW_RATE_PER_S, dt);
+
+		// Visual boom distance — THE zoom. Smooth per render (P3).
+		// Upper bound is the FREE max so a FREE→CHASE exit never snaps the
+		// visual boom (it smoothly converges to the CHASE range; Phase 3C
+		// round #5, P5).
+		visDistanceD = approachDouble(visDistanceD,
+				Math.min(desiredDistance, safeDistance), DIST_RATE_PER_S, dt);
+		if (visDistanceD < MIN_DISTANCE) visDistanceD = MIN_DISTANCE;
+		if (visDistanceD > FREE_MAX_DISTANCE) visDistanceD = FREE_MAX_DISTANCE;
+		actualDistance = (int) visDistanceD;
+
+		// Near-FP blend factor: CHASE converges to the eye camera as the boom
+		// approaches FP range (pitch→horizon, zoom→0, pivot→eye height).
+		double nearFpT = 1.0;
+		if (rigState == RigState.CHASE) {
+			nearFpT = (visDistanceD - FP_ENTER_DISTANCE)
+					/ (double) (FP_EXIT_DISTANCE - FP_ENTER_DISTANCE);
+			if (nearFpT < 0.0) nearFpT = 0.0;
+			if (nearFpT > 1.0) nearFpT = 1.0;
+			targetPitch *= nearFpT;
 		}
-		if (smoothCameraX != targetX) {
-			smoothCameraX += (targetX - smoothCameraX) / 16;
-		}
+		visPitchD = approachDouble(visPitchD, targetPitch, PITCH_RATE_PER_S, dt);
+
+		int pivotX = (int) visPivotX;
+		int pivotZ = (int) visPivotZ;
+		int terrainH = SceneGraph.getTileHeight(Player.plane, pivotX, pivotZ);
+		// Pivot height converges to eye height (terrainH - 200) near FP.
+		int pivotY = terrainH - 50 - (int) ((1.0 - nearFpT) * 150.0);
+
+		double zoom = (visDistanceD + visPitchD * 3.0) * nearFpT;
+		if (zoom < 0) zoom = 0;
+		// Never clip through walls: obstruction limit computed at tick timing.
+		if (zoom > safeZoomLimit) zoom = safeZoomLimit;
+		if (nearFpT >= 1.0 && zoom < 100) zoom = 100;
+
+		int yawI = ((int) visYawD) & 0x7FF;
+		int pitchI = (int) visPitchD;
+		if (pitchI < 0) pitchI = 0;
+		if (pitchI > 512) pitchI = 512;
+
+		// ONE transform per render → Camera fields are OUTPUT only (§4/§5).
+		Camera.method555(pivotX, Rasteriser.screenUpperY, pivotY,
+				(int) zoom, yawI, pivotZ, pitchI);
+		DebugOverlay.lastCameraWriter = (rigState == RigState.FREE)
+				? "rig_render_free" : "rig_render_chase";
+
+		// Keep pivot fields coherent (never read back as input authority).
+		Camera.cameraX = Camera.renderX;
+		Camera.cameraZ = Camera.renderZ;
+		Camera.yawTarget = yawI;
+		Camera.pitchTarget = pitchI;
 	}
 
-	// =====================================================================
-	// DISTANCE SMOOTHING
-	// =====================================================================
+	/**
+	 * Frame-rate independent exponential approach (scalar).
+	 * alpha = 1 - exp(-ratePerS * dt).
+	 */
+	private static double approachDouble(double current, double target, double ratePerS, double dt) {
+		if (dt <= 0.0) return current;
+		return current + (target - current) * (1.0 - Math.exp(-ratePerS * dt));
+	}
 
 	/**
-	 * Exponential smoothing of actualDistance toward the target distance
-	 * (min of desiredDistance and safeDistance).
-	 *
-	 * <p>This is 50Hz tick-based smoothing (NOT frame-rate-independent).
-	 * The smoothing factor controls how many ticks it takes to converge.
+	 * Frame-rate independent exponential approach on the 0..2047 angle circle
+	 * (shortest-angle path).
 	 */
-	private static void smoothDistance() {
-		int targetDist = Math.min(desiredDistance, safeDistance);
-		int delta = targetDist - actualDistance;
-		if (delta != 0) {
-			int step = delta / DISTANCE_SMOOTH_FACTOR;
-			if (step == 0) step = (delta > 0) ? 1 : -1;
-			actualDistance += step;
-		}
-		// Clamp actual to valid range
-		if (actualDistance < MIN_DISTANCE) actualDistance = MIN_DISTANCE;
-		if (actualDistance > MAX_DISTANCE) actualDistance = MAX_DISTANCE;
+	private static double approachAngleDouble(double current, double target, double ratePerS, double dt) {
+		double delta = (target - current) % 2048.0;
+		if (delta > 1024.0) delta -= 2048.0;
+		if (delta < -1024.0) delta += 2048.0;
+		double result = current + delta * (1.0 - Math.exp(-ratePerS * dt));
+		if (result < 0) result += 2048.0;
+		if (result >= 2048.0) result -= 2048.0;
+		return result;
 	}
 
 	// =====================================================================
@@ -878,8 +1067,17 @@ public final class ModernCameraRig {
 				break;
 			}
 
+			// Compute the sample height FIRST: far/high cameras (e.g. FREE
+			// overview zoom) must pass OVER ground-level collision flags and
+			// walls. Flag/wall blocking only applies near the terrain (P5).
+			int terrainH = SceneGraph.getTileHeight(Player.plane, sampleX, sampleZ);
+			// Interpolate the boom Y for height check
+			int boomYAtSample = boomY * frac >> 16;
+			int camYAtSample = pivotY - boomYAtSample; // method555: anInt40 = targetY - boomY
+			boolean nearGround = camYAtSample > terrainH - 200;
+
 			// Check collision flags
-			if (Player.plane >= 0 && Player.plane < 4
+			if (nearGround && Player.plane >= 0 && Player.plane < 4
 					&& PathFinder.collisionMaps != null
 					&& PathFinder.collisionMaps[Player.plane] != null) {
 				int flags = PathFinder.collisionMaps[Player.plane].flags[tileX][tileZ];
@@ -929,10 +1127,6 @@ public final class ModernCameraRig {
 			}
 
 			// Check terrain height (camera shouldn't be below ground)
-			int terrainH = SceneGraph.getTileHeight(Player.plane, sampleX, sampleZ);
-			// Interpolate the boom Y for height check
-			int boomYAtSample = boomY * frac >> 16;
-			int camYAtSample = pivotY - boomYAtSample; // method555: anInt40 = targetY - boomY
 			if (camYAtSample > terrainH - 30) {
 				int prevFrac = (i - 1) * 65536 / steps;
 				int prevX = pivotX + (deltaX * prevFrac >> 16);
@@ -979,7 +1173,8 @@ public final class ModernCameraRig {
 			bodyYaw = (bodyYaw + step * Integer.signum(delta)) & 0x7FF;
 
 			// Write to self.anInt3400 so method949 smooths anInt3381 toward it.
-			self.anInt3400 = bodyYaw;
+			// anInt3400 uses the BODY convention; convert from camera convention.
+			self.anInt3400 = cameraYawToBodyYaw(bodyYaw);
 			DebugOverlay.lastBodyYawWriter = "fp_body_coupling";
 			// Reset change counter to prevent turn animation triggering
 			self.anInt3385 = 0;
@@ -999,28 +1194,6 @@ public final class ModernCameraRig {
 		int delta = (to - from) & 0x7FF;
 		if (delta > 1024) delta -= 2048;
 		return delta;
-	}
-
-	/**
-	 * Smooth yaw interpolation using shortest-angle path.
-	 */
-	private static int smoothYaw(int current, int target, int factor, int minStep) {
-		int delta = shortestAngleDelta(current, target);
-		if (delta == 0) return current;
-		int step = delta / factor;
-		if (step == 0) step = (delta > 0) ? minStep : -minStep;
-		return (current + step) & 0x7FF;
-	}
-
-	/**
-	 * Smooth integer interpolation.
-	 */
-	private static int smoothInt(int current, int target, int factor) {
-		int delta = target - current;
-		if (delta == 0) return current;
-		int step = delta / factor;
-		if (step == 0) step = (delta > 0) ? 1 : -1;
-		return current + step;
 	}
 
 	/**

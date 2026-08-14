@@ -1358,16 +1358,22 @@ public final class ScriptRunner {
 		// authoritative source for which camera is ACTUALLY rendered.
 		// FirstPersonCamera lifecycle state may lag during transitions.
 		//
-		// Per-tile mask (aByteArrayArrayArray15) is NOT explicitly cleared:
-		// the mask uses a frame-unique stamp (anInt3325 & 0xFF) and
-		// method3292() only hides tiles matching the CURRENT frame's stamp.
-		// Old stamps from previous frames never match → no stale hiding.
-		//
-		// Bounding box arrays (anIntArray205 etc.) ARE reset to safe defaults
-		// because method2419() culls scenery within non-sentinel bounding
-		// boxes. Without reset, stale boxes from the previous frame would
-		// incorrectly cull scenery that should be visible in FP.
+		// ROUND #4 P6 FLASH FIX: the rolling column reset MUST keep running
+		// in FP. The mask byte cycles mod 256 while the column reset cycles
+		// mod 104; if the reset is skipped, stamps written before entering
+		// FP re-match the current frame stamp ~256 frames later, hiding roof
+		// tiles for one frame each cycle — the "flash sweeping through the
+		// roofs". With the reset running every frame (104 < 256), every
+		// column is refreshed long before any stale stamp can re-collide,
+		// producing a stable NO-SELECTIVE-ROOF-REMOVAL state.
 		if (ModernCameraRig.isFirstPersonRigState()) {
+			@Pc(901) byte fpExpireStamp = (byte) (anInt3325 - 4 & 0xFF);
+			@Pc(903) int fpResetCol = anInt3325 % 104;
+			for (int fpPlane = 0; fpPlane < 4; fpPlane++) {
+				for (int fpZ = 0; fpZ < 104; fpZ++) {
+					aByteArrayArrayArray15[fpPlane][fpResetCol][fpZ] = fpExpireStamp;
+				}
+			}
 			if (anIntArray205 != null) {
 				for (int i = 0; i < anIntArray205.length; i++) {
 					anIntArray205[i] = -1000000;

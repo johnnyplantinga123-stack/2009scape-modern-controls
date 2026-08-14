@@ -1,8 +1,8 @@
 # Modern Controls — Phase 0 Analysis & Implementation Plan
 
-**Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE** · **Phase 3B (Continuous Modern Movement) — COMPLETE** · **Phase 3B Stabilization (Input, Animation, Self-Rendering) — COMPLETE** · **PHASE 3C (Modern Camera Rig) — IMPLEMENTATION COMPLETE / RUNTIME STABILIZATION IN PROGRESS** · PHASE 3C REVIEW #2 — COMPLETE · PHASE 3C ADDENDUM (Zoom Ranges) — COMPLETE · **PHASE 3C RUNTIME STABILIZATION — COMPILE VERIFIED / STATICALLY REVIEWED / RUNTIME UNVERIFIED (F12 overlay, CHASE yaw smoothing, FP body-look coupling, FREE→CHASE transition, ORIGINAL zoom ownership confirmed)**
+**Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE** · **Phase 3B (Continuous Modern Movement) — COMPLETE** · **Phase 3B Stabilization (Input, Animation, Self-Rendering) — COMPLETE** · **PHASE 3C (Modern Camera Rig) — IMPLEMENTATION COMPLETE / RUNTIME STABILIZATION IN PROGRESS** · PHASE 3C REVIEW #2 — COMPLETE · PHASE 3C ADDENDUM (Zoom Ranges) — COMPLETE · PHASE 3C RUNTIME STABILIZATION — SUPERSEDED BY RUNTIME RESULTS · **PHASE 3C RUNTIME FIX ROUND #4 — COMPILE VERIFIED / STATICALLY REVIEWED / RUNTIME UNVERIFIED (P0–P7 all addressed; see §30)**
 
-**⚠️ RUNTIME STATUS: Phase 3C runtime stabilization changes COMPILE VERIFIED + STATICALLY REVIEWED. All P0-P7 fixes applied. F12 debug overlay, CHASE yaw smoothing tightened (factor 3, min 4), FP body-look dead zone reduced (32/~5.5°), FREE→CHASE transition pop fixed (chaseYaw seeded from freeYaw). ORIGINAL zoom ownership confirmed (Camera.ZOOM only modified by plugin API, not game loop). MODERN zoom: ModernCameraRig owns desiredDistance/safeDistance/actualDistance. Static sweeps confirm single-owner architecture for wheel, camera, orientation, xFine/zFine. ALL ITEMS RUNTIME UNVERIFIED — awaiting user test.**
+**⚠️ RUNTIME STATUS (round #4): The user's actual runtime test OVERRIDEs the previous static claims (ORIGINAL wheel zoom was NOT working despite "static verified"; CHASE fought world position during zoom; FP body faced opposite direction; roofs flashed). All P0–P7 fixes are applied, compiled (BUILD SUCCESSFUL) and statically reviewed. NOTHING has been re-verified at runtime — awaiting the round #4 user test list (§30.10).**
 
 **Date:** 14-08-2026
 
@@ -3661,3 +3661,399 @@ gradlew.bat :client:compileJava → BUILD SUCCESSFUL (all tasks up-to-date)
 15. Scroll FREE to extended maximum
 16. F11 -> ORIGINAL — previous original camera/zoom restored?
 17. Test FP roofs/ceiling if structural override is present
+
+---
+
+## 30. PHASE 3C RUNTIME FIX ROUND #4 (user runtime test response)
+
+User performed an actual runtime test; results OVERRIDE prior static claims.
+Preserved passes: F11 toggle, ORIGINAL arrows/middle-mouse, W movement, FP
+entry, FP movement basis (NOT reversed), FREE arrows/middle-mouse, F11
+restore, FP roofs rendering.
+
+### 30.1 P0 — F12 crash (done previous round, preserved)
+
+AWT `Graphics2D` overlay removed; overlay draws INSIDE the RT4 render
+pipeline (GlRaster/SoftwareRaster + Fonts.p11Full), F12 edge-triggered.
+Status: **COMPILE VERIFIED / RUNTIME UNVERIFIED** (user retest needed).
+
+### 30.2 P1 — FP body yaw opposite direction — FIXED
+
+**Root cause (SOURCE VERIFIED):** camera and body yaw conventions differ.
+- Camera (`Camera.method3849`, negative-multiplier atan2): 0=N(+Z), 512=W(-X), 1024=S(-Z), 1536=E(+X).
+- Body (`PathingEntity.anInt3400`; proven from `NpcList.method2247` movement
+  mapping + `NpcList.method949` positive-multiplier atan2): 0=-Z, 512=-X, 1024=+Z, 1536=+X.
+- ONE explicit conversion added: `ModernCameraRig.cameraYawToBodyYaw(...)` /
+  `bodyYawToCameraYaw(...)` = `(1024 - yaw) & 0x7FF` (involution; verified at
+  all 4 cardinals). Mouse-look sign untouched; movement basis untouched.
+- Writers converted: FP body-look coupling, movement orientation write,
+  all rig reads of `anInt3400`.
+Status: **SOURCE VERIFIED / COMPILE VERIFIED / RUNTIME UNVERIFIED**.
+
+### 30.3 P2 — CHASE zoom world-position ownership — FIXED (rearchitecture)
+
+The old code wrote the final camera in the 50Hz logic tick and read previous
+camera position back through smooth-follow fields — producing the "camera
+tries to keep its world position" symptom while zooming.
+
+New pipeline (§4/§5 one transform per render):
+- LOGIC (tick): `updateChase()`/`updateFree()` compute only authoritative
+  state: yaw/pitch targets, `desiredDistance`, obstruction `safeZoomLimit`.
+- RENDER (`ModernCameraRig.renderUpdate()`, hooked into
+  `GameShell.mainInputLoop()`): interpolates visual pivot/yaw/pitch/boom and
+  runs ONE `Camera.method555()` — Camera fields are OUTPUT only.
+- `Camera.renderX/renderZ` are never read back as input authority; the only
+  exception is the explicit FP→CHASE transition seed (`seedVisualFromCamera`).
+- `Camera.cameraType = 0` re-asserted at render timing (beats region-rebuild/
+  packet races that re-set cameraType=1 between ticks).
+Status: **COMPILE VERIFIED / STATICALLY REVIEWED / RUNTIME UNVERIFIED**.
+
+### 30.4 P3 — Render-timed smooth zoom/interpolation — FIXED
+
+- All 50Hz tick-based smoothing removed (`smoothDistance`,
+  `updateSmoothCameraPosition`, `smoothYaw`, `smoothInt` deleted).
+- Frame-rate independent: `alpha = 1 - exp(-rate * dt)` with
+  `GameShell.renderDelta`. Rates calibrated to old feel: distance 9/s,
+  yaw 20/s, pitch 9/s, pivot 3.2/s.
+- §7: rig threshold crossings do NOT reset visual distance. FP→CHASE seeds
+  visual boom at 0 and lets it grow smoothly; entering FP lets the boom
+  smoothly approach the eye state. Spatial continuity preserved.
+Status: **COMPILE VERIFIED / STATICALLY REVIEWED / RUNTIME UNVERIFIED**.
+
+### 30.5 P4 — ORIGINAL wheel zoom — IMPLEMENTED (after source proof)
+
+**Source proof:** the classic transform (`ScriptRunner.method4326`,
+cameraType==1) reads `Camera.ZOOM + pitchTarget*3`; `Camera.ZOOM` had no
+game-loop writer and no functioning wheel→camera path exists in the cache
+scripts. The previous "static verified" claim ("CS2 script handles it") was
+runtime-disproven.
+
+New small ORIGINAL path (`ModernControlController.updateOriginalWheelZoom()`):
+- Wheel moves a zoom TARGET on the legacy scale (100..1200, step 50/notch).
+- `Camera.ZOOM` smoothly approaches target per tick (factor 3, min step ±1).
+- Skipped when mouse is over scrollable UI (viewport heuristic).
+- No rig activation, no FOV change, arrows/middle mouse untouched.
+- Overlay diagnostics: legacyZoomInputSeen/Before/After.
+Status: **SOURCE VERIFIED / COMPILE VERIFIED / RUNTIME UNVERIFIED**.
+
+### 30.6 P5 — MODERN FREE wheel zoom — FIXED
+
+- ONE FREE distance authority: the rig's desired/safe/actual distance
+  (old FREE path mixed tick-time `smoothDistance()` with ratio-based
+  obstruction clamping that could fight the wheel).
+- `checkObstruction()` height-awareness fix: far/high FREE cameras were
+  clamped by ground-level collision flags/walls that ignore sample height;
+  flag/wall blocking now gated on `nearGround` (camY > terrain - 200).
+  Terrain-under-camera check unchanged.
+Status: **COMPILE VERIFIED / STATICALLY REVIEWED / RUNTIME UNVERIFIED**.
+
+### 30.7 P6 — Roof flashing — FIXED (root cause proven)
+
+**Root cause (SOURCE VERIFIED):** the FP override early-returned in
+`method4302()` BEFORE the rolling column reset of `aByteArrayArrayArray15`.
+The mask byte cycles mod 256 while the column reset cycles mod 104; stale
+stamps written before entering FP re-match the current frame stamp ~256
+frames later, hiding those roof tiles for one frame each cycle — sweeping
+column-by-column = "a flash moving through the roofs".
+
+Fix: the rolling column reset now runs inside the FP branch every frame
+(refresh 104 < collision 256 ⇒ stale stamps can never re-collide), yielding
+a stable NO-SELECTIVE-ROOF-REMOVAL state. No timing-constant hacks.
+Status: **SOURCE VERIFIED / COMPILE VERIFIED / RUNTIME UNVERIFIED**.
+
+### 30.8 P7 — Ceiling investigation (no code change this round)
+
+Source-traced findings:
+- CASE A/D RULED OUT: `SceneGraph.anInt5276` (min render plane, set once per
+  region via `method2750` ← LoginManager) includes planes above the player;
+  `method3049` frustum test covers the full height range. Upper-plane tiles
+  ARE submitted and pass visibility while FP roof removal is disabled.
+- CASE B PRIMARY SUSPECT: `GlRenderer` enables `GL_CULL_FACE`/`GL_BACK`
+  globally; plane/tile surfaces are single-sided, so the roof underside is
+  back-face culled when viewed from inside/below.
+- CASE C secondary (some model roofs may lack underside geometry).
+- Next round decision needed: smallest FP-only solution (e.g. two-sided
+  draw of the player-plane-overhead tile batch only; never global cull
+  disable). No fake ceiling mesh unless cache geometry is proven absent.
+Status: **SOURCE VERIFIED investigation / NO CODE CHANGE**.
+
+### 30.9 Round #4 static sweeps (§16)
+
+- B. `MouseWheel.wheelRotation` readers: client (writer), InterfaceList (UI
+  scroll), ModernCameraRig (MODERN), ModernControlController (ORIGINAL P4),
+  Protocol (staff plane change), DebugOverlay (display). ✔
+- B. `Camera.ZOOM` writers: plugin API (pre-existing) + ORIGINAL wheel path
+  (new, ORIGINAL-only); reader: `ScriptRunner.method4326`. ✔
+- B. `desiredDistance` writers: init + wheel clamp only. `actualDistance`
+  writers: onSceneRebuild/activate re-anchor + renderUpdate from visDistanceD
+  (NO threshold-crossing resets). ✔
+- B. `Camera.renderX/renderZ` writers: FirstPersonCamera (FP tick),
+  writeFpCameraImmediate (transition safety), method555 (render OUTPUT),
+  ScriptRunner save/restore, InterfaceList cutscene. No rig read-back. ✔
+- C. `anInt3400` writers: FP body coupling + movement controller, both via
+  `cameraYawToBodyYaw`; remainder vanilla (NPC spawn/packets). ✔
+- D. Roof-mask writes: method4348 flood fill (never reached in FP) + two
+  rolling resets (vanilla + new FP). ✔
+- E. F11 transition: save/restore intact; ORIGINAL zoom target released by
+  the isModern() guard. ✔
+- F. FREE controls: arrow/middle-mouse input path unchanged (TEST 14 pass
+  preserved); only distance ownership changed. ✔
+- G. No AWT Graphics2D overlay drawing remains (remaining getGraphics uses
+  are vanilla loading bars/fonts/error screens). ✔
+
+### 30.10 Round #4 files modified
+
+| File | Change |
+|---|---|
+| `rt4/ModernCameraRig.java` | P1 conversions; render-timed visual state + `renderUpdate()`; logic-only `updateChase`/`updateFree`; no threshold distance resets; height-aware `checkObstruction`; removed tick smoothing |
+| `rt4/ModernMovementController.java` | P1: yaw read conversion + orientation write via `cameraYawToBodyYaw` |
+| `rt4/GameShell.java` | `mainInputLoop()` calls `ModernCameraRig.renderUpdate()` |
+| `rt4/ModernControlController.java` | P4: `updateOriginalWheelZoom()` (ORIGINAL-only, legacy ZOOM scale) |
+| `rt4/ScriptRunner.java` | P6: rolling roof-mask column reset kept active in FP branch |
+| `rt4/DebugOverlay.java` | Added visYaw/fp rig line |
+
+Build: `gradlew.bat compileJava` → **BUILD SUCCESSFUL (EXIT_CODE=0)**.
+
+### 30.11 Verification status (round #4)
+
+| Item | Status |
+|------|--------|
+| P0 F12 overlay (RT4 pipeline) | COMPILE VERIFIED / RUNTIME UNVERIFIED |
+| P1 cameraYawToBodyYaw conversion | SOURCE VERIFIED / COMPILE VERIFIED |
+| P2 pivot-authority render pipeline | COMPILE VERIFIED / STATICALLY REVIEWED |
+| P3 render-timed interpolation | COMPILE VERIFIED / STATICALLY REVIEWED |
+| P4 ORIGINAL wheel zoom | SOURCE VERIFIED / COMPILE VERIFIED |
+| P5 FREE distance authority + obstruction | COMPILE VERIFIED / STATICALLY REVIEWED |
+| P6 roof-mask rolling reset in FP | SOURCE VERIFIED / COMPILE VERIFIED |
+| P7 ceiling CASE A–E determination | SOURCE VERIFIED investigation only |
+| All runtime behavior | **RUNTIME UNVERIFIED — awaiting user test** |
+
+### 30.12 Round #4 runtime test list (given to user)
+
+1. F12 — overlay opens without crash?
+2. ORIGINAL — wheel zoom in/out?
+3. ORIGINAL — arrows/middle mouse still good?
+4. F11 -> MODERN CHASE
+5. Stand still and scroll — does camera move only along boom, not fight world position?
+6. Walk/turn in CHASE — camera smooth and stable?
+7. Scroll slowly inward/outward — smooth?
+8. Enter FP and rotate left/right — body faces SAME direction?
+9. FP movement still correct?
+10. FP -> CHASE transition smooth?
+11. CHASE -> FREE transition smooth?
+12. FREE arrows/middle mouse still good?
+13. FREE wheel zoom works?
+14. F11 -> ORIGINAL restores previous state?
+15. FP outside building — roof stable, no flashing?
+16. FP inside building — ceiling visible?
+
+---
+
+## 31. PHASE 3C — RUNTIME FIX ROUND #5 + FIRST-PERSON INTERACTION FOUNDATION
+
+Round #4 runtime results (authoritative): smooth zoom, ORIGINAL zoom,
+FP/FREE entry, roof-flashing fix, F11 all PASS. Failures carried into this
+round: F12 crash, FP WASD regression, semantic/visual FP threshold mismatch,
+repeated FP<->CHASE corruption, CHASE A/D feedback loop, zoom not far
+enough, missing ceiling, plus new P6/P7 interaction features.
+
+### 31.1 P0 — F12 crash — ROOT CAUSE FOUND (plugin), FIXED
+
+Round #4's overlay rewrite was not the cause. The exact crash site was
+proven from `hs_err_pid24356.log`: the **ToggleResizableSD plugin's VK_F12
+key binding** fired `glDeleteTextures` on the GL thread →
+`EXCEPTION_ACCESS_VIOLATION`. Fix: the VK_F12 binding was removed from the
+plugin (`plugin.kt`); `DebugOverlay` now exclusively owns F12.
+Status: **SOURCE VERIFIED (hs_err log) / COMPILE VERIFIED / RUNTIME UNVERIFIED**.
+
+### 31.2 P1 — FP WASD — FIXED (regression traced)
+
+Regression: after Round #4 body-yaw work, `CameraMode.getCameraRelativeYaw()`
+could return the CHASE/body-convention yaw while the rig was visually at the
+FP eye position. Fix: it now returns `FirstPersonCamera.getYaw()` whenever
+the rig is in FIRST_PERSON state OR `FirstPersonCamera.isActive()`.
+The proven movement basis is UNTOUCHED (static sweep B):
+`Forward = (-sin, +cos)`, `Right = (+cos, +sin)`, yaw in camera convention
+(0=+Z N, 512=-X W, 1024=-Z S, 1536=+X E).
+Status: **SOURCE VERIFIED / COMPILE VERIFIED / RUNTIME UNVERIFIED**.
+
+### 31.3 P2 — Semantic vs visual FP threshold — FIXED
+
+CHASE<->FP transitions are now driven by the RENDERED distance
+(`visDistanceD`, visual authority), not the desired distance:
+- CHASE -> FP when `visDistanceD <= FP_ENTER_DISTANCE` (100) — FP behavior
+  activates exactly when the rendered boom reaches the eye.
+- FP -> CHASE when `visDistanceD >= FP_EXIT_DISTANCE` (200) or
+  `desiredDistance >= FREE_ENTER_DISTANCE` (1200). Hysteresis preserved.
+- FP case recomputes obstruction `safeDistance` every tick.
+Status: **COMPILE VERIFIED / STATICALLY REVIEWED / RUNTIME UNVERIFIED**.
+
+### 31.4 P3 — Repeated FP<->CHASE lifecycle corruption — FIXED
+
+Self-heal guards in `ModernCameraRig.update()` make stale one-shot state
+impossible to survive multiple cycles:
+- `rigState == FIRST_PERSON && !FirstPersonCamera.isActive()` →
+  re-activate + `writeFpCameraImmediate()`.
+- `rigState != FIRST_PERSON && FirstPersonCamera.isActive()` →
+  deactivate + `Camera.cameraType = 0`.
+- `deactivate()` clears `seedVisualFromCamera` + `visInitialized`; seeds are
+  also cleared on CHASE->FP and CHASE->FREE transitions.
+Status: **COMPILE VERIFIED / STATICALLY REVIEWED / RUNTIME UNVERIFIED**.
+
+### 31.5 P4 — CHASE A/D camera/body feedback — FIXED
+
+New stable `movementHeading` (camera convention) in
+`ModernMovementController`, synced from body yaw ONLY on:
+enterModernMode / scene rebuild / idle / FP->CHASE edge. Authority chain:
+WASD -> movementHeading -> velocity -> body (`anInt3400` via
+`cameraYawToBodyYaw`) -> `chaseYawTarget` -> render-smoothed `visYawD`.
+Camera yaw never feeds back into locomotion. FREE independence preserved.
+Status: **COMPILE VERIFIED / STATICALLY REVIEWED / RUNTIME UNVERIFIED**.
+
+### 31.6 P5 — FREE zoom extension — IMPLEMENTED
+
+Rig-specific maxima: `MAX_DISTANCE = 1350` stays the CHASE cap; new
+`FREE_MAX_DISTANCE = 2200` (FREE only). Wheel clamp, `safeDistance` and
+`visDistanceD` clamps all rig-aware (L530-532, L722, L785, L935).
+Obstruction logic unchanged. Feel is RUNTIME UNVERIFIED (user may want
+further tuning).
+Status: **COMPILE VERIFIED / RUNTIME UNVERIFIED**.
+
+### 31.7 P6 — FP crosshair action overlay — NEW (ModernActionOverlay.java)
+
+MODERN + FIRST_PERSON only. Design = reuse, do not invent:
+- `LoginManager.method1841()` rebuilds MiniMenu every frame; at render time
+  (after rebuild+sort, `client.mainRedraw`) `ModernActionOverlay.snapshot()`
+  captures the existing crosshair-target world entries (primary op first:
+  sort() places action>1000 entries at the front, menu reads from the end).
+- 3-tile Chebyshev range gate vs player tile; hysteresis keeps the last
+  target while it still exists. Max 3 actions shown, name + "N Op" lines,
+  drawn with the proven GlRaster/SoftwareRaster + Fonts.p11Full pattern
+  (no AWT Graphics2D).
+- Keys 1/2/3 (edge-detected) execute the displayed actions by matching the
+  LIVE entry (keys+action+tile args) and calling `MiniMenu.doAction(i)` —
+  the exact mouse-click route. E executes the primary action (no existing
+  E binding found in any Modern* file). Selected item/spell variants are
+  respected because the snapshot mirrors whatever entries the existing
+  pipeline produced (Use X -> / Cast X -> whitelisted).
+- Reused action IDs (H): loc 42/50/49/46/1001, NPC 17/16/4/19/2, ground
+  items 21/34/18/20/24, player options, use-item 14/26/1/33, cast-spell
+  38/45/15/39 (+ examine 1002/1004 via whitelist omission policy).
+Status: **SOURCE VERIFIED (routes traced) / COMPILE VERIFIED / RUNTIME UNVERIFIED**.
+
+### 31.8 P7 — Dialogue keyboard (ModernDialogueKeyboard.java) — NEW, MODERN-only
+
+- SPACE = "Click here to continue" via the EXACT doAction-41 route:
+  `MiniMenu.method10(child, id)` + `Cs1ScriptRunner.aClass13_10 =
+  InterfaceList.method1418(id, child)` + `InterfaceList.redraw(...)`.
+  Continue predicates match the menu builder's (`buttonType == 6` /
+  `isResumePauseButtonEnabled()`); chatbox-layer interfaces scanned first.
+- 1..9 = dialogue choice N via the EXACT doAction-8 button route
+  (`p1isaac(10); p4(componentId)` after the `method4265` clientCode gate).
+  Choices = `buttonType == 1` components of interfaces opened on the
+  chatbox layer (clientCode 1406), insertion-sorted by component y =
+  rendered top-to-bottom order. Fully generic; no dialogue hardcoded.
+  Server proof: `DialogueInterpreter.handle` maps child index -> topic.
+- Why an interface scan: MiniMenu.addComponentEntries is mouse-bounds-gated,
+  so in FP (cursor centred) Continue/choice entries never reach the menu.
+- Input priority (§15): chat input active / right-click menu open -> inert;
+  consumed keypress blocks the FP world-action layer for that tick.
+  ORIGINAL mode untouched (§17).
+Status: **SOURCE VERIFIED (routes traced byte-for-byte) / COMPILE VERIFIED / RUNTIME UNVERIFIED**.
+
+### 31.9 P8 — Ceiling investigation (no code change)
+
+New source evidence this round completes the CASE B proof:
+- `GlTile.method1944` fans every tile as `(v0, v[i], v[i+1])` — a FIXED
+  winding for ALL planes (vertex layout via `anIntArrayArray35` templates +
+  `method3683`; `method1324` takes no plane parameter affecting winding).
+- Global `glEnable(GL_CULL_FACE)` + `glCullFace(GL_BACK)`
+  (`GlRenderer` L293-294) therefore makes every tile plane single-sided:
+  front-facing only from the above side. Camera below the plane (FP indoors)
+  => back-face => culled. This covers both test path A (floor tile above
+  player) and B (roof tile) — they are the SAME mechanism.
+- Upper planes ARE submitted (`method3292` loops `anInt5276..levels`,
+  visibility check spans plane 0..3 heights), so culling — not submission —
+  is the blocker.
+- Test path C (roof loc/model): rendered as `GlModel` under the same global
+  cull; model faces wound outward, so model roofs viewed from inside are
+  likewise culled. Solution may need per-path treatment.
+- Decision NOT implemented: an FP-only underside pass (e.g. cull-disable or
+  reversed-winding second draw for the overhead tile batch only) remains the
+  proposed design; material uncertainty about lighting/normals on the
+  underside keeps it out of this round. Never a global cull disable.
+Status: **SOURCE VERIFIED investigation / NO CODE CHANGE**.
+
+### 31.10 Round #5 static sweeps (§20)
+
+- B. FP WASD basis UNCHANGED: `ModernMovementController` L384-387 —
+  `velocityX = fwd*(-sin)+str*(+cos)`, `velocityZ = fwd*(+cos)+str*(+sin)`.
+- C. Body yaw conversions: all via the involution pair
+  `cameraYawToBodyYaw`/`bodyYawToCameraYaw` (ModernCameraRig L265/273);
+  writes to `anInt3400` only at defined sync points.
+- D. Camera final writers: FP writer (`Camera.cameraYaw/pitch` from
+  FirstPersonCamera, L677-678), ORIGINAL-mode save/restore (L312-315),
+  `cameraType = 0` ownership guards; final zoom = ONE `Camera.method555`
+  (L968) + ORIGINAL route `ScriptRunner` L238.
+- E. Distance writes: `desiredDistance` writers = init + rig-aware wheel
+  clamp (L530-532); `FREE_MAX_DISTANCE = 2200` caps safe/vis clamps;
+  no writers outside ModernCameraRig.
+- F. Overlay draw calls: `client.mainRedraw` — `ModernCrosshair.draw()` →
+  `ModernActionOverlay.snapshot()/draw()` → `DebugOverlay.draw()`.
+- G. `MiniMenu.doAction` usage: ModernActionOverlay (new, matched live
+  entry) + Protocol L3646 (vanilla). No invented packets.
+- H. Reused action IDs documented in 31.7.
+- I. Continue = action-41 route; choice = action-8 route (byte-for-byte,
+  see 31.8).
+- J. Roof-mask writers unchanged from Round #4 (§30.9-D); no new
+  roof-mask writes.
+
+### 31.11 Round #5 files modified/created
+
+| File | Change |
+|---|---|
+| `ToggleResizableSD plugin.kt` | P0: removed VK_F12 binding (crash root cause) |
+| `rt4/CameraMode.java` | P1: getCameraRelativeYaw FP safety net |
+| `rt4/ModernCameraRig.java` | P2 visual-authority transitions; P3 self-heal guards; P5 FREE_MAX_DISTANCE=2200 + rig clamps |
+| `rt4/ModernMovementController.java` | P4 movementHeading + FP->CHASE edge sync |
+| `rt4/ModernActionOverlay.java` | NEW P6: FP crosshair action overlay + 1/2/3/E execution |
+| `rt4/ModernDialogueKeyboard.java` | NEW P7: SPACE continue + 1-9 choices (MODERN only) |
+| `rt4/ModernControlController.java` | updateInteractionLayer() priority chain |
+| `rt4/client.java` | mainRedraw snapshot/draw hooks (after method1841 rebuild) |
+
+Build: `build_rt4.bat` -> **BUILD SUCCESSFUL in 34s (EXIT_CODE=0)**.
+
+### 31.12 Verification status (round #5)
+
+| Item | Status |
+|------|--------|
+| P0 F12 crash root cause (plugin) | SOURCE VERIFIED (hs_err) / COMPILE VERIFIED |
+| P1 FP WASD yaw authority | SOURCE VERIFIED / COMPILE VERIFIED |
+| P2 visual-authority FP transitions | COMPILE VERIFIED / STATICALLY REVIEWED |
+| P3 lifecycle self-heal guards | COMPILE VERIFIED / STATICALLY REVIEWED |
+| P4 CHASE movementHeading authority | COMPILE VERIFIED / STATICALLY REVIEWED |
+| P5 FREE_MAX_DISTANCE 2200 | COMPILE VERIFIED / RUNTIME UNVERIFIED |
+| P6 FP action overlay (reuse MiniMenu) | SOURCE VERIFIED / COMPILE VERIFIED |
+| P7 dialogue keyboard (routes 41/8) | SOURCE VERIFIED / COMPILE VERIFIED |
+| P8 ceiling CASE B proof | SOURCE VERIFIED investigation only |
+| All runtime behavior | **RUNTIME UNVERIFIED — awaiting user test** |
+
+### 31.13 Round #5 runtime test list (given to user)
+
+1. F12 opens without crash?
+2. FP WASD works again?
+3. FP look left/right -> body follows same direction?
+4. Scroll CHASE -> FP: FP behavior activates exactly when camera reaches eye?
+5. FP -> CHASE -> FP repeated 10 times: still works every time?
+6. CHASE W/A/S/D: movement and body correct?
+7. CHASE camera follows smoothly without fighting A/D?
+8. FREE zoom goes materially farther?
+9. FREE arrows/middle mouse still work?
+10. Roof flashing still gone?
+11. Aim at object within 3 tiles: name/actions appear by crosshair?
+12. Press 1/2/3: correct existing object action executes?
+13. NPC within range: correct existing actions appear?
+14. Dialogue with multiple choices: 1/2/3 selects corresponding option?
+15. "Click here to continue": SPACE continues?
+16. ORIGINAL camera/zoom/input still normal?
+17. Ceiling still missing / any new source finding?

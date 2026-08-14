@@ -1,15 +1,13 @@
 package rt4;
 
-import java.awt.Color;
-import java.awt.Font;
-import java.awt.Graphics2D;
-
 /**
- * F12-toggled developer debug overlay (Phase 3C).
+ * F12-toggled developer debug overlay (Phase 3C, round 4).
  *
  * <p>Displays compact on-screen diagnostics for camera, movement, input,
- * and scene state. Uses AWT Graphics2D for simplicity — does not interfere
- * with the game's rasteriser or font system.</p>
+ * and scene state. Rendered INSIDE the RT4 render pipeline using the
+ * existing dual-rasterizer (GlRaster / SoftwareRaster) + Fonts text system.
+ * This avoids the previous crash caused by opening a separate AWT
+ * Graphics2D context on the canvas after the GL buffer swap.</p>
  *
  * <h2>Design Goals</h2>
  * <ul>
@@ -17,6 +15,7 @@ import java.awt.Graphics2D;
  *   <li>Overlay does NOT steal gameplay input.</li>
  *   <li>Compact enough to read while moving.</li>
  *   <li>Debug-only: zero overhead when hidden.</li>
+ *   <li>Works in both HD/OpenGL and SD/software renderers.</li>
  * </ul>
  */
 public final class DebugOverlay {
@@ -41,6 +40,14 @@ public final class DebugOverlay {
 	/** Movement update tick counter (incremented by ModernMovementController). */
 	public static int movementUpdateTickCount;
 
+	// ---- Temporary ORIGINAL-mode zoom diagnostics (P4) ----
+	/** Whether a wheel event reached the legacy zoom path this tick. */
+	public static boolean legacyZoomInputSeen;
+	/** pitchTarget value before the legacy wheel step. */
+	public static int legacyZoomBefore;
+	/** pitchTarget value after the legacy wheel step. */
+	public static int legacyZoomAfter;
+
 	private DebugOverlay() {
 	}
 
@@ -62,139 +69,127 @@ public final class DebugOverlay {
 	}
 
 	/**
-	 * Draws the debug overlay on the canvas. Called from the render pipeline
-	 * after the game scene has been drawn.
+	 * Draws the debug overlay INSIDE the RT4 render pipeline using the
+	 * dual-rasterizer + Fonts text system. Must be called from the in-game
+	 * render pass (gameState 30) BEFORE the framebuffer is presented, so the
+	 * rasterizer surface is the active draw target.
 	 *
-	 * <p>Uses AWT Graphics2D with a monospaced font for readability.
-	 * Draws a semi-transparent background behind the text.</p>
+	 * <p>Uses the same pattern as {@link ModernCrosshair} and the FPS text in
+	 * {@link Cs1ScriptRunner}: GlRaster / SoftwareRaster for background and
+	 * {@code Fonts.p11Full.renderLeft} for text.</p>
 	 */
 	public static void draw() {
 		if (!visible) return;
-		if (GameShell.canvas == null) return;
+		if (Fonts.p11Full == null) return;
 
-		Graphics2D g;
-		try {
-			g = (Graphics2D) GameShell.canvas.getGraphics();
-			if (g == null) return;
-		} catch (Exception e) {
-			return;
+		Player self = PlayerList.self;
+		int px = (self != null) ? self.xFine : 0;
+		int pz = (self != null) ? self.zFine : 0;
+		int tileX = px >> 7;
+		int tileZ = pz >> 7;
+		int plane = Player.plane;
+
+		String profile = CameraMode.isModern() ? "MODERN" : "ORIGINAL";
+		String rig = "NA";
+		if (CameraMode.isModern() && ModernCameraRig.isActive()) {
+			rig = ModernCameraRig.getRigState().name();
 		}
 
-		try {
-			g.setFont(new Font("Monospaced", Font.PLAIN, 11));
-			g.setColor(new Color(0, 0, 0, 180));
+		JagString[] lines = new JagString[]{
+				hdr("CONTROL"),
+				lbl("profile ", profile),
+				lbl("rig ", rig),
+				lbl("cameraType ", Camera.cameraType),
+				hdr("PLAYER"),
+				JagString.concatenate(new JagString[]{JagString.parse("tile x:"), JagString.parseInt(tileX), JagString.parse(" z:"), JagString.parseInt(tileZ), JagString.parse(" p:"), JagString.parseInt(plane)}),
+				JagString.concatenate(new JagString[]{JagString.parse("fine x:"), JagString.parseInt(px), JagString.parse(" z:"), JagString.parseInt(pz)}),
+				JagString.concatenate(new JagString[]{JagString.parse("serverTile x:"), JagString.parseInt(ModernMovementController.getLastServerTileX()), JagString.parse(" z:"), JagString.parseInt(ModernMovementController.getLastServerTileZ())}),
+				lbl("pending ", ModernMovementController.getPendingCount()),
+				lbl("moveUpdates ", movementUpdateTickCount),
+				hdr("INPUT"),
+				JagString.concatenate(new JagString[]{JagString.parse("W"), bool(Keyboard.pressedKeys[33]), JagString.parse(" A"), bool(Keyboard.pressedKeys[48]), JagString.parse(" S"), bool(Keyboard.pressedKeys[49]), JagString.parse(" D"), bool(Keyboard.pressedKeys[50]), JagString.parse(" sh"), bool(Keyboard.pressedKeys[81])}),
+				JagString.concatenate(new JagString[]{JagString.parse("chat "), bool(ModernControlController.isChatInputActive()), JagString.parse(" gameplay "), bool(ModernControlController.isGameplayInputAllowed())}),
+				hdr("CAMERA"),
+				JagString.concatenate(new JagString[]{JagString.parse("pos x:"), JagString.parseInt(Camera.renderX), JagString.parse(" y:"), JagString.parseInt(Camera.anInt40), JagString.parse(" z:"), JagString.parseInt(Camera.renderZ)}),
+				JagString.concatenate(new JagString[]{JagString.parse("yaw "), JagString.parseInt(Camera.cameraYaw), JagString.parse(" pitch "), JagString.parseInt(Camera.cameraPitch)}),
+				JagString.concatenate(new JagString[]{JagString.parse("yawT "), JagString.parseInt((int) Camera.yawTarget), JagString.parse(" pitchT "), JagString.parseInt((int) Camera.pitchTarget)}),
+				JagString.concatenate(new JagString[]{JagString.parse("des "), JagString.parseInt(ModernCameraRig.getDesiredDistance()), JagString.parse(" safe "), JagString.parseInt(ModernCameraRig.getSafeDistance()), JagString.parse(" act "), JagString.parseInt(ModernCameraRig.getActualDistance())}),
+				JagString.concatenate(new JagString[]{JagString.parse("visYaw "), JagString.parseInt(ModernCameraRig.getVisualYaw()), JagString.parse(" fp "), bool(ModernCameraRig.isFirstPersonRigState())}),
+				JagString.concatenate(new JagString[]{JagString.parse("wheel "), JagString.parseInt(MouseWheel.wheelRotation), JagString.parse(" ZOOM "), JagString.parseInt(Camera.ZOOM)}),
+				hdr("ZOOM DIAG"),
+				JagString.concatenate(new JagString[]{JagString.parse("seen "), bool(legacyZoomInputSeen), JagString.parse(" before "), JagString.parseInt(legacyZoomBefore), JagString.parse(" after "), JagString.parseInt(legacyZoomAfter)}),
+				hdr("BODY"),
+				JagString.concatenate(new JagString[]{JagString.parse("target "), JagString.parseInt(self != null ? self.anInt3400 : 0), JagString.parse(" visual "), JagString.parseInt(self != null ? self.anInt3381 : 0)}),
+				JagString.concatenate(new JagString[]{JagString.parse("locoYaw "), JagString.parseInt(ModernMovementController.getTargetOrientationAngle()), JagString.parse(" rigYaw "), JagString.parseInt(ModernCameraRig.getBodyYaw())}),
+				lbl("fpCamYaw ", FirstPersonCamera.getYaw()),
+				hdr("SCENE"),
+				JagString.concatenate(new JagString[]{JagString.parse("roofMode "), JagString.parseInt(ScriptRunner.method4047()), JagString.parse(" allLvl "), bool(SceneGraph.allLevelsAreVisible())}),
+				JagString.concatenate(new JagString[]{JagString.parse("fpStruct "), bool(FirstPersonCamera.isActive()), JagString.parse(" fpValid "), bool(FirstPersonCamera.hasValidPosition())}),
+				hdr("DIAGNOSTIC"),
+				lbl("lastCamWriter ", lastCameraWriter),
+				lbl("lastBodyYawWriter ", lastBodyYawWriter),
+				lbl("lastRebase ", lastMovementRebaseReason),
+		};
 
-			Player self = PlayerList.self;
-			int px = (self != null) ? self.xFine : 0;
-			int pz = (self != null) ? self.zFine : 0;
-			int tileX = px >> 7;
-			int tileZ = pz >> 7;
-			int plane = Player.plane;
+		// Measure widest line
+		int maxWidth = 0;
+		for (JagString line : lines) {
+			int w = Fonts.p11Full.getStringWidth(line);
+			if (w > maxWidth) maxWidth = w;
+		}
 
-			String profile = CameraMode.isModern() ? "MODERN" : "ORIGINAL";
-			String rig = "N/A";
-			if (CameraMode.isModern() && ModernCameraRig.isActive()) {
-				rig = ModernCameraRig.getRigState().name();
+		int lineHeight = 12;
+		int x = 4;
+		int y = 4;
+		int boxW = maxWidth + 12;
+		int boxH = lines.length * lineHeight + 8;
+
+		// Set clip to the full canvas so the overlay is never clipped by a
+		// lingering interface clip region, then draw background + border.
+		if (GlRenderer.enabled) {
+			GlRaster.setClip(0, 0, GlRenderer.canvasWidth, GlRenderer.canvasHeight);
+			GlRaster.fillRectAlpha(x, y, boxW, boxH, 0x000000, 170);
+			GlRaster.drawRect(x, y, boxW, boxH, 0x555555);
+		} else {
+			SoftwareRaster.setClip(0, 0, SoftwareRaster.width, SoftwareRaster.height);
+			SoftwareRaster.fillRectAlpha(x, y, boxW, boxH, 0x000000, 170);
+			SoftwareRaster.drawRect(x, y, boxW, boxH, 0x555555);
+		}
+
+		// Draw text lines
+		int textY = y + 10;
+		for (JagString line : lines) {
+			if (isHeader(line)) {
+				Fonts.p11Full.renderLeft(line, x + 6, textY, 0xFFFF00, 0);
+			} else {
+				Fonts.p11Full.renderLeft(line, x + 6, textY, 0x00FF80, 0);
 			}
-
-			// Build overlay text
-			String[] lines = new String[]{
-					// CONTROL
-					"=== CONTROL ===",
-					"profile=" + profile,
-					"rig=" + rig,
-					"cameraType=" + Camera.cameraType,
-					"",
-					// PLAYER
-					"=== PLAYER ===",
-					"tile=(" + tileX + "," + tileZ + ",p" + plane + ")",
-					"fine=(" + px + "," + pz + ")",
-					"serverTile=(" + ModernMovementController.getLastServerTileX()
-							+ "," + ModernMovementController.getLastServerTileZ() + ")",
-					"pending=" + ModernMovementController.getPendingCount(),
-					"moveUpdates=" + movementUpdateTickCount,
-					"",
-					// INPUT
-					"=== INPUT ===",
-					"W=" + bool(Keyboard.pressedKeys[33])
-							+ " A=" + bool(Keyboard.pressedKeys[48])
-							+ " S=" + bool(Keyboard.pressedKeys[49])
-							+ " D=" + bool(Keyboard.pressedKeys[50]),
-					"shift=" + bool(Keyboard.pressedKeys[81]),
-					"chat=" + bool(ModernControlController.isChatInputActive()),
-					"gameplay=" + bool(ModernControlController.isGameplayInputAllowed()),
-					"",
-					// CAMERA
-					"=== CAMERA ===",
-					"pos=(" + Camera.renderX + "," + Camera.anInt40 + "," + Camera.renderZ + ")",
-					"yaw=" + Camera.cameraYaw + " pitch=" + Camera.cameraPitch,
-					"yawTarget=" + (int) Camera.yawTarget + " pitchTarget=" + (int) Camera.pitchTarget,
-					"desired=" + ModernCameraRig.getDesiredDistance()
-							+ " safe=" + ModernCameraRig.getSafeDistance()
-							+ " actual=" + ModernCameraRig.getActualDistance(),
-					"wheelRot=" + MouseWheel.wheelRotation,
-					"ZOOM=" + Camera.ZOOM,
-					"",
-					// BODY
-					"=== BODY ===",
-					"anInt3400(target)=" + (self != null ? self.anInt3400 : -1),
-					"anInt3381(visual)=" + (self != null ? self.anInt3381 : -1),
-					"anInt3385(counter)=" + (self != null ? self.anInt3385 : -1),
-					"locomotionYaw=" + ModernMovementController.getTargetOrientationAngle(),
-					"bodyYaw(rig)=" + ModernCameraRig.getBodyYaw(),
-					"fpCamYaw=" + FirstPersonCamera.getYaw(),
-					"",
-					// SCENE
-					"=== SCENE ===",
-					"roofMode=" + ScriptRunner.method4047(),
-					"allLevels=" + bool(SceneGraph.allLevelsAreVisible()),
-					"fpStructOverride=" + bool(FirstPersonCamera.isActive()),
-					"fpValidPos=" + bool(FirstPersonCamera.hasValidPosition()),
-					"",
-					// DIAGNOSTIC
-					"=== DIAGNOSTIC ===",
-					"lastCamWriter=" + lastCameraWriter,
-					"lastBodyYawWriter=" + lastBodyYawWriter,
-					"lastRebaseReason=" + lastMovementRebaseReason,
-			};
-
-			// Measure and draw
-			int lineHeight = 13;
-			int maxWidth = 0;
-			for (String line : lines) {
-				int w = g.getFontMetrics().stringWidth(line);
-				if (w > maxWidth) maxWidth = w;
-			}
-
-			int overlayX = 4;
-			int overlayY = 4;
-			int overlayW = maxWidth + 12;
-			int overlayH = lines.length * lineHeight + 8;
-
-			// Semi-transparent background
-			g.setColor(new Color(0, 0, 0, 180));
-			g.fillRect(overlayX, overlayY, overlayW, overlayH);
-			g.setColor(new Color(80, 80, 80));
-			g.drawRect(overlayX, overlayY, overlayW, overlayH);
-
-			// Text
-			g.setColor(new Color(0, 255, 128));
-			int textY = overlayY + 12;
-			for (String line : lines) {
-				if (line.startsWith("===")) {
-					g.setColor(new Color(255, 255, 100));
-				} else {
-					g.setColor(new Color(0, 255, 128));
-				}
-				g.drawString(line, overlayX + 6, textY);
-				textY += lineHeight;
-			}
-		} finally {
-			g.dispose();
+			textY += lineHeight;
 		}
 	}
 
-	private static String bool(boolean v) {
-		return v ? "Y" : "N";
+	/** Builds a section header line. */
+	private static JagString hdr(String name) {
+		return JagString.parse("== " + name + " ==");
+	}
+
+	/** Returns whether a line is a section header (starts with "=="). */
+	private static boolean isHeader(JagString line) {
+		return line.length >= 2 && line.chars[0] == '=' && line.chars[1] == '=';
+	}
+
+	/** Builds a label + integer value line. */
+	private static JagString lbl(String label, int value) {
+		return JagString.concatenate(new JagString[]{JagString.parse(label), JagString.parseInt(value)});
+	}
+
+	/** Builds a label + string value line. */
+	private static JagString lbl(String label, String value) {
+		return JagString.concatenate(new JagString[]{JagString.parse(label), JagString.parse(value)});
+	}
+
+	/** Returns "Y" or "N" as a JagString. */
+	private static JagString bool(boolean v) {
+		return JagString.parse(v ? "Y" : "N");
 	}
 }

@@ -88,8 +88,13 @@ public final class CameraMode {
 		}
 		if (current == Mode.THIRD_PERSON && ModernCameraRig.isActive()) {
 			// Only in rig FP state does the camera yaw drive locomotion.
-			// In CHASE/FREE: body/locomotion drives camera (return -1).
-			if (ModernCameraRig.getRigState() == ModernCameraRig.RigState.FIRST_PERSON) {
+			// In CHASE/FREE: stable movement heading (return -1; the movement
+			// controller uses its own movementHeading, not camera yaw).
+			// Phase 3C round #5 (P1): the FirstPersonCamera.isActive() check is
+			// a safety net so FP WASD always tracks the FP look whenever the
+			// FP camera is live, even if rigState disagrees for one tick.
+			if (ModernCameraRig.getRigState() == ModernCameraRig.RigState.FIRST_PERSON
+					|| FirstPersonCamera.isActive()) {
 				return FirstPersonCamera.getYaw();
 			}
 		}

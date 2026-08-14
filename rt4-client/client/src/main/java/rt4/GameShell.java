@@ -543,6 +543,12 @@ public abstract class GameShell extends Applet implements Runnable, FocusListene
 	}
 
 	public void mainInputLoop() {
+		// Render-timed modern camera visual update (Phase 3C round #4, P2/P3):
+		// interpolates pivot/yaw/pitch/boom distance per render frame and runs
+		// the ONE chase/free camera transform, writing Camera fields as OUTPUT.
+		// No-op when the modern rig is inactive.
+		ModernCameraRig.renderUpdate();
+
 		// Gate legacy arrow key camera input when modern camera rig owns the camera.
 		// In MODERN CHASE mode: arrow keys must NOT mutate legacy yawTarget/pitchTarget.
 		// In MODERN FREE mode: arrow keys are handled by the rig's own input path.

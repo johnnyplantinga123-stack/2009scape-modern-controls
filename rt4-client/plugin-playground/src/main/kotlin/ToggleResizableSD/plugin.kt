@@ -8,8 +8,6 @@ import rt4.DisplayMode
 import rt4.GameShell
 import rt4.InterfaceList
 import rt4.client
-import java.awt.event.KeyAdapter
-import java.awt.event.KeyEvent
 
 class plugin : Plugin() {
 
@@ -20,13 +18,15 @@ class plugin : Plugin() {
     var wantHd = false
 
     override fun Init() {
-        API.AddKeyboardListener(object : KeyAdapter() {
-            override fun keyPressed(e: KeyEvent) {
-                if (e.keyCode == KeyEvent.VK_F12) {
-                    toggleResizableSd()
-                }
-            }
-        })
+        // Phase 3C round #5 (P0): the VK_F12 keybinding was REMOVED.
+        // Crash proof (hs_err_pid24356.log): keyPressed(VK_F12) -> toggleResizableSd()
+        // -> DisplayMode.setWindowMode -> GlRenderer.quit() -> MaterialManager.quit()
+        // -> glDeleteTextures -> EXCEPTION_ACCESS_VIOLATION in nvoglv64.dll on
+        // AWT-EventQueue-0 while the render thread still owns the GL context.
+        // F12 is now exclusively owned by the in-engine DebugOverlay toggle
+        // (CameraMode.onKeyPressed -> DebugOverlay.onKeyPressed).
+        // The ::rsd / ::toggleresizablesd chat commands and the KondoKit
+        // "Use Resizable SD" toggle below remain functional.
 
         useResizable = DisplayMode.resizableSD
         if (API.GetData("use-resizable-sd") == true) {

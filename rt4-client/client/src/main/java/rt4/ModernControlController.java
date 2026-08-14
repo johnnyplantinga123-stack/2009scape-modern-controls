@@ -69,6 +69,19 @@ public final class ModernControlController {
 	private static final int KEY_S = 49;
 	private static final int KEY_D = 50;
 
+	// ---- ORIGINAL wheel zoom (Phase 3C round #4, P4) ----
+	// SOURCE PROOF: the classic camera transform (ScriptRunner.method4326,
+	// cameraType==1) reads Camera.ZOOM + pitchTarget*3 as the boom distance.
+	// Camera.ZOOM has no other Java writer in this client, and no functioning
+	// wheel→camera path exists in the cache scripts, so this small ORIGINAL
+	// wheel path writes Camera.ZOOM on the legacy zoom scale.
+	// Requirements: smooth zoom, arrows/middle mouse unchanged, no modern rig
+	// activation, no FOV change.
+	/** ORIGINAL zoom target (-1 = idle/not engaged). */
+	private static int originalZoomTarget = -1;
+	/** Ticks remaining before legacyZoomInputSeen is cleared (for the overlay). */
+	private static int legacyZoomSeenTimer;
+
 	private ModernControlController() {
 	}
 
@@ -88,7 +101,10 @@ public final class ModernControlController {
 
 		switch (CameraMode.getCurrent()) {
 			case ORIGINAL:
-				// No modern override — original RuneScape controls run as-is.
+				// No modern control override — original RuneScape controls run as-is.
+				// Phase 3C round #4 (P4): ORIGINAL wheel camera zoom on the legacy
+				// Camera.ZOOM scale. No rig activation, no FOV change.
+				updateOriginalWheelZoom();
 				break;
 		case FIRST_PERSON:
 			// Phase 3B fix #2: camera MUST update before movement so that
@@ -98,6 +114,7 @@ public final class ModernControlController {
 			// Phase 3C: camera rig continuum (FP/CHASE/FREE)
 			ModernCameraRig.update();
 			ModernMovementController.update();
+			updateInteractionLayer();
 			break;
 			case THIRD_PERSON:
 				// Phase 3C: FirstPersonCamera provides mouse-look for FP rig state.
@@ -105,7 +122,22 @@ public final class ModernControlController {
 				FirstPersonCamera.update();
 				ModernCameraRig.update();
 				ModernMovementController.update();
+				updateInteractionLayer();
 				break;
+		}
+	}
+
+	/**
+	 * Phase 3C round #5 (P6/P7): keyboard interaction priority chain
+	 * (brief §15). Chat text entry is handled by the isChatInputActive gate
+	 * inside each controller; the dialogue/choice layer runs first and when
+	 * it consumes a key the FP world-action layer is skipped for this tick.
+	 * ORIGINAL mode never reaches this method.
+	 */
+	private static void updateInteractionLayer() {
+		boolean uiConsumed = ModernDialogueKeyboard.update();
+		if (!uiConsumed) {
+			ModernActionOverlay.update();
 		}
 	}
 
@@ -178,6 +210,60 @@ public final class ModernControlController {
 	}
 
 	// ---- Private helpers ----
+
+	/**
+	 * ORIGINAL-mode wheel camera zoom (Phase 3C round #4, P4).
+	 *
+	 * <p>Wheel input moves a zoom TARGET on the legacy zoom scale (vanilla
+	 * range 100..1200, step 50/notch); the actual {@link Camera#ZOOM} then
+	 * approaches the target smoothly per tick. {@code Camera.ZOOM} is the
+	 * field the classic camera transform really reads (proven from
+	 * {@code ScriptRunner.method4326} cameraType==1). Arrows and middle mouse
+	 * are untouched; the modern rig is never activated; FOV is unchanged.</p>
+	 */
+	private static void updateOriginalWheelZoom() {
+		if (CameraMode.isModern()) {
+			// Not ORIGINAL — release any legacy zoom engagement.
+			originalZoomTarget = -1;
+			return;
+		}
+
+		// Overlay diagnostics: keep "seen" visible for ~1s after last event.
+		if (legacyZoomSeenTimer > 0) {
+			legacyZoomSeenTimer--;
+			if (legacyZoomSeenTimer == 0) {
+				DebugOverlay.legacyZoomInputSeen = false;
+			}
+		}
+
+		// Wheel input → adjust target (skip when UI owns the wheel).
+		if (MouseWheel.wheelRotation != 0 && !ModernCameraRig.isMouseOverScrollableUI()) {
+			int rotation = MouseWheel.wheelRotation;
+			if (originalZoomTarget < 0) {
+				originalZoomTarget = Camera.ZOOM;
+			}
+			DebugOverlay.legacyZoomInputSeen = true;
+			DebugOverlay.legacyZoomBefore = Camera.ZOOM;
+			legacyZoomSeenTimer = 50;
+			// Scroll IN (rotation < 0) → zoom in (smaller ZOOM).
+			originalZoomTarget += rotation * 50;
+			if (originalZoomTarget < 100) originalZoomTarget = 100;
+			if (originalZoomTarget > 1200) originalZoomTarget = 1200;
+		}
+
+		// Smooth per-tick approach toward the target.
+		if (originalZoomTarget >= 0) {
+			int delta = originalZoomTarget - Camera.ZOOM;
+			if (delta != 0) {
+				int step = delta / 3;
+				if (step == 0) step = (delta > 0) ? 1 : -1;
+				Camera.ZOOM += step;
+				DebugOverlay.legacyZoomAfter = Camera.ZOOM;
+			} else {
+				originalZoomTarget = -1; // Converged — disengage.
+			}
+		}
+	}
 
 	/**
 	 * Tracks the chatbox text-input state using Enter-key edge-detection.

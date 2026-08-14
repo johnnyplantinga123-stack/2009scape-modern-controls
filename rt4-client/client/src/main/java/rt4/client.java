@@ -892,6 +892,14 @@ public final class client extends GameShell {
 			// Modern controls: center-screen reticle (FP/CHASE only).
 			// Additive presentation layer — no effect on ORIGINAL or gameplay.
 			ModernCrosshair.draw();
+			// Phase 3C round 5 (P6): FP crosshair action overlay. The menu was
+			// just rebuilt+sorted by LoginManager.method1841(), so snapshot the
+			// current crosshair-target entries here, then draw the label.
+			ModernActionOverlay.snapshot();
+			ModernActionOverlay.draw();
+			// Phase 3C round 4: F12 debug overlay. Drawn INSIDE the render pipeline
+			// (before the GL/software buffer present) using the RT4 raster + Fonts.
+			DebugOverlay.draw();
 		} else if (gameState == 40) {
 			Fonts.drawTextOnScreen(false, JagString.concatenate(new JagString[]{LocalizedText.CONLOST, JagString.aClass100_556, LocalizedText.ATTEMPT_TO_REESTABLISH}));
 		}
@@ -934,8 +942,6 @@ public final class client extends GameShell {
 			Preferences.write(GameShell.signLink);
 		}
 		PluginRepository.LateDraw();
-		// Phase 3C: F12 debug overlay (drawn last, on top of everything)
-		DebugOverlay.draw();
 	}
 
 	@OriginalMember(owner = "client!client", name = "c", descriptor = "(B)V")
