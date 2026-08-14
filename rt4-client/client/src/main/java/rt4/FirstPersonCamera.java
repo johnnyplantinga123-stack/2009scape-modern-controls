@@ -349,6 +349,15 @@ public final class FirstPersonCamera {
 	}
 
 	/**
+	 * Returns whether the FP camera has been initialised with a proven valid
+	 * terrain height. When false, camera fields are NOT written.
+	 * Visible for diagnostic overlay.
+	 */
+	public static boolean hasValidPosition() {
+		return hasValidPosition;
+	}
+
+	/**
 	 * Validates that terrain data is available for the current FP camera position.
 	 *
 	 * <p>Checks:

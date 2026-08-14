@@ -543,6 +543,17 @@ public abstract class GameShell extends Applet implements Runnable, FocusListene
 	}
 
 	public void mainInputLoop() {
+		// Gate legacy arrow key camera input when modern camera rig owns the camera.
+		// In MODERN CHASE mode: arrow keys must NOT mutate legacy yawTarget/pitchTarget.
+		// In MODERN FREE mode: arrow keys are handled by the rig's own input path.
+		// In ORIGINAL mode or when modern rig is not active: allow legacy input.
+		boolean modernRigOwnsCamera = CameraMode.isModern() && ModernCameraRig.isActive();
+		if (modernRigOwnsCamera) {
+			// Modern rig owns camera — skip legacy arrow key camera panning.
+			// FREE mode has its own arrow key handling in ModernCameraRig.updateFree().
+			// CHASE mode should not respond to arrow keys at all.
+			return;
+		}
 		if (Keyboard.pressedKeys[Keyboard.KEY_UP] || Keyboard.pressedKeys[Keyboard.KEY_DOWN] || Keyboard.pressedKeys[Keyboard.KEY_LEFT] || Keyboard.pressedKeys[Keyboard.KEY_RIGHT]) {
 			double vertical = calcRenderDelta(18.0d);
 			if (Keyboard.pressedKeys[Keyboard.KEY_UP]) {

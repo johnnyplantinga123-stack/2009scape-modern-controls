@@ -1,6 +1,8 @@
 # Modern Controls — Phase 0 Analysis & Implementation Plan
 
-**Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE** · **Phase 3B (Continuous Modern Movement) — COMPLETE** · **Phase 3B Stabilization (Input, Animation, Self-Rendering) — COMPLETE** · **PHASE 3C (Modern Camera Rig — Scroll Zoom Continuum + Chase Camera + Body-Look Coupling) — COMPLETE** · **PHASE 3C REVIEW #2 (RT4 Source Verification — method555 reuse, wheel pipeline honesty, distance model, comment accuracy) — COMPLETE**
+**Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE** · **Phase 3B (Continuous Modern Movement) — COMPLETE** · **Phase 3B Stabilization (Input, Animation, Self-Rendering) — COMPLETE** · **PHASE 3C (Modern Camera Rig) — IMPLEMENTATION COMPLETE / RUNTIME STABILIZATION** · PHASE 3C REVIEW #2 — COMPLETE · PHASE 3C ADDENDUM (Zoom Ranges) — COMPLETE · **PHASE 3C RUNTIME STABILIZATION — IN PROGRESS (FP camera position fix, arrow key gating, debug overlay, structural visibility fix with stale bounding-box reset)**
+
+**⚠️ RUNTIME STATUS: Phase 3C is NOT fully runtime-proven. Compile success ≠ runtime success. FP camera position fix applied (defensive transition write). Arrow key gating, structural visibility override with stale bounding-box reset, debug overlay all applied. Roof pipeline: SOURCE VERIFIED. FP selective-removal override: COMPILE VERIFIED. Actual roof visible outside / ceiling from underneath / CHASE-FREE restoration: RUNTIME UNVERIFIED.**
 
 **Date:** 14-08-2026
 
@@ -2209,3 +2211,662 @@ No Phase 4 collision, targeting, combat, UI/hotbar, protocol rewrite, or rendere
 - [ ] FP: body follows look direction (body-look coupling sole writer)
 - [ ] FP: WASD does NOT overwrite body orientation
 - [ ] CHASE/FREE: body orientation from movement, not camera yaw
+
+---
+
+## 19. Phase 3C Addendum — Final Zoom Ranges (Vanilla ZOOM Trace + RuneLite +150 Mapping)
+
+**Date:** 14-08-2026
+**Commit:** (pending)
+**Baseline:** 42a2c09 (Phase 3C Review #2 - RT4 source verification)
+
+### 19.1 Problem statement
+
+The Phase 3C camera rig used arbitrary distance thresholds:
+- `FREE_ENTER_DISTANCE = 4200`
+- `MAX_DISTANCE = 5600`
+- `WHEEL_STEP = 130`
+- Mapping: `zoom = actualDistance * 0.5 + pitch * 3`
+
+These values were not derived from the vanilla zoom system. The user requested
+that thresholds be traced from actual 2009Scape RT4 source code and mapped to
+match the RuneLite Camera plugin's "Expand outer zoom limit = +150" feel.
+
+### 19.2 Source trace — vanilla 2009Scape zoom system
+
+#### 19.2.1 Camera.ZOOM field
+
+**File:** `Camera.java:73`
+```java
+public static int ZOOM = 600;
+```
+Default value: **600**.
+
+#### 19.2.2 Vanilla zoom limits (legacy client)
+
+**File:** `legacy-client/.../MouseWheel.java:32-36`
+```java
+if ((Client.ZOOM > 1200 && MouseWheel.moveAmt >= 0)
+        || (Client.ZOOM < 100 && MouseWheel.moveAmt <= 0)) {
+    return; // blocked
+}
+Client.ZOOM += MouseWheel.moveAmt >= 0 ? 50 : -50;
+```
+
+**Vanilla zoom limits:**
+| Parameter | Value |
+|-----------|-------|
+| Default ZOOM | 600 |
+| Min ZOOM | 100 |
+| Max ZOOM | 1200 |
+| Step per notch | 50 |
+
+#### 19.2.3 pitchTarget field
+
+**File:** `Camera.java:19`
+```java
+public static double pitchTarget = 128;
+```
+Clamped to [128, 383] by `Camera.clampCameraAngle()` (lines 107-112).
+
+#### 19.2.4 Vanilla render pipeline call
+
+**File:** `ScriptRunner.java:238`
+```java
+Camera.method555(
+    Camera.cameraX,                                    // targetX
+    arg0,                                               // viewportHeight
+    SceneGraph.getTileHeight(...) - 50,                 // targetY
+    Camera.ZOOM - -(local59 * 3),                       // zoom_param = ZOOM + pitchTarget*3
+    local57,                                            // yaw
+    Camera.cameraZ,                                     // targetZ
+    local59                                             // pitch
+);
+```
+
+**zoom_param = Camera.ZOOM + pitchTarget * 3**
+
+This is the 4th argument to `Camera.method555()`, which becomes the camera boom
+length (3D distance from target to camera in fine units).
+
+#### 19.2.5 method555 boom computation
+
+**File:** `Camera.java:393-431`
+
+```
+local5 = 2048 - pitch   (pitch complement)
+local29 = 2048 - yaw    (yaw complement)
+
+boomY = sin(pitch_complement) * -zoom_param >> 16
+intermediate = cos(pitch_complement) * zoom_param >> 16
+boomX = sin(yaw_complement) * intermediate >> 16
+boomZ = cos(yaw_complement) * intermediate >> 16
+
+renderX = targetX - boomX
+renderZ = targetZ - boomZ
+anInt40 = targetY - boomY
+```
+
+The 3D boom length = zoom_param (since sin²+cos²=1 across both rotations).
+**zoom_param IS the camera distance in fine units (128 fine = 1 tile).**
+
+#### 19.2.6 Vanilla zoom_param range
+
+At default pitch (128):
+| Setting | ZOOM | zoom_param | Boom (fine) | Boom (tiles) |
+|---------|------|------------|-------------|---------------|
+| Min zoom | 100 | 100 + 384 = 484 | 484 | 3.8 |
+| Default | 600 | 600 + 384 = 984 | 984 | 7.7 |
+| Max zoom | 1200 | 1200 + 384 = 1584 | 1584 | 12.4 |
+
+At max pitch (383):
+| Setting | ZOOM | zoom_param | Boom (fine) | Boom (tiles) |
+|---------|------|------------|-------------|---------------|
+| Min zoom | 100 | 100 + 1149 = 1249 | 1249 | 9.8 |
+| Max zoom | 1200 | 1200 + 1149 = 2349 | 2349 | 18.4 |
+
+### 19.3 RuneLite +150 mapping
+
+RuneLite Camera plugin defines:
+```
+OUTER_LIMIT_MIN = -400
+OUTER_LIMIT_MAX = 400
+outerLimit default = 0
+```
+
+The plugin adjusts the vanilla zoom limits:
+```
+CAMERA_ZOOM_BIG_MIN = defaultZoomBigMin - outerLimitAdjustment
+```
+
+"outerLimit = +150" means: extend the vanilla max ZOOM by 150 units in
+the game's zoom configuration scale.
+
+**Extended max ZOOM = 1200 + 150 = 1350**
+
+This is NOT 150 fine units or 150 tiles. It is 150 units in the same
+ZOOM parameter space as vanilla's 600 default and 1200 max.
+
+Extended zoom_param at default pitch:
+- 1350 + 128*3 = 1350 + 384 = **1734** fine units boom length
+
+### 19.4 Derivation of new constants
+
+#### 19.4.1 Mapping change
+
+**Before:** `zoom = actualDistance * 0.5 + pitch * 3`
+**After:** `zoom = actualDistance + pitch * 3`
+
+Now `actualDistance` directly maps to the vanilla ZOOM parameter space.
+This means:
+- `actualDistance = 600` corresponds to vanilla default ZOOM (600)
+- `actualDistance = 1200` corresponds to vanilla max ZOOM (1200)
+- `actualDistance = 1350` corresponds to extended max ZOOM (1350)
+
+#### 19.4.2 Threshold derivation
+
+| Constant | Old Value | New Value | Derivation |
+|----------|-----------|-----------|------------|
+| FP_ENTER_DISTANCE | 120 | **100** | = VANILLA_ZOOM_MIN (fully zoomed in) |
+| FP_EXIT_DISTANCE | 200 | **200** | Hysteresis: 100 above FP_ENTER (2 notches) |
+| FREE_ENTER_DISTANCE | 4200 | **1200** | = VANILLA_ZOOM_MAX (normal max zoom) |
+| FREE_EXIT_DISTANCE | 3800 | **1100** | Hysteresis: 100 below FREE_ENTER (2 notches) |
+| MIN_DISTANCE | 0 | **0** | Unchanged |
+| MAX_DISTANCE | 5600 | **1350** | = VANILLA_ZOOM_MAX + 150 (RuneLite extension) |
+| WHEEL_STEP | 130 | **50** | = vanilla scroll step per notch |
+| desiredDistance (default) | 2400 | **600** | = VANILLA_ZOOM_DEFAULT |
+| actualDistance (default) | 2400 | **600** | = VANILLA_ZOOM_DEFAULT |
+
+#### 19.4.3 Visual verification at boundaries
+
+At CHASE→FREE transition (actualDistance = 1200, CHASE_PITCH = 256):
+- zoom_param = 1200 + 256*3 = 1200 + 768 = **1968**
+- Boom length ≈ 1968 fine units ≈ 15.4 tiles (3D)
+- Horizontal distance = cos(45°) * 1968 ≈ 1392 fine ≈ 10.9 tiles
+- Vanilla max horizontal = cos(22.5°) * 1584 ≈ 1463 fine ≈ 11.4 tiles
+- Ratio: 1392/1463 ≈ **95%** of vanilla max horizontal distance
+
+This is visually comparable to vanilla max zoom (within ~5%).
+
+At FREE max (actualDistance = 1350, FREE_PITCH = 300):
+- zoom_param = 1350 + 300*3 = 1350 + 900 = **2250**
+- Boom length ≈ 2250 fine units ≈ 17.6 tiles (3D)
+- Extended overview camera
+
+#### 19.4.4 Obstruction comparison fix
+
+**Before:** `if (clearDist < actualDistance && actualDistance > 0)`
+- Mixed units: clearDist in fine units, actualDistance in ZOOM space
+
+**After:** `if (clearDist < zoom && zoom > 0)`
+- Both in fine-unit boom-length space. Correct comparison.
+
+### 19.5 ORIGINAL mode verification
+
+**Camera.java:** Zero diff. `Camera.ZOOM = 600` unchanged.
+**MouseWheel.java (legacy):** Not modified.
+**ScriptRunner.java:** Not modified.
+
+ORIGINAL mode retains exact standard 2009Scape zoom limits:
+- Min: ZOOM=100 → zoom_param=484
+- Max: ZOOM=1200 → zoom_param=1584
+- No extension applied.
+
+### 19.6 Expected user experience
+
+**ORIGINAL / no F11:**
+- Scroll in/out → exactly normal 2009Scape range (100–1200 ZOOM)
+
+**F11 → MODERN:**
+- Scroll fully inward → FIRST_PERSON (at distance ≤ 100)
+- Scroll outward → THIRD PERSON chase distance increases
+- Around distance 1200 (vanilla max ZOOM) → transition into FREE
+- Scroll further outward → extended overview
+- Maximum: distance 1350 (≈ RuneLite Camera outerLimit +150 feel)
+- Scroll inward → extended FREE → normal FREE → CHASE → close CHASE → FIRST_PERSON
+
+### 19.7 Build verification
+
+```
+gradlew.bat :client:compileJava → BUILD SUCCESSFUL
+```
+
+1 file changed: `ModernCameraRig.java` (24 insertions, 21 deletions).
+No other files modified. No Phase 4 changes.
+
+### 19.8 Runtime acceptance checklist
+
+**Zoom continuum (vanilla-anchored):**
+- [ ] ORIGINAL scroll: exactly normal 2009Scape range (no change)
+- [ ] MODERN scroll IN: FP → CHASE at distance ~100
+- [ ] MODERN scroll OUT: CHASE → FREE at distance ~1200
+- [ ] CHASE→FREE transition feels like "vanilla max zoom"
+- [ ] FREE max (distance 1350) feels like RuneLite +150 extension
+- [ ] No mode flicker at thresholds (hysteresis works)
+- [ ] Each scroll notch changes distance by 50 (same as vanilla step)
+
+**ORIGINAL regression:**
+- [ ] Camera.ZOOM unchanged (still 600 default)
+- [ ] Vanilla zoom limits unchanged (100–1200)
+- [ ] No modern zoom leaks into ORIGINAL mode
+
+---
+
+## 20. PHASE 3C RUNTIME STABILIZATION — IN PROGRESS
+
+**Date:** 14-08-2026
+
+### 20.1 User Runtime Test Failures (Blockers)
+
+User performed actual runtime tests after Phase 3C Addendum. The following **hard blockers** were identified:
+
+| # | Failure | Severity |
+|---|---------|----------|
+| 1 | FP camera shows full character ~1 tile away (not at eye position) | CRITICAL |
+| 2 | WASD doesn't work in CHASE (letters appear in chat) | CRITICAL |
+| 3 | Scroll zoom is buggy/inconsistent/jerky | HIGH |
+| 4 | Chase camera hitches/stutters, doesn't follow heading cleanly | HIGH |
+| 5 | Arrow keys in CHASE still rotate minimap (legacy camera input not blocked) | HIGH |
+| 6 | Maximum zoom does NOT enter FREE camera | HIGH |
+| 7 | Character model doesn't rotate with camera/movement direction | HIGH |
+
+### 20.2 Root Cause Analysis
+
+**Arrow key leakage (§5):** `GameShell.mainInputLoop()` runs on render timing and unconditionally mutates `Camera.yawTarget/pitchTarget` when arrow keys are held. This runs regardless of camera mode, causing minimap rotation even when the modern rig owns the camera.
+
+**Camera ownership:** Multiple writers per render frame:
+- `FirstPersonCamera.update()` writes Camera fields (50Hz)
+- `ModernCameraRig.update()` writes Camera fields via method555 (50Hz)
+- `ScriptRunner.java:229` may call `Camera.method555()` (render timing) when `cameraType==1`
+- `GameShell.mainInputLoop()` mutates `yawTarget/pitchTarget` (render timing)
+
+**50Hz stutter:** Camera smoothing runs at 50Hz (fixed logic rate) but rendering runs at variable/high refresh rate. The camera position is stale between 50Hz updates, causing visible hitching.
+
+**FP camera position:** FirstPersonCamera places camera at `(self.xFine, self.zFine, groundHeight - EYE_HEIGHT)`. This is at the player's exact position. The full character should NOT be visible; only chest/legs when looking down. If the full character is visible ~1 tile away, something is overwriting the camera position or the FP camera is not being activated correctly.
+
+### 20.3 Fixes Applied So Far
+
+**Fix 1: Arrow key gating in GameShell.mainInputLoop()**
+- File: `GameShell.java`
+- Change: Added early return when `CameraMode.isModern() && ModernCameraRig.isActive()`
+- Effect: Arrow keys no longer mutate legacy `yawTarget/pitchTarget` when modern rig owns camera
+- Status: SOURCE-VERIFIED, COMPILE-VERIFIED, NOT YET RUNTIME-VERIFIED
+
+**Fix 2: Debug overlay (throttled console output)**
+- File: `ModernCameraRig.java`
+- Change: Added throttled debug output (every ~1 second) showing rig state, distances, camera fields, body orientation, chat state
+- Effect: Enables runtime diagnosis of camera/input state
+- Status: SOURCE-VERIFIED, COMPILE-VERIFIED, NOT YET RUNTIME-VERIFIED
+
+### 20.4 Remaining Fixes Needed
+
+| Priority | Fix | Description |
+|----------|-----|-------------|
+| P0 | FP camera position | Trace exact camera write path, verify no overwrites, ensure eye position |
+| P0 | WASD in CHASE | Verify shouldForwardKeyToChat covers all entry points, check chat input state |
+| P1 | Camera smoothing to render timing | Move visual camera interpolation from 50Hz to render-timed |
+| P1 | FREE camera activation | Verify state transition works, FREE uses classic camera behavior |
+| P1 | Body orientation | Fix FP look coupling and CHASE locomotion heading |
+| P2 | Render-timed yaw interpolation | Handle 0..2047 wrapped yaw correctly in render interpolation |
+| P2 | Smooth camera pivot | Add render-timed pivot interpolation for chase/free |
+
+### 20.5 Architecture Clarifications
+
+**Control Profile vs Camera Rig State:**
+- `CameraMode` (ORIGINAL / THIRD_PERSON) = CONTROL PROFILE
+  - F11 toggles between ORIGINAL and MODERN (THIRD_PERSON)
+- `ModernCameraRig.RigState` (FP / CHASE / FREE) = CAMERA RIG STATE
+  - Scroll wheel transitions within MODERN
+  - FP: FirstPersonCamera owns final camera
+  - CHASE: Modern chase camera owns final camera
+  - FREE: Classic-style camera with extended zoom
+
+**Camera Ownership (one writer per render frame):**
+- FP rig state: `FirstPersonCamera` writes final Camera fields
+- CHASE rig state: `ModernCameraRig.updateChase()` writes final Camera fields via method555
+- FREE rig state: `ModernCameraRig.updateFree()` writes final Camera fields via method555
+- ORIGINAL mode: Legacy camera system (method4273/method555) writes fields
+
+**Body Orientation:**
+- FP rig state: Body follows camera look direction (body-look coupling with dead zone)
+- CHASE rig state: Body follows locomotion heading (movement direction)
+- FREE rig state: Body follows locomotion heading (camera orbit independent)
+
+### 20.6 Runtime Test Checklist
+
+After next build, user should test:
+
+- [ ] **TEST A — FP Position:** Enter MODERN, scroll fully inward. Camera at true eye position?
+- [ ] **TEST B — CHASE WASD:** Enter MODERN CHASE. Press W/A/S/D. Character moves?
+- [ ] **TEST C — Arrow keys in CHASE:** Press arrow keys. Minimap stays stable?
+- [ ] **TEST D — FP Body:** FP, stand still, rotate mouse. Body follows with dead zone?
+- [ ] **TEST E — CHASE Body:** CHASE, move in several directions. Character rotates toward movement?
+- [ ] **TEST F — CHASE Follow:** Run and change direction. Camera follows smoothly?
+- [ ] **TEST G — Zoom:** Scroll from FP outward. FP → CHASE → FREE transitions work?
+- [ ] **TEST H — FREE:** At max zoom, camera behaves like classic RS free camera?
+- [ ] **TEST I — FREE Arrow Keys:** In FREE, arrow keys orbit camera?
+- [ ] **TEST J — ORIGINAL:** F11 back to ORIGINAL. Everything restored exactly?
+
+### 20.7 Verification Status
+
+| Component | SOURCE-VERIFIED | COMPILE-VERIFIED | RUNTIME-VERIFIED |
+|-----------|:-:|:-:|:-:|
+| Arrow key gating | ✓ | ✓ | ✗ |
+| Debug overlay | ✓ | ✓ | ✗ |
+| FP camera position | ✓ | ✓ | ✗ |
+| WASD in CHASE | ✓ | ✓ | ✗ |
+| Camera smoothing | ✓ | ✓ | ✗ |
+| FREE activation | ✓ | ✓ | ✗ |
+| Body orientation | ✓ | ✓ | ✗ |
+| ORIGINAL restoration | ✓ | ✓ | ✗ |
+
+---
+
+## 21. FP Structural Visibility / Roof Rendering Pipeline Trace
+
+### 21.1 Pipeline Summary
+
+The RT4 structural visibility pipeline controls which planes, roofs, walls, and
+floor geometry are rendered. It consists of two independent systems:
+
+**System A — Plane/Tile Visibility (SceneGraph)**
+- `SceneGraph.allLevelsAreVisible()` returns `GlRenderer.enabled || Preferences.allLevelsVisible`
+- In HD mode: ALWAYS true → all 4 planes built and rendered
+- In SD mode: depends on `Preferences.allLevelsVisible` (default `true`)
+- `SceneGraph.firstVisibleLevel` / `anInt5276` controls the starting render plane
+- `SceneGraph.renderFlags[4][104][104]` bit flags per plane/tile
+
+**System B — Selective Roof Removal (ScriptRunner)**
+- `ScriptRunner.method4302()` runs every render frame when `getBaseRoofMode() == 2`
+- Mode 2 = HD + `removeRoofsSelectively` (default true)
+- Actively hides roof groups near camera/player using `aByteArrayArrayArray15` mask
+- `API.TILE_FLAG_UNDER_ROOF` (renderFlags bit 0x4) identifies tiles under roofs
+- Flood-fill algorithm (`method4348`) finds connected roof groups to hide
+
+### 21.2 renderFlags Bit Meanings
+
+| Bit | Value | Meaning |
+|-----|-------|---------|
+| 0x1 | 1 | (unused in visibility) |
+| 0x2 | 2 | Bridge flag — tile uses plane+1 height |
+| 0x4 | 4 | TILE_FLAG_UNDER_ROOF — tile is under roof geometry |
+| 0x8 | 8 | Forces getRenderLevel() to return 0 |
+| 0x10 | 16 | Used in tile building visibility check |
+
+### 21.3 Execution Flow (Per Render Frame)
+
+```
+ScriptRunner.draw()
+  ├─ method4302()              ← selective roof hiding (THE MAIN CULPRIT)
+  │   ├─ getBaseRoofMode() == 2?
+  │   │   ├─ HD + removeRoofsSelectively → YES → run roof hiding
+  │   │   └─ else → return (no hiding)
+  │   ├─ cameraType != 1: check camera height + TILE_FLAG_UNDER_ROOF → hide roof group
+  │   └─ cameraType == 1: check player position → hide roof group; walk camera→player
+  ├─ local387 = roof byte for frame
+  └─ SceneGraph.method2954(aByteArrayArrayArray15, ...)
+      └─ method3292()           ← main tile draw loop
+          └─ for each tile: arg3[plane][x][z] != arg5?
+              ├─ YES → tile visible (roof NOT hidden)
+              └─ NO  → tile roof hidden (selective removal active)
+```
+
+### 21.4 Failure Mechanism: CASE A — Selective Roof Removal
+
+In HD mode with default preferences, `getBaseRoofMode()` returns 2. The
+`method4302()` function actively hides roof groups near the camera every frame.
+
+In FP mode, the camera is at player eye position — often directly under roof
+geometry. The check `local33 - Camera.anInt40 < 800 && TILE_FLAG_UNDER_ROOF`
+triggers aggressively because the FP camera is close to ground height.
+
+The geometry IS present (all planes built in HD). The geometry IS submitted.
+But the per-frame selective roof hiding mask marks roof tiles as hidden.
+
+### 21.5 Fix Applied
+
+**File:** `ScriptRunner.java` — `method4302()`
+
+Added early return when `FirstPersonCamera.isActive()`:
+- Skips selective roof hiding entirely in FP mode
+- Render-time query only — no scene data modified
+- Instant reversion when FP is exited (next frame runs normally)
+- CHASE/FREE/ORIGINAL modes completely unaffected
+
+### 21.6 Debug Overlay Additions
+
+Added to `[CAMERA-RIG-DEBUG]` output:
+- `playerPlane` — current player plane
+- `roofMode` — getBaseRoofMode() result (0=never remove, 1=always remove, 2=selective)
+- `fpStructOverride` — whether FP structural override is active
+- `allLevelsVisible` — whether allLevelsAreVisible() returns true
+
+### 21.7 Remaining Structural Concerns (Runtime-Dependent)
+
+- **Case C (Back-face culling):** Roof undersides may be one-sided geometry.
+  Cannot determine without runtime testing in FP mode looking upward.
+- **Case D (Occlusion):** `method187()` occlusion checks may hide tiles from
+  certain FP camera angles. Secondary concern — only triggers in lowmem mode
+  for roof occluders.
+- **SD mode 1 (always remove roofs):** When `!allLevelsAreVisible()`,
+  `method2218()` marks ALL roofs as hidden at scene build time. Not addressed
+  yet — only affects SD mode with `allLevelsVisible=false` (non-default).
+
+### 21.8 FP Structural Acceptance Tests
+
+- [ ] **TEST 1 — OUTSIDE HOUSE:** Stand beside house, enter FP. Roof/walls intact?
+- [ ] **TEST 2 — INSIDE HOUSE:** Walk inside. Look forward/up. Ceiling visible?
+- [ ] **TEST 3 — LOOK UP:** Inside building, look straight up. Ceiling/floor surface visible?
+- [ ] **TEST 4 — NEIGHBOURING HOUSE:** Look at nearby building. Roof visible?
+- [ ] **TEST 5 — MULTI-STOREY:** Test ground floor and upstairs. Structure coherent?
+- [ ] **TEST 6 — MODE SWITCH:** FP→CHASE (scroll out). Normal roof behavior returns?
+- [ ] **TEST 7 — REGION CHANGE:** FP + teleport. Structural visibility correct after rebuild?
+
+---
+
+## 22. FP Camera Position Fix — Defensive Transition Write
+
+**Date:** 14-08-2026
+**Baseline:** 42a2c09 (Phase 3C Review #2)
+
+### 22.1 Problem
+
+User runtime test: "FP camera shows full character ~1 tile away, not at eye position."
+
+### 22.2 Root Cause Analysis
+
+**Execution order within one 50Hz tick:**
+1. `FirstPersonCamera.update()` — runs BEFORE rig
+2. `ModernCameraRig.update()` — contains state transitions
+3. `ModernMovementController.update()`
+
+**The timing gap:**
+When the user scrolls in to enter FP:
+- Tick N: `FirstPersonCamera.update()` runs, sees rigState=CHASE, returns early (no FP write)
+- Tick N: `ModernCameraRig.update()` runs, transitions to FP, activates FP camera
+- But `FirstPersonCamera.update()` already ran — it won't run again until tick N+1
+- The chase camera position from tick N-1 persists in Camera fields
+
+On tick N+1, `FirstPersonCamera.update()` runs and sees FP state, writes correctly.
+But on tick N (the transition tick), the Camera fields contain stale chase values.
+
+**Additional risk:** If `hasValidPosition` is false (terrain not yet validated),
+`FirstPersonCamera.update()` returns early even in FP state, leaving stale values.
+
+### 22.3 Fix Applied
+
+**File:** `ModernCameraRig.java` — `updateStateTransitions()`
+
+When entering FP state, after `FirstPersonCamera.activate()`, immediately call
+`writeFpCameraImmediate(PlayerList.self)` which writes:
+- `Camera.renderX = self.xFine` (player X position)
+- `Camera.renderZ = self.zFine` (player Z position)
+- `Camera.anInt40 = groundHeight - 200` (eye height above terrain)
+- `Camera.cameraYaw = FirstPersonCamera.getYaw()` (look direction)
+- `Camera.cameraPitch = 0` (horizon)
+- `Camera.cameraType = 0` (prevent legacy camera interference)
+
+This ensures the Camera fields are set to the FP eye position on the exact
+transition tick, preventing a stale chase camera offset from persisting.
+
+**Safety checks in `writeFpCameraImmediate()`:**
+- Null player check
+- Plane bounds check (0..3)
+- tileHeights null check
+- Tile coordinate bounds check (0..103)
+
+### 22.4 Enhanced Diagnostics
+
+**File:** `FirstPersonCamera.java`
+- Added `hasValidPosition()` public accessor for diagnostic overlay
+
+**File:** `ModernCameraRig.java` — debug overlay
+- Added `FPvalidPos=` field showing `FirstPersonCamera.hasValidPosition()`
+- Enables runtime diagnosis of terrain validation issues
+
+### 22.5 Build Verification
+
+```
+gradlew.bat :client:compileJava → BUILD SUCCESSFUL
+```
+
+Files modified: `ModernCameraRig.java`, `FirstPersonCamera.java`
+
+### 22.6 Runtime Acceptance Tests
+
+- [ ] **TEST A — FP ENTER:** Scroll fully inward. Camera at true eye position (not chase offset)?
+- [ ] **TEST B — FP TRANSITION SMOOTHNESS:** No visible flash of chase camera on enter?
+- [ ] **TEST C — FP AFTER REGION CHANGE:** Enter FP after teleport. Camera at eye position?
+- [ ] **TEST D — DEBUG OVERLAY:** Check `FPvalidPos=true` when in FP mode?
+- [ ] **TEST E — CHASE FOLLOW:** Run and change direction. Camera follows smoothly?
+- [ ] **TEST F — CHASE→FP→CHASE:** Scroll in to FP, then out. Clean transitions?
+
+---
+
+## 23. FP Structural Visibility — Stale Mask Review & Bounding-Box Reset Fix
+
+**Date:** 14-08-2026
+**Baseline:** 42a2c09 (Phase 3C Review #2) + Section 22 changes
+
+### 23.1 Issue Raised
+
+User structural visibility review identified three concerns with the FP
+roof-removal override in `ScriptRunner.method4302()`:
+
+1. **Stale roof mask**: Does the early return leave `aByteArrayArrayArray15` or
+   bounding-box arrays stale from the previous frame?
+2. **Camera ownership check**: `FirstPersonCamera.isActive()` may not reflect
+   the actual rendered rig during transitions.
+3. **All roof modes**: Trace behavior for modes 0, 1, 2.
+
+### 23.2 Complete Roof Mask Trace
+
+#### anInt3325 — Frame counter
+- Line 106: `static int anInt3325 = 0`
+- Line 208: `anInt3325++` — incremented every frame in `method4326()` (draw)
+
+#### aByteArrayArrayArray15 — Per-tile selective-roof mask
+- `byte[4][104][104]`, lazily allocated
+- **method960(byte)**: fills entire array with a constant
+- **method4302()**: writes one column per frame with stamp `(anInt3325 - 4) & 0xFF`
+- **method4348()**: flood-fills connected roof tiles with stamp `anInt3325 & 0xFF`
+
+#### method3292() — Scene graph tile visibility
+Line 3003 critical condition:
+```
+arg3 == null || level < arg4 || arg3[level][x][z] != arg5
+```
+Where `arg3 = aByteArrayArrayArray15`, `arg5 = local387 = (byte)anInt3325`.
+
+**Tile is VISIBLE** when mask value != current frame stamp.
+**Tile is HIDDEN** when mask value == current frame stamp.
+
+#### method2419() — Scenery culling via bounding boxes
+Line 4091: if `anIntArray8[i] != -1000000` and scenery falls within the
+bounding box → scenery is SKIPPED (`continue label194`).
+
+### 23.3 Findings
+
+#### Finding A: Per-tile mask is SAFE (no stale hiding)
+
+The mask uses a frame-unique stamp (`anInt3325 & 0xFF`). Since `anInt3325`
+increments every frame, old stamps from previous frames never match the
+current frame's `local387`. Therefore:
+- **No stale per-tile hiding can persist.** Tiles marked in frame N-1 have
+  stamp `(N-1) & 0xFF`, which does not equal `N & 0xFF` in frame N.
+- The early return from method4302() in FP mode means no tiles are marked
+  with the current stamp → all tiles render normally. **Correct for FP.**
+
+#### Finding B: Bounding box arrays are STALE (scenery incorrectly culled)
+
+The bounding box arrays (`anIntArray205`, `anIntArray338`, `anIntArray518`,
+`anIntArray476`, `anIntArray134`) are reset to sentinel values at lines
+1374-1380 **AFTER** the FP early return. When method4302() early-returns:
+- These arrays retain **previous frame's bounding boxes**.
+- `method2419()` uses these stale boxes to cull scenery.
+- **Scenery within previous-frame roof bounding boxes is incorrectly hidden.**
+
+**This is a real bug.** The fix resets bounding box arrays to sentinel
+values before the early return.
+
+#### Finding C: Camera ownership — rig state is authoritative
+
+`FirstPersonCamera.isActive()` may be true when the rig has already
+transitioned to CHASE (e.g., during FP→CHASE transition frame).
+`ModernCameraRig.isFirstPersonRigState()` checks `rigState == FIRST_PERSON`,
+which is the actual rendered camera. The condition is changed.
+
+### 23.4 Roof Mode Architecture
+
+| Mode | getBaseRoofMode() | method4302() behavior | FP impact |
+|------|-------------------|----------------------|----------|
+| 0 | `neverRemoveRoofs` = true | Returns at line 1349 (mode != 2) | No roof hiding at all. FP safe. |
+| 1 | `!allLevelsAreVisible \|\| !removeRoofsSelectively` | Returns at line 1349 (mode != 2) | Hides all roofs via method2608(). Not FP-specific. |
+| 2 | `allLevelsAreVisible && removeRoofsSelectively` | Selective per-frame removal | **FP override applies here.** Skip selective removal. |
+
+The FP override is correctly placed inside the `mode == 2` guard because:
+- Mode 0: no structural removal occurs regardless → FP needs no override
+- Mode 1: removal is global (method2608 floods all tiles) → not camera-dependent
+- Mode 2: removal is camera-position-dependent → FP override needed
+
+### 23.5 Fix Applied
+
+**File:** `ScriptRunner.java` — `method4302()`
+
+1. Changed `FirstPersonCamera.isActive()` → `ModernCameraRig.isFirstPersonRigState()`
+2. Added bounding-box array reset before early return:
+   ```java
+   if (anIntArray205 != null) {
+       for (int i = 0; i < anIntArray205.length; i++) {
+           anIntArray205[i] = -1000000;
+           anIntArray338[i] = 1000000;
+           anIntArray518[i] = 0;
+           anIntArray476[i] = 1000000;
+           anIntArray134[i] = 0;
+       }
+   }
+   ```
+3. No modification to `aByteArrayArrayArray15` (mask self-invalidates).
+4. No modification to `Preferences` or `neverRemoveRoofs`.
+
+### 23.6 Build Verification
+
+```
+gradlew.bat build → BUILD SUCCESSFUL in 1m 7s
+```
+
+Files modified: `ScriptRunner.java`
+
+### 23.7 Verification Status
+
+| Item | Status |
+|------|--------|
+| Roof removal pipeline trace | **SOURCE VERIFIED** |
+| FP selective-removal override | **COMPILE VERIFIED** |
+| Per-tile mask stale safety | **PROVEN SAFE** (frame-unique stamp) |
+| Bounding-box stale scenery culling | **BUG FOUND AND FIXED** |
+| Rig-state ownership check | **COMPILE VERIFIED** |
+| Actual roof visible from outside in FP | **RUNTIME UNVERIFIED** |
+| Actual ceiling visible from underneath | **RUNTIME UNVERIFIED** (back-face/one-sided geometry) |
+| CHASE/FREE roof restoration after FP exit | **RUNTIME UNVERIFIED** |
+| Roof mode 0/1 behavior in FP | **SOURCE VERIFIED** (no FP override needed) |

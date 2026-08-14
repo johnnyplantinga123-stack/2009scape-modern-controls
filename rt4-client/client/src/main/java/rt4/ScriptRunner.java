@@ -1349,6 +1349,36 @@ public final class ScriptRunner {
 		if (method4047() != 2) {
 			return;
 		}
+		// First-person structural visibility override (Phase 3C §32-48):
+		// In FP mode, skip selective roof removal so the physical world
+		// remains visually intact around the camera.
+		//
+		// Uses ModernCameraRig.isFirstPersonRigState() (not
+		// FirstPersonCamera.isActive()) because the rig state is the
+		// authoritative source for which camera is ACTUALLY rendered.
+		// FirstPersonCamera lifecycle state may lag during transitions.
+		//
+		// Per-tile mask (aByteArrayArrayArray15) is NOT explicitly cleared:
+		// the mask uses a frame-unique stamp (anInt3325 & 0xFF) and
+		// method3292() only hides tiles matching the CURRENT frame's stamp.
+		// Old stamps from previous frames never match → no stale hiding.
+		//
+		// Bounding box arrays (anIntArray205 etc.) ARE reset to safe defaults
+		// because method2419() culls scenery within non-sentinel bounding
+		// boxes. Without reset, stale boxes from the previous frame would
+		// incorrectly cull scenery that should be visible in FP.
+		if (ModernCameraRig.isFirstPersonRigState()) {
+			if (anIntArray205 != null) {
+				for (int i = 0; i < anIntArray205.length; i++) {
+					anIntArray205[i] = -1000000;
+					anIntArray338[i] = 1000000;
+					anIntArray518[i] = 0;
+					anIntArray476[i] = 1000000;
+					anIntArray134[i] = 0;
+				}
+			}
+			return;
+		}
 		API.EnsureRoofVisibilityBuffers();
 		boolean roofVisibilityActive = API.IsRoofVisibilityActive();
 		@Pc(27) byte local27 = (byte) (anInt3325 - 4 & 0xFF);

@@ -57,22 +57,25 @@ public final class ModernCameraRig {
 	public enum RigState { FIRST_PERSON, CHASE, FREE }
 	private static RigState rigState = RigState.CHASE;
 
-	// ---- Distance continuum (fine units; 128 fine = 1 tile) ----
-	/** At or below this distance: FP mode. */
-	private static final int FP_ENTER_DISTANCE = 120;
+	// ---- Distance continuum (maps to vanilla ZOOM parameter space) ----
+	// Vanilla 2009Scape: ZOOM default=600, min=100, max=1200, step=50/notch
+	// (traced from legacy MouseWheel.java:32 and Camera.java:73)
+	// RuneLite-style extension: +150 beyond vanilla max → 1350
+	/** At or below this distance: FP mode. (= VANILLA_ZOOM_MIN) */
+	private static final int FP_ENTER_DISTANCE = 100;
 	/** At or above this distance (from FP): exit FP to CHASE. Hysteresis: > FP_ENTER. */
 	private static final int FP_EXIT_DISTANCE = 200;
-	/** At or above this distance (from CHASE): enter FREE. */
-	private static final int FREE_ENTER_DISTANCE = 4200;
+	/** At or above this distance (from CHASE): enter FREE. (= VANILLA_ZOOM_MAX) */
+	private static final int FREE_ENTER_DISTANCE = 1200;
 	/** At or below this distance (from FREE): exit FREE to CHASE. Hysteresis: < FREE_ENTER. */
-	private static final int FREE_EXIT_DISTANCE = 3800;
+	private static final int FREE_EXIT_DISTANCE = 1100;
 	/** Minimum allowed desired distance (FP clamped). */
 	private static final int MIN_DISTANCE = 0;
-	/** Maximum allowed desired distance (FREE clamped). */
-	private static final int MAX_DISTANCE = 5600;
+	/** Maximum allowed desired distance (FREE clamped). (= VANILLA_ZOOM_MAX + 150) */
+	private static final int MAX_DISTANCE = 1350;
 
-	/** Scroll wheel step per notch (fine units). ~1 tile per notch. */
-	private static final int WHEEL_STEP = 130;
+	/** Scroll wheel step per notch (in ZOOM space). Matches vanilla step. */
+	private static final int WHEEL_STEP = 50;
 
 	// ---- Smoothing (50Hz tick-based, NOT frame-rate-independent) ----
 	/** Exponential smoothing factor for actual→desired distance (per 50Hz tick). */
@@ -105,10 +108,10 @@ public final class ModernCameraRig {
 	private static final int BODY_FAST_CATCHUP_SPEED = 64;
 
 	// ---- State fields ----
-	/** User's desired camera distance (scroll wheel controls this). */
-	private static int desiredDistance = 2400;
+	/** User's desired camera distance (scroll wheel controls this). Maps to vanilla ZOOM space. */
+	private static int desiredDistance = 600;  // = VANILLA_ZOOM_DEFAULT
 	/** Actual camera distance (smoothly approaches desired; compressed by walls). */
-	private static int actualDistance = 2400;
+	private static int actualDistance = 600;
 	/** Safe distance (maximum permitted by obstruction). desired ≥ safe ≥ actual. */
 	private static int safeDistance = MAX_DISTANCE;
 	/** Chase camera actual yaw (smoothly follows target). */
@@ -133,6 +136,12 @@ public final class ModernCameraRig {
 	// ---- Smooth camera position (follows player like Camera.method4273) ----
 	private static int smoothCameraX;
 	private static int smoothCameraZ;
+
+	// ---- Debug overlay state ----
+	/** Temporary debug: last wheel rotation processed. */
+	private static int debugLastWheelRotation;
+	/** Temporary debug: frame counter for throttling debug output. */
+	private static int debugFrameCounter;
 
 	// ---- Saved camera state for ORIGINAL restoration ----
 	/** Saved cameraType from ORIGINAL mode (captured once before modern mutation). */
@@ -308,6 +317,30 @@ public final class ModernCameraRig {
 			// In CHASE/FREE, body yaw tracks current orientation for smooth transition
 			bodyYaw = self.anInt3400;
 		}
+
+		// 5. Throttled debug output (every 50 ticks = ~1 second)
+		debugFrameCounter++;
+		if (debugFrameCounter >= 50) {
+			debugFrameCounter = 0;
+			System.out.println("[CAMERA-RIG-DEBUG] state=" + rigState
+					+ " desired=" + desiredDistance + " actual=" + actualDistance
+					+ " safe=" + safeDistance
+					+ " cameraType=" + Camera.cameraType
+					+ " renderX=" + Camera.renderX + " renderZ=" + Camera.renderZ
+					+ " anInt40=" + Camera.anInt40
+					+ " cameraYaw=" + Camera.cameraYaw + " cameraPitch=" + Camera.cameraPitch
+					+ " selfX=" + self.xFine + " selfZ=" + self.zFine
+					+ " bodyYaw=" + bodyYaw + " anInt3400=" + self.anInt3400
+					+ " anInt3381=" + self.anInt3381
+					+ " chatActive=" + ModernControlController.isChatInputActive()
+					+ " FPactive=" + FirstPersonCamera.isActive()
+					+ " FPvalidPos=" + FirstPersonCamera.hasValidPosition()
+					+ " wheelRot=" + debugLastWheelRotation
+					+ " playerPlane=" + Player.plane
+					+ " roofMode=" + ScriptRunner.method4047()
+					+ " fpStructOverride=" + FirstPersonCamera.isActive()
+					+ " allLevelsVisible=" + SceneGraph.allLevelsAreVisible());
+		}
 	}
 
 	// =====================================================================
@@ -353,21 +386,8 @@ public final class ModernCameraRig {
 	private static void processWheelInput() {
 		if (MouseWheel.wheelRotation == 0) return;
 
-		// Wheel pipeline order (verified):
-		//   client.java:1725 — MouseWheel.wheelRotation = mouseWheel.getRotation()
-		//   → ModernControlController.update() → this method (50Hz game tick)
-		//   → ScriptRunner.method4326 → InterfaceList UI scroll (render pipeline)
-		//
-		// This rig reads wheelRotation BEFORE the UI scroll processing.
-		// Both camera zoom and UI scroll read the same MouseWheel.wheelRotation.
-		// UI scroll operates on component scrollY (separate variable), so there
-		// is no variable conflict — but BOTH can react to the same wheel event.
-		//
-		// TODO: Implement proper UI ownership check — if a scrollable UI component
-		// is under the cursor, skip camera zoom. Requires hit-testing against
-		// InterfaceList components at the current mouse position.
-
 		int rotation = MouseWheel.wheelRotation;
+		debugLastWheelRotation = rotation;
 
 		// Scroll IN (rotation < 0) → reduce distance (zoom in)
 		// Scroll OUT (rotation > 0) → increase distance (zoom out)
@@ -426,6 +446,13 @@ public final class ModernCameraRig {
 			if (rigState == RigState.FIRST_PERSON && previous != RigState.FIRST_PERSON) {
 				// Entering FP: activate mouse-look, cursor lock
 				FirstPersonCamera.activate();
+				// Defensive FP camera write (Phase 3C runtime stabilisation).
+				// FirstPersonCamera.update() ran BEFORE the rig state changed,
+				// so it returned early (saw CHASE/FREE, not FP). The chase camera
+				// from the previous tick is still in Camera fields. Write the FP
+				// eye position NOW so the very first render frame in FP shows
+				// the correct camera position — not a stale chase offset.
+				writeFpCameraImmediate(PlayerList.self);
 			} else if (previous == RigState.FIRST_PERSON && rigState != RigState.FIRST_PERSON) {
 				// Exiting FP: deactivate mouse-look, unlock cursor
 				FirstPersonCamera.deactivate();
@@ -436,6 +463,47 @@ public final class ModernCameraRig {
 					+ " desired=" + desiredDistance + " actual=" + actualDistance);
 		}
 		prevRigState = rigState;
+	}
+
+	// =====================================================================
+	// FP IMMEDIATE CAMERA WRITE (defensive, transition-tick only)
+	// =====================================================================
+
+	/**
+	 * Writes the FP camera position immediately on the transition tick.
+	 *
+	 * <p>When the rig transitions from CHASE/FREE to FP, FirstPersonCamera.update()
+	 * has already run (before the rig) and returned early because the rig was in
+	 * CHASE/FREE state. This method ensures the Camera fields are set to the FP
+	 * eye position on the exact transition tick, preventing a stale chase camera
+	 * offset from persisting for one frame.</p>
+	 *
+	 * <p>This is a safety net. On subsequent ticks, FirstPersonCamera.update()
+	 * runs normally and owns Camera field writes.</p>
+	 */
+	private static void writeFpCameraImmediate(Player self) {
+		if (self == null) return;
+		if (Player.plane < 0 || Player.plane > 3) return;
+		if (SceneGraph.tileHeights == null) return;
+
+		int fineX = self.xFine;
+		int fineZ = self.zFine;
+		int tileX = fineX >> 7;
+		int tileZ = fineZ >> 7;
+		if (tileX < 0 || tileX > 103 || tileZ < 0 || tileZ > 103) return;
+
+		int groundHeight = SceneGraph.getTileHeight(Player.plane, fineX, fineZ);
+
+		Camera.renderX = fineX;
+		Camera.renderZ = fineZ;
+		Camera.anInt40 = groundHeight - 200; // EYE_HEIGHT = 200
+		Camera.cameraYaw = FirstPersonCamera.getYaw();
+		Camera.cameraPitch = 0; // Horizon
+		Camera.yawTarget = Camera.cameraYaw;
+		Camera.pitchTarget = Camera.cameraPitch;
+		Camera.cameraX = fineX;
+		Camera.cameraZ = fineZ;
+		Camera.cameraType = 0; // Prevent legacy camera interference
 	}
 
 	// =====================================================================
@@ -453,7 +521,7 @@ public final class ModernCameraRig {
 	 *   renderZ = targetZ - cos(yaw) * cos(pitch) * zoom
 	 *   anInt40 = targetY + sin(pitch) * zoom
 	 * </pre>
-	 * where zoom = desiredDistance * 0.5 + pitch * 3.
+	 * where zoom = actualDistance + pitch * 3 (actualDistance maps to vanilla ZOOM space).
 	 */
 	private static void updateChase(Player self) {
 		// Target yaw = character body orientation
@@ -478,15 +546,15 @@ public final class ModernCameraRig {
 
 		// Map desired distance to RT4 zoom parameter.
 		// Original RT4: ZOOM(600) + pitchTarget(128..383)*3 = 984..1749
-		// Our mapping: desiredDistance * 0.5 gives a usable range.
-		int zoom = (int) (actualDistance * 0.5) + chasePitch * 3;
+		// Our mapping: actualDistance directly maps to ZOOM space.
+		int zoom = actualDistance + chasePitch * 3;
 		if (zoom < 100) zoom = 100;
 
 		// Camera obstruction: reduce effective zoom if wall between player and camera
 		int clearDist = checkObstruction(pivotX, pivotZ, pivotY, chaseYaw, chasePitch, zoom);
 		int effectiveZoom = zoom;
-		if (clearDist < actualDistance && actualDistance > 0) {
-			int ratio = (clearDist * 65536 / actualDistance);
+		if (clearDist < zoom && zoom > 0) {
+			int ratio = (clearDist * 65536 / zoom);
 			effectiveZoom = Math.max(100, zoom * ratio >> 16);
 		}
 
@@ -551,14 +619,14 @@ public final class ModernCameraRig {
 		int pivotY = SceneGraph.getTileHeight(Player.plane, pivotX, pivotZ) - 50;
 
 		// Map desired distance to RT4 zoom parameter
-		int zoom = (int) (actualDistance * 0.5) + freePitch * 3;
+		int zoom = actualDistance + freePitch * 3;
 		if (zoom < 100) zoom = 100;
 
 		// Camera obstruction
 		int clearDist = checkObstruction(pivotX, pivotZ, pivotY, freeYaw, freePitch, zoom);
 		int effectiveZoom = zoom;
-		if (clearDist < actualDistance && actualDistance > 0) {
-			int ratio = (clearDist * 65536 / actualDistance);
+		if (clearDist < zoom && zoom > 0) {
+			int ratio = (clearDist * 65536 / zoom);
 			effectiveZoom = Math.max(100, zoom * ratio >> 16);
 		}
 
