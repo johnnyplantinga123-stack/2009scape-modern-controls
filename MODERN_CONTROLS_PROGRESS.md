@@ -1,6 +1,6 @@
 # Modern Controls — Phase 0 Analysis & Implementation Plan
 
-**Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE** · **Phase 3B (Continuous Modern Movement) — COMPLETE** · **Phase 3B Stabilization (Input, Animation, Self-Rendering) — COMPLETE** · **PHASE 3C (Modern Camera Rig) — IMPLEMENTATION COMPLETE / RUNTIME STABILIZATION** · PHASE 3C REVIEW #2 — COMPLETE · PHASE 3C ADDENDUM (Zoom Ranges) — COMPLETE · **PHASE 3C RUNTIME STABILIZATION — IN PROGRESS (camera ownership audit, FREE camera render-timed arrow input, WASD-in-CHASE source verified)**
+**Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE** · **Phase 3B (Continuous Modern Movement) — COMPLETE** · **Phase 3B Stabilization (Input, Animation, Self-Rendering) — COMPLETE** · **PHASE 3C (Modern Camera Rig) — IMPLEMENTATION COMPLETE / RUNTIME STABILIZATION** · PHASE 3C REVIEW #2 — COMPLETE · PHASE 3C ADDENDUM (Zoom Ranges) — COMPLETE · **PHASE 3C RUNTIME STABILIZATION — IN PROGRESS (camera ownership audit, FREE camera render-timed arrow input, WASD-in-CHASE source verified)** · **OVERNIGHT MILESTONE E (wheel ownership, middle mouse, minimap coherence, body orientation, zoom calibration) — COMPILE VERIFIED / RUNTIME UNVERIFIED**
 
 **⚠️ RUNTIME STATUS: Phase 3C is NOT fully runtime-proven. Compile success ≠ runtime success. Camera ownership audit: SOURCE VERIFIED (architecture sound, cameraType=0 enforced). FREE camera arrow keys: COMPILE VERIFIED (continuous input + render-timed scaling). WASD-in-CHASE: SOURCE VERIFIED. FP camera position fix, arrow key gating, structural visibility, debug overlay: all COMPILE VERIFIED, RUNTIME UNVERIFIED.**
 
@@ -3038,3 +3038,134 @@ Files modified: `ModernCameraRig.java`
 | shouldForwardKeyToChat coverage | **SOURCE VERIFIED** |
 | FREE camera orbit smoothness | **RUNTIME UNVERIFIED** |
 | FREE camera arrow key speed feel | **RUNTIME UNVERIFIED** |
+
+---
+
+## 26. Overnight Milestone E — Wheel Ownership, Middle Mouse, Minimap, Body Orientation, Zoom
+
+**Date:** 14-08-2026
+**Baseline:** 18828a5 (overnight: camera ownership audit + FREE camera render-timed arrow input)
+
+### 26.1 Wheel Ownership (TODO 046)
+
+**Problem:** Both camera zoom and UI scroll read the same `MouseWheel.wheelRotation`
+value. Camera processes it first (step 2 in tick), then interface processing also
+reacts (step 3 in tick). Both consume the same event.
+
+**Execution order within tick:**
+1. `MouseWheel.wheelRotation = mouseWheel.getRotation()` (client.java:1726)
+2. `ModernControlController.update()` → `ModernCameraRig.processWheelInput()` (client.java:1746)
+3. `Protocol.method1756()` → `InterfaceList.method1320()` → `method946()` → scroll handler (Protocol.java:2831)
+
+**Fix:** Viewport-based heuristic in `processWheelInput()`. If mouse is outside
+the viewport component bounds (`InterfaceList.aClass13_26`, clientCode 1337),
+skip camera zoom so the UI can scroll.
+
+**Limitations:** One-frame stale (viewport component set by previous frame's
+interface processing). Doesn't handle nested scrollable areas within the viewport.
+Full per-component scrollable-area check deferred.
+
+### 26.2 Minimap/Compass Coherence (TODO 045)
+
+**Problem:** Minimap rotation = `MiniMap.anInt1814 + (int)Camera.yawTarget & 0x7FF`.
+Compass rotation = `(int)Camera.yawTarget`. In MODERN CHASE/FREE, `Camera.yawTarget`
+was never updated (legacy camera skipped), so minimap showed stale yaw.
+
+**Fix:** Added `Camera.yawTarget = chaseYaw` in `updateChase()` and
+`Camera.yawTarget = freeYaw` in `updateFree()`. Minimap now follows the active
+camera owner.
+
+**Source trace:**
+- `MiniMap.java` lines 238, 420, 450: `anInt1814 + (int)Camera.yawTarget & 0x7FF`
+- `Cs1ScriptRunner.java` lines 1160/1162: compass rendered with `(int)Camera.yawTarget`
+
+### 26.3 Middle Mouse Orbit in FREE (TODO 043)
+
+**Problem:** Middle mouse button did not orbit the FREE camera.
+
+**Fix:** Added `processMiddleMouseOrbit()` method. Uses `Mouse.currentMouseX/Y`
+(live AWT position) against stored previous-frame position for render-rate delta.
+Inherently frame-rate-independent (same physical motion = same total rotation
+regardless of frame rate).
+
+**Implementation:**
+- `Mouse.pressedButton == 2` = middle mouse held
+- First press frame: initialise reference, no delta
+- Subsequent frames: delta = currentMouse - prevMouse, applied to freeYaw/freePitch
+- Release: reset reference to prevent jump on next press
+- Sensitivity: 1 yaw unit per 2px (matches classic RS feel)
+- Pitch clamped to 128..383 (same as arrow keys)
+
+### 26.4 Body Orientation Ownership Trace (TODO 036/037)
+
+**Complete execution order for self-player body orientation:**
+
+1. `ModernCameraRig.update()` (client.java:1746)
+   - FP: `updateBodyLookCoupling(self)` → `self.anInt3400 = bodyYaw`
+   - CHASE/FREE: `bodyYaw = self.anInt3400` (reads, doesn't write)
+2. `ModernMovementController.update()` (client.java:1746)
+   - FP: SKIP (body-look coupling owns anInt3400)
+   - CHASE/FREE: `self.anInt3400 = targetOrientationAngle` (movement direction)
+3. `Protocol.method1756()` → `PlayerList.method1444()` → `NpcList.method4514()`
+   - Modern self: method2247 SKIPPED
+   - `method949()`: smooths `anInt3381` toward `anInt3400` (for ALL entities)
+   - faceEntity/faceX/faceY override `anInt3400` (for ALL entities including self)
+
+**Architecture verdict: SOUND.** Each mode has clear ownership:
+- FP: camera look → body (via body-look coupling)
+- CHASE/FREE: locomotion → body (via movement controller)
+- method949 always smooths anInt3381 toward anInt3400 (correct)
+- faceEntity overrides are intentional (talking to NPC, etc.)
+
+### 26.5 ORIGINAL Zoom Calibration (TODO 047)
+
+**ORIGINAL zoom architecture:**
+- `Camera.ZOOM = 600` (constant, never modified by wheel in RT4 client)
+- Effective zoom = `ZOOM + (int)pitchTarget * 3` = `600 + pitch * 3`
+- Pitch range: 128..383 → effective zoom: **984..1749**
+- Default: pitch=128 → effective zoom = 984 (closest in)
+- Furthest: pitch=383 → effective zoom = 1749
+
+**Modern rig mapping:**
+- `updateChase()`: zoom = `actualDistance + chasePitch * 3`
+- `updateFree()`: zoom = `actualDistance + freePitch * 3`
+- CHASE default: `600 + 256*3 = 1368` (mid-range overview)
+- MIN_DISTANCE=0, MAX_DISTANCE=1350
+- FREE max: `1350 + 383*3 = 2499` (extended beyond original)
+
+**Verdict:** Zoom calibration is **CORRECT**. The modern rig's `actualDistance +
+pitch*3` formula matches the original's `ZOOM + pitch*3` exactly when
+actualDistance=600=ZOOM. The extended FREE max (1350) provides ~43% more
+range than original max, consistent with the "RuneLite +150 feel" goal.
+
+### 26.6 Arrow Key Ownership Per Rig (TODO 044)
+
+**Already implemented and SOURCE VERIFIED:**
+- `GameShell.mainInputLoop()`: Returns early when `modernRigOwnsCamera` is true
+- CHASE: No arrow key response (correct — arrows don't mutate camera)
+- FREE: Arrow keys handled by rig's own `updateFree()` path
+- ORIGINAL: Legacy arrow key camera panning active
+
+### 26.7 Build Verification
+
+```
+gradlew.bat :client:compileJava → BUILD SUCCESSFUL
+```
+
+Files modified: `ModernCameraRig.java` (+103 lines)
+
+### 26.8 Verification Status
+
+| Item | Status |
+|------|--------|
+| Wheel ownership (viewport heuristic) | **COMPILE VERIFIED** |
+| Minimap yawTarget sync (CHASE) | **COMPILE VERIFIED** |
+| Minimap yawTarget sync (FREE) | **COMPILE VERIFIED** |
+| Middle mouse orbit in FREE | **COMPILE VERIFIED** |
+| Body orientation ownership model | **SOURCE VERIFIED** |
+| ORIGINAL zoom calibration | **SOURCE VERIFIED** |
+| Arrow key ownership per rig | **SOURCE VERIFIED** |
+| Wheel scroll vs UI scroll runtime | **RUNTIME UNVERIFIED** |
+| Minimap coherence in CHASE/FREE | **RUNTIME UNVERIFIED** |
+| Middle mouse orbit feel/speed | **RUNTIME UNVERIFIED** |
+| FREE max zoom visual boundary | **RUNTIME UNVERIFIED** |

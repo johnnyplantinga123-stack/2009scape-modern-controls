@@ -137,6 +137,14 @@ public final class ModernCameraRig {
 	private static int smoothCameraX;
 	private static int smoothCameraZ;
 
+	// ---- Middle mouse orbit (FREE rig state only) ----
+	/** Previous mouse X when middle mouse was last processed (render-timed delta). */
+	private static int prevMiddleMouseX;
+	/** Previous mouse Y when middle mouse was last processed (render-timed delta). */
+	private static int prevMiddleMouseY;
+	/** Whether the previous frame had middle mouse held (prevents delta spike on re-press). */
+	private static boolean prevMiddleHeld;
+
 	// ---- Debug overlay state ----
 	/** Temporary debug: last wheel rotation processed. */
 	private static int debugLastWheelRotation;
@@ -386,6 +394,14 @@ public final class ModernCameraRig {
 	private static void processWheelInput() {
 		if (MouseWheel.wheelRotation == 0) return;
 
+		// Wheel ownership: if the mouse is over a scrollable UI component
+		// (not the viewport), skip camera zoom so the UI can scroll.
+		// Uses the viewport component (clientCode 1337) reference from the
+		// previous frame's interface processing. This is a simple heuristic;
+		// a full per-component scrollable-area check requires complex nested
+		// coordinate math and is deferred.
+		if (isMouseOverScrollableUI()) return;
+
 		int rotation = MouseWheel.wheelRotation;
 		debugLastWheelRotation = rotation;
 
@@ -394,6 +410,25 @@ public final class ModernCameraRig {
 		desiredDistance += rotation * WHEEL_STEP;
 		if (desiredDistance < MIN_DISTANCE) desiredDistance = MIN_DISTANCE;
 		if (desiredDistance > MAX_DISTANCE) desiredDistance = MAX_DISTANCE;
+	}
+
+	/**
+	 * Checks if the mouse is likely over a scrollable UI component rather
+	 * than the game viewport.
+	 *
+	 * <p>Uses the viewport component ({@code InterfaceList.aClass13_26},
+	 * clientCode 1337) from the previous frame's interface processing.
+	 * If the mouse is outside the viewport bounds but inside the canvas,
+	 * it's probably over a side panel or other scrollable UI.</p>
+	 */
+	private static boolean isMouseOverScrollableUI() {
+		Component viewport = InterfaceList.aClass13_26;
+		if (viewport == null) return false;
+		int mx = Mouse.lastMouseX;
+		int my = Mouse.lastMouseY;
+		// If mouse is outside the viewport bounds, UI likely owns the wheel
+		return mx < viewport.x || mx >= viewport.x + viewport.width
+				|| my < viewport.y || my >= viewport.y + viewport.height;
 	}
 
 	// =====================================================================
@@ -565,6 +600,11 @@ public final class ModernCameraRig {
 		// Copy render camera position to smooth-follow fields
 		Camera.cameraX = Camera.renderX;
 		Camera.cameraZ = Camera.renderZ;
+
+		// Sync yawTarget for minimap/compass coherence.
+		// The minimap rotation = MiniMap.anInt1814 + (int)Camera.yawTarget.
+		// Without this, the minimap would show stale yaw from the previous frame.
+		Camera.yawTarget = chaseYaw;
 	}
 
 	// =====================================================================
@@ -612,6 +652,10 @@ public final class ModernCameraRig {
 		if (freePitch > 383) freePitch = 383;
 		freeYaw &= 0x7FF;
 
+		// Middle mouse orbit — render-timed mouse delta applied to free camera.
+		// Uses Mouse.currentMouseX/Y (live AWT position) for render-rate deltas.
+		processMiddleMouseOrbit();
+
 		// Smooth distance
 		smoothDistance();
 
@@ -642,6 +686,65 @@ public final class ModernCameraRig {
 		// Copy render camera position to smooth-follow fields
 		Camera.cameraX = Camera.renderX;
 		Camera.cameraZ = Camera.renderZ;
+
+		// Sync yawTarget for minimap/compass coherence.
+		Camera.yawTarget = freeYaw;
+	}
+
+	// =====================================================================
+	// MIDDLE MOUSE ORBIT (FREE rig state)
+	// =====================================================================
+
+	/**
+	 * Processes middle-mouse-drag camera orbit for FREE rig state.
+	 *
+	 * <p>Uses {@code Mouse.currentMouseX/Y} (live AWT position) against stored
+	 * previous-frame position for render-rate delta. This is the same approach
+	 * as the original RT4 arrow-key camera input in
+	 * {@code GameShell.mainInputLoop()} but driven by mouse delta instead of
+	 * key codes.</p>
+	 *
+	 * <p>Sensitivity is tuned to feel similar to classic RS middle-mouse orbit.
+	 * The yaw/pitch clamps match the FREE arrow-key ranges.</p>
+	 */
+	private static void processMiddleMouseOrbit() {
+		boolean middleHeld = Mouse.pressedButton == 2;
+
+		if (!middleHeld) {
+			// Reset reference on release so next press doesn't jump
+			if (prevMiddleHeld) {
+				prevMiddleHeld = false;
+			}
+			prevMiddleMouseX = Mouse.currentMouseX;
+			prevMiddleMouseY = Mouse.currentMouseY;
+			return;
+		}
+
+		if (!prevMiddleHeld) {
+			// First frame of middle mouse press — initialise reference, no delta
+			prevMiddleMouseX = Mouse.currentMouseX;
+			prevMiddleMouseY = Mouse.currentMouseY;
+			prevMiddleHeld = true;
+			return;
+		}
+
+		int dx = Mouse.currentMouseX - prevMiddleMouseX;
+		int dy = Mouse.currentMouseY - prevMiddleMouseY;
+		prevMiddleMouseX = Mouse.currentMouseX;
+		prevMiddleMouseY = Mouse.currentMouseY;
+
+		if (dx == 0 && dy == 0) return;
+
+		// Sensitivity: classic RS middle mouse orbits roughly 1 yaw unit per 2px.
+		// Render-timed scaling is NOT needed here because currentMouseX/Y already
+		// reflects the actual mouse position at this render instant — the delta
+		// is inherently frame-rate-independent (larger delta on slower frames,
+		// smaller delta on faster frames, same total rotation for same physical motion).
+		freeYaw -= dx / 2;
+		freePitch += dy / 2;
+		freeYaw &= 0x7FF;
+		if (freePitch < 128) freePitch = 128;
+		if (freePitch > 383) freePitch = 383;
 	}
 
 	// =====================================================================
