@@ -283,6 +283,15 @@ public final class FirstPersonCamera {
 			return;
 		}
 
+		// Phase 3C: When the camera rig is active and NOT in FIRST_PERSON state
+		// (i.e., in CHASE or FREE), the rig owns Camera field writes.
+		// We still update fpCamYaw/fpCamPitch (mouse look) above, but skip
+		// writing to Camera.renderX/renderZ/anInt40/cameraYaw/cameraPitch.
+		if (ModernCameraRig.isActive()
+				&& ModernCameraRig.getRigState() != ModernCameraRig.RigState.FIRST_PERSON) {
+			return;
+		}
+
 		// Terrain is valid — compute camera height from terrain data
 		int groundHeight = SceneGraph.getTileHeight(Player.plane, fpCamX, fpCamZ);
 		hasValidPosition = true;

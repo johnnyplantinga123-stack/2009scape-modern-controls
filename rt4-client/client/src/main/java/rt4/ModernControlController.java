@@ -77,6 +77,10 @@ public final class ModernControlController {
 	 * loop. When in a modern mode, the corresponding controller duties are
 	 * dispatched here (added in later phases); in {@code ORIGINAL} mode nothing
 	 * is done so the original RuneScape code paths run untouched.
+	 *
+	 * <p>Phase 3C: ModernCameraRig.update() runs AFTER FirstPersonCamera (for FP
+	 * mouse-look) and BEFORE ModernMovementController (for camera yaw basis).
+	 * The rig manages the FP↔CHASE↔FREE scroll-zoom continuum.
 	 */
 	public static void update() {
 		// Always update chat input state (needed in any modern mode)
@@ -91,11 +95,16 @@ public final class ModernControlController {
 			// ModernMovementController reads the CURRENT frame's yaw
 			// (fpCamYaw → Camera.cameraYaw), not the previous frame's.
 			FirstPersonCamera.update();
+			// Phase 3C: camera rig continuum (FP/CHASE/FREE)
+			ModernCameraRig.update();
 			ModernMovementController.update();
 			break;
 			case THIRD_PERSON:
+				// Phase 3C: FirstPersonCamera provides mouse-look for FP rig state.
+				// When rig is in CHASE/FREE, FP camera fields are not written to Camera.
+				FirstPersonCamera.update();
+				ModernCameraRig.update();
 				ModernMovementController.update();
-				// Phase 14: ThirdPersonCamera.update();
 				break;
 		}
 	}

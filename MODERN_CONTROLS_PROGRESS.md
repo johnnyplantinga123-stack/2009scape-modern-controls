@@ -1,6 +1,6 @@
 # Modern Controls — Phase 0 Analysis & Implementation Plan
 
-**Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE**
+**Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE** · **Phase 3B (Continuous Modern Movement) — COMPLETE** · **Phase 3B Stabilization (Input, Animation, Self-Rendering) — COMPLETE** · **PHASE 3C (Modern Camera Rig — Scroll Zoom Continuum + Chase Camera + Body-Look Coupling) — COMPLETE**
 
 **Date:** 14-08-2026
 
@@ -1336,6 +1336,310 @@ THIRD_PERSON:
 ORIGINAL:
 - [ ] Click-to-move works
 - [ ] Legacy animations unchanged
+- [ ] No modern WASD leaks
+
+---
+
+## 16. Phase 3C — Modern Camera Rig: Scroll Zoom Continuum + Chase Camera + Body-Look Coupling
+
+**Date:** 14-08-2026
+**Commit:** (pending)
+**Baseline:** 2b6a443 (Phase 3B stabilization - camera handedness and authority diagnostics)
+
+### 16.1 Goal
+
+Implement the MODERN camera continuum inside the existing MODERN control mode:
+
+```
+FIRST_PERSON  ←scroll→  CHASE  ←scroll→  FREE / CLASSIC-STYLE
+```
+
+Without changing the working 2b6a443 movement basis. ORIGINAL remains a pristine legacy fallback.
+
+### 16.2 Source Trace — Wheel Event Pipeline
+
+**Exact wheel event path:**
+
+```
+JavaMouseWheel.mouseWheelMoved() (AWT MouseWheelListener)
+  → currentRotation += e.getRotation()   (accumulated in JavaMouseWheel)
+  → client.java:1725-1726 (mainLoop tick):
+      MouseWheel.wheelRotation = mouseWheel.getRotation()  // reads & resets currentRotation
+  → InterfaceList scroll processing (ScriptRunner render pipeline):
+      reads MouseWheel.wheelRotation for component scrollY
+  → Staff Ctrl+Shift+wheel plane change (Protocol.java)
+  → NO DEFAULT CAMERA ZOOM CONSUMER EXISTS
+```
+
+**Why wheel did nothing for camera before Phase 3C:**
+
+1. The RT4 default follow camera (`Camera.method4273()`) has NO zoom/distance parameter. It follows the player with arrow-key pitch/yaw but no scroll-controlled distance.
+2. `Camera.ZOOM = 600` exists but is ONLY consumed through CS2 scripts (`ScriptRunner.method4326` line 238 → `Camera.method555()`), used for cutscene camera positions, never for mouse wheel zoom.
+3. `MouseWheel.wheelRotation` IS captured each tick but the only consumers are UI scrolling (`InterfaceList.scrollY += wheelRotation * 45`) and staff Ctrl+Shift+wheel plane change.
+4. No code path reads `wheelRotation` to adjust camera distance/zoom for the default gameplay camera.
+5. FirstPersonCamera bypasses the CS2 camera pipeline entirely (sets `cameraType=0`), so the CS2 zoom path never applies to FP mode either.
+
+**Config flag status:** No config flag disables or enables wheel zoom. The `config.json` / `GlobalConfig` system has no camera-zoom-related setting.
+
+**UI wheel priority:** `InterfaceList` processes wheel for scrollable components. The camera rig runs during `ModernControlController.update()` which is in the game tick, not the render pipeline. UI scroll operates on component `scrollY`, not on `desiredDistance`, so there is no conflict.
+
+### 16.3 Source Trace — Camera Render Pipeline
+
+```
+ScriptRunner.method4326 (render pipeline):
+  if (Camera.cameraType == 1):
+    Camera.method555(cameraX, viewportH, tileHeight-50, ZOOM+pitchTarget*3, yawTarget, cameraZ, pitchTarget)
+    → OVERWRITES Camera.renderX/renderZ/anInt40/cameraYaw/cameraPitch every render frame
+
+Protocol.java:2932-2941 (game tick):
+  if (!FirstPersonCamera.isActive() && !ModernCameraRig.isActive()):
+    if (cameraType == 1): Camera.method4273()   // follow camera
+    elif (cameraType == 2): Camera.updateLockedCamera()  // locked camera
+```
+
+**Camera authority fields:** `Camera.renderX`, `Camera.renderZ`, `Camera.anInt40` (height), `Camera.cameraYaw`, `Camera.cameraPitch` — these 5 fields are the authoritative camera state for `SceneGraph.method2954()` and `GlRenderer.method4171()`.
+
+### 16.4 Source Trace — RT4 Orientation Fields
+
+**PathingEntity orientation fields (confirmed from current code):**
+
+| Field | Role |
+|-------|------|
+| `anInt3400` | Target orientation (0..2047, clockwise: 0=N, 512=W, 1024=S, 1536=E) |
+| `anInt3381` | Smoothed orientation (animations use this) |
+| `anInt3376` | Orientation speed (default 32) |
+| `anInt3385` | Orientation change counter (turn animation trigger at >25) |
+
+**method949** (NpcList.java): Orientation smoothing. Handles faceEntity/faceX/faceY → sets anInt3400. Then smooths anInt3400→anInt3381. When `idleAnimationId == movementSeqId && anInt3385 > 25`, replaces idle with walk animation (turn animation trigger).
+
+**Separate head yaw:** RT4 has NO separate head yaw. The model system only supports body rotation via anInt3400→anInt3381. True independent head rotation is not available and is deferred.
+
+### 16.5 Architecture — Camera/Control Separation
+
+```
+CameraMode (enum): ORIGINAL / FIRST_PERSON / THIRD_PERSON
+  → Controls LOCOMOTION scheme (which movement controller runs)
+
+ModernCameraRig (inside MODERN):
+  RigState: FIRST_PERSON / CHASE / FREE
+  → Controls CAMERA rig (which camera code writes Camera fields)
+```
+
+ORIGINAL remains completely separate. MODERN modes run modern locomotion + camera rig.
+
+### 16.6 Distance Continuum
+
+**One authoritative desired distance, one smoothed actual distance:**
+
+```
+desiredDistance  ← scroll wheel (user intent, never destroyed by walls)
+actualDistance   ← smoothly interpolated toward desired (compressed by walls)
+```
+
+**Distance units:** Fine coordinates (128 fine = 1 tile).
+
+**Transition thresholds (with hysteresis):**
+
+| Transition | Threshold | Hysteresis |
+|------------|-----------|------------|
+| CHASE → FP | desiredDistance <= 120 | FP_EXIT_DISTANCE = 200 (must scroll out to 200 to exit FP) |
+| FP → CHASE | desiredDistance >= 200 | FP_ENTER_DISTANCE = 120 (must scroll in to 120 to enter FP) |
+| CHASE → FREE | desiredDistance >= 4200 | FREE_EXIT_DISTANCE = 3800 (must scroll in to 3800 to exit FREE) |
+| FREE → CHASE | desiredDistance <= 3800 | FREE_ENTER_DISTANCE = 4200 (must scroll out to 4200 to enter FREE) |
+
+**Range:** MIN_DISTANCE = 0, MAX_DISTANCE = 5600.
+**Wheel step:** WHEEL_STEP = 130 fine units (~1 tile per notch).
+
+### 16.7 Smooth Zoom
+
+Wheel notches change `desiredDistance` instantly. `actualDistance` smoothly interpolates toward `desiredDistance` using exponential smoothing:
+
+```java
+int delta = desiredDistance - actualDistance;
+int step = delta / DISTANCE_SMOOTH_FACTOR;  // factor = 6
+if (step == 0) step = (delta > 0) ? 1 : -1;
+actualDistance += step;
+```
+
+This runs once per 50Hz tick. The smoothing is frame-rate-independent within the fixed 50Hz tick architecture.
+
+### 16.8 Chase Camera
+
+**Chase camera follows character body orientation:**
+
+```
+chaseYawTarget = self.anInt3400  // character body orientation
+chaseYaw = smoothYaw(chaseYaw, chaseYawTarget, factor=8, minStep=2)
+```
+
+**Shortest-angle interpolation:** `shortestAngleDelta(from, to)` computes signed delta on 0..2047 circle, result in -1024..+1023. Interpolation always takes the short path (e.g., 2040→8 rotates across zero, not through ~2000 units).
+
+**Camera position:**
+```
+pivotX/Z = self.xFine/zFine
+pivotY = terrainHeight - CHASE_PIVOT_HEIGHT (220)
+offsetX = sin[chaseYaw] * actualDistance >> 16
+offsetZ = cos[chaseYaw] * actualDistance >> 16
+offsetY = -(sin[chasePitch] * actualDistance >> 16)
+camX/Z = pivot + offset
+camY = pivotY + offsetY
+```
+
+**Camera is a FOLLOWER, not a leader.** Chase camera yaw is NOT fed back into ModernMovementController. Movement uses `CameraMode.getCameraRelativeYaw()` which returns the rig's camera yaw for THIRD_PERSON, but the camera follows the character, not the other way around.
+
+### 16.9 Camera Obstruction
+
+**Multi-sample line probe** from pivot to desired camera position:
+
+1. Compute number of samples: `max(1, fineDist / 128)` (one per tile).
+2. At each sample: check `PathFinder.collisionMaps[plane].flags[tileX][tileZ]` for wall/scenery collision (flags 0x100, 0x20000).
+3. Check terrain height: if camera Y would be at/below terrain, block.
+4. Return distance to last clear sample.
+5. If blocked: scale camera position by `clearDist / desiredDist` ratio (camera compresses toward player).
+
+**This is CAMERA collision, NOT player movement collision.** Phase 4 player collision is separate.
+
+**Desired-distance restoration:** When the camera is compressed by a wall (actualDistance < desiredDistance), `desiredDistance` is NOT modified. When the player walks away from the wall, `actualDistance` smoothly returns to `desiredDistance`.
+
+### 16.10 Body-Look Coupling (FP mode only)
+
+**Shoulder dead-zone policy:**
+
+```
+lookYaw = FirstPersonCamera.getYaw()
+delta = shortestAngleDelta(bodyYaw, lookYaw)
+
+if |delta| > SHOULDER_DEAD_ZONE (100 units ≈ 35°):
+    if |delta| > SHOULDER_LIMIT (200 units ≈ 70°):
+        catchupSpeed = BODY_FAST_CATCHUP_SPEED (64 units/tick)
+    else:
+        catchupSpeed = BODY_CATCHUP_SPEED (24 units/tick)
+    bodyYaw += clamp(delta, catchupSpeed) * sign(delta)
+    self.anInt3400 = bodyYaw
+    self.anInt3385 = 0  // prevent turn animation
+```
+
+**Within dead zone:** Body stays at current orientation. Camera can look independently.
+**Beyond dead zone:** Body smoothly catches up toward camera direction.
+**Beyond shoulder limit:** Body catches up faster.
+**180° turn:** Body smoothly catches up at fast speed, no instant snap.
+
+**FP movement:** Movement velocity remains camera-relative (using fpCamYaw). Body-look coupling separately manages visual body orientation. Velocity does NOT overwrite body yaw in FP mode.
+
+**ModernMovementController guards:** In FP mode, `self.anInt3400` is NOT set from velocity (body-look coupling owns it). `self.anInt3381 = self.anInt3400` snap is skipped (body-look coupling manages both). `self.anInt3385 = 0` is still set to prevent method949 turn animation.
+
+### 16.11 Free Camera
+
+**FREE camera reuses classic-style orbit behavior:**
+- Arrow keys control orbit (reads `Preferences.aBoolean63` + `InterfaceList.keyQueueSize/keyCodes[]`).
+- `freeYaw` += 16 per left/right key tick, `freePitch` += 4 per up/down key tick.
+- Pitch clamped to 128..383 (same as legacy camera range).
+- Camera position computed same as chase but with free yaw/pitch.
+- Camera obstruction check same as chase.
+- Modern WASD remains active; movement uses body orientation.
+
+### 16.12 FirstPersonCamera Integration
+
+When the rig is active and in CHASE or FREE state, `FirstPersonCamera.update()` still processes mouse look (fpCamYaw/fpCamPitch update) but does NOT write to Camera fields. The rig owns Camera field writes in CHASE/FREE.
+
+```java
+if (ModernCameraRig.isActive()
+        && ModernCameraRig.getRigState() != ModernCameraRig.RigState.FIRST_PERSON) {
+    return;  // Skip Camera field writes; rig owns them
+}
+```
+
+### 16.13 Protocol.java Camera Gate
+
+Updated from:
+```java
+if (!FirstPersonCamera.isActive()) {
+```
+to:
+```java
+if (!FirstPersonCamera.isActive() && !ModernCameraRig.isActive()) {
+```
+
+This prevents the legacy camera system (`method4273()` / `updateLockedCamera()`) from interfering when the rig is active in any state.
+
+### 16.14 Scene Rebuild Lifecycle
+
+`LoginManager.method2463()` and `reconnect()` call `ModernCameraRig.onSceneRebuild()`:
+- Preserves `desiredDistance` (user's zoom intent survives region change).
+- Re-anchors `actualDistance = desiredDistance` (no interpolating from old region).
+- Re-anchors `chaseYaw = chaseYawTarget = self.anInt3400` (no sweep across map).
+- Forces `Camera.cameraType = 0` (legacy camera doesn't interfere during rebuild).
+
+### 16.15 FP Head Clipping
+
+The local player body remains rendered in FIRST_PERSON (body culling was removed in Phase 3B stabilization). At FP camera distance (at/eye level), head/helmet clipping is evaluated at runtime. If clipping is observed, the smallest possible head-only exclusion should be implemented rather than hiding the entire model. CHASE and FREE always render full self model.
+
+### 16.16 Files Created/Modified
+
+| File | Change |
+|------|--------|
+| `rt4/ModernCameraRig.java` (NEW, 733 lines) | Core camera rig: RigState enum, distance continuum, scroll wheel processing, chase camera, free camera, obstruction, body-look coupling, math utilities |
+| `rt4/CameraMode.java` | Updated `getCameraRelativeYaw()` for THIRD_PERSON rig integration; added `ModernCameraRig.onEnterModernMode()/onExitModernMode()` lifecycle hooks in `onModeChanged()` |
+| `rt4/ModernControlController.java` | Added `ModernCameraRig.update()` and `FirstPersonCamera.update()` calls in THIRD_PERSON dispatch; updated execution order: FP camera → Rig → Movement |
+| `rt4/FirstPersonCamera.java` | Skip Camera field writes when rig is in CHASE/FREE state (mouse look still updates) |
+| `rt4/ModernMovementController.java` | Don't snap `anInt3381=anInt3400` in FP mode (body-look coupling owns anInt3400); don't set `anInt3400` from velocity in FP mode |
+| `rt4/Protocol.java` | Camera gate: also check `!ModernCameraRig.isActive()` |
+| `rt4/LoginManager.java` | Added `ModernCameraRig.onSceneRebuild()` in both rebuild paths |
+| `MODERN_CONTROLS_GOAL.md` | Added Phase 3C camera architecture section |
+| `MODERN_CONTROLS_PROGRESS.md` | Added Phase 3C documentation (this section) |
+
+### 16.17 Build Verification
+
+```
+gradlew.bat :client:compileJava → BUILD SUCCESSFUL in 1s
+```
+
+8 code files changed (1 new, 7 modified). No Phase 4 collision, targeting, combat, UI/hotbar, protocol rewrite, or renderer changes.
+
+### 16.18 Runtime Acceptance Checklist
+
+**FIRST_PERSON body:**
+- [ ] Stand still, rotate camera left/right → body follows smoothly
+- [ ] Hold W + rotate camera → movement follows camera, body follows look
+- [ ] Hold D → strafe right, body does NOT face right (stays based on look)
+- [ ] Hold S → move backward, body still faces look direction
+- [ ] Quick 180° mouse turn → body smoothly catches up, no instant snap
+
+**Zoom continuum:**
+- [ ] From FP, scroll OUT repeatedly: FP → close chase → chase → far chase → FREE
+- [ ] From FREE, scroll IN repeatedly: FREE → far chase → chase → close chase → FP
+- [ ] No F11 required for transitions
+- [ ] No camera teleport at thresholds
+- [ ] No mode flicker around thresholds (hysteresis works)
+
+**Chase camera:**
+- [ ] Walk straight → camera remains smoothly behind character
+- [ ] Change direction suddenly → camera rotates smoothly behind new orientation
+- [ ] 180° direction change → shortest smooth swing
+- [ ] Shift run → camera remains stable
+- [ ] Stop → camera remains behind standing character
+- [ ] No feedback loop (camera rotation does NOT change locomotion)
+
+**Wall camera:**
+- [ ] Wall between player and desired camera → camera comes closer, stays on player's side
+- [ ] Walk away from wall → camera smoothly returns to desired distance
+- [ ] desiredDistance unchanged by wall (only actualDistance compressed)
+
+**Free camera:**
+- [ ] Classic-style overview camera works at max zoom
+- [ ] Arrow keys orbit camera
+- [ ] Scroll inward returns to CHASE
+- [ ] Modern WASD still works
+- [ ] ORIGINAL mode has NOT been activated
+
+**ORIGINAL regression:**
+- [ ] Click-to-move works
+- [ ] Minimap click/flag works
+- [ ] Legacy run works
+- [ ] Scroll zoom works (legacy camera)
+- [ ] Middle mouse camera works
+- [ ] Legacy animations work
+- [ ] Legacy self model renders
 - [ ] No modern WASD leaks
 
 ---

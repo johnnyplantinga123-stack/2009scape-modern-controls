@@ -61,20 +61,29 @@ public final class CameraMode {
 	}
 
 	/**
-	 * Returns the camera-relative yaw for FIRST_PERSON locomotion,
-	 * or {@code -1} if the current mode does not use camera-relative steering.
+	 * Returns the camera-relative yaw for locomotion movement basis.
 	 *
 	 * <ul>
-	 *   <li>FIRST_PERSON: returns FirstPersonCamera's live yaw (the mouse-look direction).</li>
-	 *   <li>THIRD_PERSON: returns -1 (no camera-relative steering yet; Phase 14 will
-	 *       supply a third-person camera). ModernMovementController falls back to
-	 *       the player body heading when this returns -1.</li>
+	 *   <li>FIRST_PERSON: returns FirstPersonCamera's live yaw (the mouse-look direction).
+	 *       The body-look coupling in ModernCameraRig separately manages the visual
+	 *       body orientation, but movement uses the camera yaw as its orthonormal basis.</li>
+	 *   <li>THIRD_PERSON: returns the rig's chase/free camera yaw when the rig is in
+	 *       CHASE or FREE state (camera-relative movement). When the rig is in FP state
+	 *       (scroll-zoom continuum), returns FirstPersonCamera yaw.</li>
 	 *   <li>ORIGINAL: returns -1 (modern controller is inactive).</li>
 	 * </ul>
 	 */
 	public static int getCameraRelativeYaw() {
 		if (current == Mode.FIRST_PERSON) {
 			return FirstPersonCamera.getYaw();
+		}
+		if (current == Mode.THIRD_PERSON && ModernCameraRig.isActive()) {
+			// In CHASE/FREE: movement uses camera yaw as basis.
+			// In rig FP state (reached via scroll): uses FP camera yaw.
+			if (ModernCameraRig.getRigState() == ModernCameraRig.RigState.FIRST_PERSON) {
+				return FirstPersonCamera.getYaw();
+			}
+			return ModernCameraRig.getCameraYaw();
 		}
 		return -1;
 	}
@@ -123,11 +132,14 @@ public final class CameraMode {
 		// Phase 3B: lifecycle hooks for modern movement controller
 		if (previous == Mode.ORIGINAL && next != Mode.ORIGINAL) {
 			ModernMovementController.enterModernMode();
+			ModernCameraRig.onEnterModernMode();
 		} else if (previous != Mode.ORIGINAL && next == Mode.ORIGINAL) {
 			ModernMovementController.exitModernMode();
+			ModernCameraRig.onExitModernMode();
 		} else if (previous != next) {
 			// e.g. FIRST_PERSON ↔ THIRD_PERSON: locomotion unchanged, camera only
 			ModernMovementController.onModernModeSwitch();
+			// Rig stays active across FP/TP transitions (both are MODERN)
 		}
 
 		// Deactivate previous mode's camera

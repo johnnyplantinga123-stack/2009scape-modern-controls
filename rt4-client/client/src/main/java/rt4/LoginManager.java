@@ -831,6 +831,7 @@ public class LoginManager {
 		// This covers ALL rebuild paths: REBUILD_REGION packet, plane changes,
 		// loading screen region setup, and reconnects.
 		FirstPersonCamera.onSceneRebuild();
+		ModernCameraRig.onSceneRebuild();
 		ModernMovementController.onSceneRebuild();
 	}
 
@@ -865,6 +866,7 @@ public class LoginManager {
 		// Notify first-person camera of reconnect so it can reinitialise
 		// on the next update() call with valid player/terrain data.
 		FirstPersonCamera.onSceneRebuild();
+		ModernCameraRig.onSceneRebuild();
 		ModernMovementController.onSceneRebuild();
 		client.setGameState(30);
 		for (i = 0; i < 100; i++) {

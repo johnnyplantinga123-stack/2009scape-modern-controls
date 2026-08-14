@@ -2158,3 +2158,89 @@ The old sendPlayerStep() and sendPredictedTile() functions represent previous
 movement experiments. Study them, but first inspect the current client/server
 movement pipeline and choose the safest integration with existing movement
 queues and packets.
+
+---
+
+# PHASE 3C — MODERN CAMERA CONTINUUM (implemented)
+
+## Camera/Control Separation
+
+```
+CONTROL SCHEME:
+    ORIGINAL (legacy) — click-to-move, PathFinder, legacy camera
+    MODERN           — WASD, modern camera rig
+
+CAMERA RIG inside MODERN:
+    FIRST_PERSON  ← scroll →  CHASE  ← scroll →  FREE
+```
+
+CameraMode enum (ORIGINAL / FIRST_PERSON / THIRD_PERSON) controls LOCOMOTION.
+ModernCameraRig (FP / CHASE / FREE) controls CAMERA inside MODERN.
+ORIGINAL remains a pristine legacy fallback, untouched by the rig.
+
+## Scroll Zoom Continuum
+
+```
+SCROLL IN:
+    FREE → far chase → normal chase → close chase → FIRST_PERSON → clamp
+
+SCROLL OUT:
+    FIRST_PERSON → close chase → normal chase → far chase → FREE → max clamp
+```
+
+No F11 needed for normal transitions. F11 remains debug/direct mode cycle.
+
+## Desired vs Actual Distance
+
+- `desiredDistance`: user's scroll wheel intent (never destroyed by walls)
+- `actualDistance`: smoothly approaches desired; compressed by obstruction
+- Wall compression: actual < desired when geometry blocks
+- Wall removal: actual smoothly returns to desired
+
+## Hysteresis Thresholds
+
+- FP_ENTER_DISTANCE = 120 (CHASE → FP at ≤ 120)
+- FP_EXIT_DISTANCE = 200 (FP → CHASE at ≥ 200, > FP_ENTER)
+- FREE_ENTER_DISTANCE = 4200 (CHASE → FREE at ≥ 4200)
+- FREE_EXIT_DISTANCE = 3800 (FREE → CHASE at ≤ 3800, < FREE_ENTER)
+
+## Chase Camera
+
+- Camera follows character body orientation (anInt3400)
+- Camera yaw smoothly interpolates toward body yaw (shortest-angle path)
+- Camera position: pivot above player + offset behind at actualDistance
+- Camera pitch: ~45° downward (256 units)
+- NO feedback loop: camera does NOT drive movement direction
+
+## Camera Obstruction
+
+- Multi-sample line probe from pivot to desired camera position
+- Checks collision flags (PathFinder.collisionMaps) and terrain height
+- Compresses actual distance when blocked
+- desiredDistance preserved throughout
+
+## Body-Look Coupling (FP mode)
+
+- Character body follows camera look direction with shoulder dead-zone
+- SHOULDER_DEAD_ZONE = 100 units (~17°): body stable, head/look only
+- SHOULDER_LIMIT = 200 units (~34°): beyond this, faster catch-up
+- RT4 has NO separate head yaw; body-yaw follow only
+- Head-look coupling deferred (not supported by RT4 model system)
+
+## Wheel Input Path
+
+```
+JavaMouseWheel.mouseWheelMoved() → currentRotation accumulated
+client.java:1725-1726 → MouseWheel.wheelRotation = getRotation()
+InterfaceList → UI scroll (reads but does NOT reset wheelRotation)
+ModernCameraRig → camera zoom (reads wheelRotation after UI consumers)
+```
+
+Why wheel did nothing before: the default follow camera (method4273) has NO
+zoom/distance parameter. Camera.ZOOM exists but is only consumed through CS2
+scripts (cutscenes), never from mouse wheel for the default camera.
+
+## ORIGINAL Isolation
+
+ORIGINAL mode: zero changes. Legacy camera, click-to-move, scroll zoom via
+Ctrl+Shift+wheel, middle-mouse pan, legacy animations all work unchanged.

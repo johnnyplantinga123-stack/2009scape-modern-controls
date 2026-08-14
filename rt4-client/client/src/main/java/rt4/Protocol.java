@@ -2929,8 +2929,9 @@ public class Protocol {
 													InterfaceList.redraw(aClass13_11);
 												}
 											}
-											// Gate camera update: skip when first-person camera is active
-											if (!FirstPersonCamera.isActive()) {
+											// Gate camera update: skip when modern camera is active
+											// (first-person camera OR modern camera rig in CHASE/FREE)
+											if (!FirstPersonCamera.isActive() && !ModernCameraRig.isActive()) {
 												if (Camera.cameraType == 1) {
 													Camera.method4273();
 												} else if (Camera.cameraType == 2) {
