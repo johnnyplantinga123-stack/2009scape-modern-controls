@@ -886,6 +886,9 @@ public final class client extends GameShell {
 			}
 		} else if (gameState == 30) {
 			LoginManager.method1841();
+			// Modern controls: center-screen reticle (FP/CHASE only).
+			// Additive presentation layer — no effect on ORIGINAL or gameplay.
+			ModernCrosshair.draw();
 		} else if (gameState == 40) {
 			Fonts.drawTextOnScreen(false, JagString.concatenate(new JagString[]{LocalizedText.CONLOST, JagString.aClass100_556, LocalizedText.ATTEMPT_TO_REESTABLISH}));
 		}
