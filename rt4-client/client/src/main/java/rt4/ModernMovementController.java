@@ -97,6 +97,15 @@ public final class ModernMovementController {
 	private static boolean initialized;
 	private static boolean suspended;
 
+	// ==== Round P4B: F11 EXIT resync ====
+	// Round #8 P10: REMOVED time-based post-exit drain. The 150-tick blanket
+	// drain was causing ORIGINAL click-to-walk to be swallowed after F11.
+	// Now isDrainingServerSteps() == isModernQ16Owner() — no time-based window.
+	// Residual in-flight steps are handled by the vanilla queue naturally.
+	/** Last DDA walk target sent to the server (F12 "lastSentTile"). */
+	private static int lastSentTileX = -1;
+	private static int lastSentTileZ = -1;
+
 	/** Reusable movement intent (avoids per-tick allocation). */
 	private static final MovementIntent intent = new MovementIntent();
 
@@ -121,6 +130,10 @@ public final class ModernMovementController {
 	public static int getVelocityXQ16() { return velocityXQ16; }
 	/** Returns last computed velocity Z (Q16). For debug overlay. */
 	public static int getVelocityZQ16() { return velocityZQ16; }
+	/** Returns last DDA-sent walk target X (LOCAL). For debug overlay (P4B). */
+	public static int getLastSentTileX() { return lastSentTileX; }
+	/** Returns last DDA-sent walk target Z (LOCAL). For debug overlay (P4B). */
+	public static int getLastSentTileZ() { return lastSentTileZ; }
 
 	private ModernMovementController() {
 	}
@@ -161,35 +174,258 @@ public final class ModernMovementController {
 
 	/**
 	 * MODERN → ORIGINAL transition.
-	 * Correction 6: safe handoff without modifying movementQueueX/Z/Size.
-	 * If predicted tile differs from server-reported, rebase fine to server tile center.
+	 *
+	 * <p><b>Round P4B: F11 exit scene/collision resync.</b> Source trace
+	 * proved the staleness: while Q16 owns, {@link #update()} writes
+	 * self.xFine/zFine every tick but never movementQueueX/Z, and vanilla
+	 * {@link PathFinder} BFS originates exactly at movementQueueX[0]/Z[0].
+	 * After exit, queue[0] is still wherever it stood when MODERN was
+	 * entered, so click-to-walk paths radiate from a stale tile (blocked
+	 * walkable tiles, wrong clipping near walls). A normal region load
+	 * heals it because {@link LoginManager#method2463} ends in
+	 * {@code self.teleport()} → {@link PathingEntity#method2683} — the
+	 * vanilla authoritative entity reset (queue[0] + queueSize + xFine/zFine
+	 * to the tile centre).
+	 *
+	 * <p>Modern code never mutates {@link PathFinder#collisionMaps}
+	 * (exhaustive grep; only vanilla flagScenery/flagWall/flagTile and the
+	 * ::noclip cheat do), so NO collision rebuild is needed — the smallest
+	 * proven vanilla refresh is that exact teleport-style reset, reused
+	 * here verbatim. Order of operations per the P4B brief:
+	 * <ol>
+	 *   <li>capture before-state for F12 diagnostics;</li>
+	 *   <li>resolve the authoritative tile (last server-confirmed);</li>
+	 *   <li>stop Q16 writes (velocity/intent/pending/initialized);</li>
+	 *   <li>invoke the vanilla reset ({@code self.teleport(auth, true, auth)})
+	 *       which syncs xFine/zFine AND movementQueueX[0]/Z[0];</li>
+	 *   <li>open the post-exit drain window so residual in-flight steps are
+	 *       consumed, not replayed;</li>
+	 *   <li>only then is movement ownership handed to ORIGINAL.</li>
+	 * </ol>
+	 * MODERN FREE needs none of this: vanilla already owns and the queue
+	 * is live (route = VANILLA_FREE_NOOP).
 	 */
 	public static void exitModernMode() {
-		if (initialized && PlayerList.self != null) {
-			Player self = PlayerList.self;
-			int predictedTileX = (int) (predictedSubX >> 16) >> 7;
-			int predictedTileZ = (int) (predictedSubZ >> 16) >> 7;
-
-			if (predictedTileX != lastServerReportedTileX
-					|| predictedTileZ != lastServerReportedTileZ) {
-				// Rebase to authoritative server tile center using getSize() * 64
-				self.xFine = (lastServerReportedTileX << 7) + self.getSize() * 64;
-				self.zFine = (lastServerReportedTileZ << 7) + self.getSize() * 64;
-			}
-			// else: preserve current fine position to avoid unnecessary visible snap
+		if (!initialized || PlayerList.self == null) {
+			velocityXQ16 = 0;
+			velocityZQ16 = 0;
+			initialized = false;
+			suspended = false;
+			wasFirstPersonLastTick = false;
+			intent.clear();
+			return;
 		}
+		Player self = PlayerList.self;
 
+		// ---- P4B step 1: capture before-state ----
+		int beforeFineX = self.xFine;
+		int beforeFineZ = self.zFine;
+		int queue0BeforeX = self.movementQueueX[0];
+		int queue0BeforeZ = self.movementQueueZ[0];
+		int pendingBefore = getPendingCount();
+
+		// ---- P4B step 2: authoritative tile (last server-confirmed) ----
+		int authTileX = (lastServerReportedTileX >= 0) ? lastServerReportedTileX : self.xFine >> 7;
+		int authTileZ = (lastServerReportedTileZ >= 0) ? lastServerReportedTileZ : self.zFine >> 7;
+
+		// ---- P4B step 3: stop modern Q16 writes ----
+		boolean q16Owned = !ModernCameraRig.isActive()
+				|| ModernCameraRig.getRigState() != ModernCameraRig.RigState.FREE;
 		velocityXQ16 = 0;
 		velocityZQ16 = 0;
+		intent.clear();
+		clearPending();
 		initialized = false;
 		suspended = false;
 		wasFirstPersonLastTick = false;
-		intent.clear();
+		lastMovementState = MovementState.IDLE;
+
+		// ---- P4B step 4: vanilla-proven collision/pathfinding refresh ----
+		String route;
+		if (q16Owned) {
+			// Reuse the exact vanilla authoritative reset used by the region
+			// shift path (LoginManager.method2463 → self.teleport →
+			// method2683 hard branch): movementQueueX[0]/Z[0], queueSize and
+			// xFine/zFine all land on the authoritative tile centre, so
+			// PathFinder BFS originates at the live player tile again.
+			self.teleport(authTileX, true, authTileZ);
+			// Round #8 P10: NO post-exit drain window. ORIGINAL click-to-walk
+			// must work IMMEDIATELY after F11. Residual in-flight steps arrive
+			// through the normal vanilla move() path and append cleanly.
+			route = "VANILLA_TELEPORT_RESET";
+		} else {
+			// MODERN FREE: vanilla already owned locomotion — queue is live
+			// and consistent. Touching it would cancel legitimate walking.
+			route = "VANILLA_FREE_NOOP";
+		}
+
+		// ---- P4B F12 diagnostics + one-shot log ----
+		DebugOverlay.f11ExitBeforeFineX = beforeFineX;
+		DebugOverlay.f11ExitBeforeFineZ = beforeFineZ;
+		DebugOverlay.f11ExitAuthTileX = authTileX;
+		DebugOverlay.f11ExitAuthTileZ = authTileZ;
+		DebugOverlay.f11ExitQueue0BeforeX = queue0BeforeX;
+		DebugOverlay.f11ExitQueue0BeforeZ = queue0BeforeZ;
+		DebugOverlay.f11ExitQueue0AfterX = self.movementQueueX[0];
+		DebugOverlay.f11ExitQueue0AfterZ = self.movementQueueZ[0];
+		DebugOverlay.f11ExitAfterFineX = self.xFine;
+		DebugOverlay.f11ExitAfterFineZ = self.zFine;
+		DebugOverlay.f11ExitServerTileX = lastServerReportedTileX;
+		DebugOverlay.f11ExitServerTileZ = lastServerReportedTileZ;
+		DebugOverlay.f11ExitLastSentTileX = lastSentTileX;
+		DebugOverlay.f11ExitLastSentTileZ = lastSentTileZ;
+		DebugOverlay.f11ExitPendingMoves = pendingBefore;
+		DebugOverlay.f11ExitCollisionRefresh = q16Owned;
+		DebugOverlay.f11ExitCollisionRefreshRoute = route;
+		System.out.println("[F11-ORIGINAL-RESYNC] authTile=" + authTileX + "," + authTileZ
+				+ " queue0Before=" + queue0BeforeX + "," + queue0BeforeZ
+				+ " queue0After=" + self.movementQueueX[0] + "," + self.movementQueueZ[0]
+				+ " collisionRefreshRoute=" + route);
 	}
 
 	/** FIRST_PERSON ↔ THIRD_PERSON: locomotion unchanged, camera only. */
 	public static void onModernModeSwitch() {
 		// No prediction reset needed.
+	}
+
+	// =====================================================================
+	// Round #6B/C P7-P11: MODERN FREE = VANILLA LOCOMOTION
+	// =====================================================================
+
+	/**
+	 * Whether THIS controller (modern continuous Q16 prediction) currently
+	 * owns self locomotion. Round #6B/C: the rig's FREE state hands movement
+	 * authority back to vanilla click-to-walk (movement queue + method2247),
+	 * so "modern" alone is no longer sufficient — only FP/CHASE own Q16.
+	 *
+	 * <p>Call sites that previously used {@code CameraMode.isModern()} for
+	 * movement ownership now use this predicate:
+	 * <ul>
+	 *   <li>{@link NpcList#method4514} — self method2247 skip gate.</li>
+	 *   <li>{@link Protocol#readSelfPlayerInfo} — server-step queue drains.</li>
+	 *   <li>{@link #update()} — Q16 prediction gate.</li>
+	 * </ul>
+	 * Exactly ONE movement owner at any time: ORIGINAL → vanilla; MODERN
+	 * FREE → vanilla ({@code VANILLA_FREE}); MODERN FP/CHASE → this
+	 * controller ({@code MODERN_Q16}).
+	 */
+	public static boolean isModernQ16Owner() {
+		if (!CameraMode.isModern()) {
+			return false;
+		}
+		// Rig active in FREE = vanilla locomotion owns movement.
+		// Rig inactive keeps the proven Phase 3B behaviour (Q16 owns).
+		return !ModernCameraRig.isActive()
+				|| ModernCameraRig.getRigState() != ModernCameraRig.RigState.FREE;
+	}
+
+	/**
+	 * Round #8 P10: gate for the Protocol server-step drain hooks.
+	 * Returns true ONLY while Q16 owns locomotion. The time-based post-exit
+	 * drain window has been REMOVED — ORIGINAL click-to-walk must work
+	 * IMMEDIATELY after F11. Residual in-flight steps are handled by the
+	 * vanilla queue naturally (they arrive through the normal vanilla move()
+	 * path and append cleanly to the live queue).
+	 */
+	public static boolean isDrainingServerSteps() {
+		return isModernQ16Owner();
+	}
+
+	/** Current locomotion owner for the debug overlay (P14). */
+	public static String getMovementOwner() {
+		if (!CameraMode.isModern()) {
+			return "ORIGINAL";
+		}
+		return isModernQ16Owner() ? "MODERN_Q16" : "VANILLA_FREE";
+	}
+
+	/**
+	 * CHASE → FREE handoff (Round #6B/C P9). Called from
+	 * {@link ModernCameraRig#updateStateTransitions()} the tick the rig
+	 * enters FREE. Order of operations:
+	 * <ol>
+	 *   <li>Modern continuous Q16 writes stop ({@link #update()} returns
+	 *       early because {@link #isModernQ16Owner()} is now false).</li>
+	 *   <li>Velocity/intent zeroed, stale pending walk requests cleared.</li>
+	 *   <li>The vanilla movement queue is rebased to the CURRENT live tile
+	 *       ({@code movementQueueX[0]}) and cleared via {@code method2689()}
+	 *       so {@link NpcList#method2247} starts stationary at the player's
+	 *       actual position — no tile snap (xFine/zFine untouched; mid-tile
+	 *       offsets are safe, vanilla interpolation tolerates ≤256 fine).</li>
+	 *   <li>Vanilla PathFinder/movement queue becomes the movement owner;
+	 *       WASD is inert because {@link #update()} no longer runs.</li>
+	 * </ol>
+	 * Any server steps still in flight from prior Q16 walk requests arrive
+	 * through the normal vanilla {@code move()} path and append cleanly.
+	 */
+	public static void onEnterFreeMode() {
+		velocityXQ16 = 0;
+		velocityZQ16 = 0;
+		intent.clear();
+		clearPending();
+		Player self = PlayerList.self;
+		if (self != null) {
+			// Rebase queue[0] to the live tile BEFORE clearing so the next
+			// vanilla move() computes its step from the real position.
+			self.movementQueueX[0] = self.xFine >> 7;
+			self.movementQueueZ[0] = self.zFine >> 7;
+			self.method2689();
+		}
+		lastMovementState = MovementState.IDLE;
+		wasFirstPersonLastTick = false;
+		DebugOverlay.intentForwardPct = 0;
+		DebugOverlay.intentRightPct = 0;
+		System.out.println("[MODERN-MOVE] HANDOFF: CHASE -> FREE (vanilla locomotion owns)");
+	}
+
+	/**
+	 * FREE → CHASE handoff (Round #6B/C P10). Called from
+	 * {@link ModernCameraRig#updateStateTransitions()} the tick the rig
+	 * leaves FREE. Order of operations:
+	 * <ol>
+	 *   <li>Vanilla auto-path ownership ends: the movement queue is cleared
+	 *       ({@code method2689()}) so method2247 can no longer move self.</li>
+	 *   <li>Modern prediction is seeded from the LIVE player state
+	 *       (predictedSub from xFine/zFine — no tile snap).</li>
+	 *   <li>Server-authoritative tile rebased to the live tile.</li>
+	 *   <li>WASD enabled again; CHASE (this controller) owns movement.</li>
+	 * </ol>
+	 *
+	 * <p><b>Arbitration rule (documented per brief P10):</b> if the player
+	 * was walking a vanilla path in FREE and scrolls inward mid-path, the
+	 * client queue is cleared immediately and manual WASD takes ownership.
+	 * The server-side route is reset by the NEXT modern DDA walk packet
+	 * ({@code sendModernWalkPacket} = MOVE_GAMECLICK). Any residual server
+	 * steps for the cancelled path arrive through the Q16 drain hooks
+	 * ({@link #onServerStep}) and are reconciled — never replayed as
+	 * vanilla movement, because {@link NpcList#method4514} skips method2247
+	 * for self while {@link #isModernQ16Owner()} is true.
+	 */
+	public static void onExitFreeMode() {
+		Player self = PlayerList.self;
+		if (self == null) {
+			return;
+		}
+		// 1: cancel vanilla auto-path (client side).
+		self.method2689();
+		// 2-4: seed prediction from live state (no snap).
+		predictedSubX = ((long) self.xFine) << 16;
+		predictedSubZ = ((long) self.zFine) << 16;
+		velocityXQ16 = 0;
+		velocityZQ16 = 0;
+		lastServerReportedTileX = self.xFine >> 7;
+		lastServerReportedTileZ = self.zFine >> 7;
+		lastServerReportTick = client.loop;
+		// 5-6: heading from current body facing; discard stale modern state.
+		movementHeading = ModernCameraRig.bodyYawToCameraYaw(self.anInt3400);
+		targetOrientationAngle = self.anInt3400;
+		wasFirstPersonLastTick = false;
+		lastMovementState = MovementState.IDLE;
+		clearPending();
+		suspended = false;
+		initialized = true;
+		System.out.println("[MODERN-MOVE] HANDOFF: FREE -> CHASE (modern Q16 owns)"
+				+ " tile=" + lastServerReportedTileX + "," + lastServerReportedTileZ);
 	}
 
 	/**
@@ -264,7 +500,9 @@ public final class ModernMovementController {
 	 */
 	public static void update() {
 		if (!initialized) return;
-		if (!CameraMode.isModern()) return;
+		// Round #6B/C P7: FREE hands locomotion back to vanilla — no Q16
+		// writes, no WASD, no packets from this controller while FREE.
+		if (!isModernQ16Owner()) return;
 		Player self = PlayerList.self;
 		if (self == null) return;
 		DebugOverlay.movementUpdateTickCount++;
@@ -298,6 +536,13 @@ public final class ModernMovementController {
 
 		// ---- Read WASD input ----
 		readInput();
+
+		// Round #6A (P2/P5): diagnostics — intent components, heading, velocity,
+		// body target and chase yaw target for the F12 overlay. Written every
+		// tick (cheap field stores); the overlay only renders them when visible.
+		DebugOverlay.intentForwardPct = Math.round(intent.forward * 100f);
+		DebugOverlay.intentRightPct = Math.round(intent.right * 100f);
+		DebugOverlay.movementHeading = movementHeading;
 
 		if (!intent.hasMovement()) {
 			velocityXQ16 = 0;
@@ -415,6 +660,25 @@ public final class ModernMovementController {
 				self.anInt3400 = targetOrientationAngle;
 				DebugOverlay.lastBodyYawWriter = "movement_controller";
 			}
+		}
+
+		// Round #6A (P2): temporary CHASE diagonal diagnostics (1 Hz while
+		// actively moving in CHASE — not flooded during idle or FP).
+		// Round #6B/C P12: extended with animation fields to trace the run
+		// animation flicker (seq id, frame, state, queue size).
+		if (!ModernCameraRig.isFirstPersonRigState() && client.loop % 50 == 0) {
+			System.out.println("[MOVE-DEBUG] rig=" + ModernCameraRig.getRigState()
+					+ " intentF=" + intent.forward + " intentR=" + intent.right
+					+ " movementHeading=" + movementHeading
+					+ " velocityX=" + velocityXQ16 + " velocityZ=" + velocityZQ16
+					+ " bodyTarget=" + targetOrientationAngle
+					+ " chaseTargetYaw=" + ModernCameraRig.getChaseYawTarget()
+					+ " moveSeqId=" + self.movementSeqId
+					+ " frame=" + self.anInt3407 + "/" + self.anInt3396
+					+ " state=" + lastMovementState
+					+ " run=" + intent.runRequested
+					+ " queueSize=" + self.movementQueueSize
+					+ " owner=" + getMovementOwner());
 		}
 
 		// ---- Animation state machine ----
@@ -537,6 +801,9 @@ public final class ModernMovementController {
 		int worldZ = Camera.originZ + targetLocalTileZ;
 
 		ClientProt.sendModernWalkPacket(worldX, worldZ, intent.runRequested);
+		// P4B: track the last sent target for F11 EXIT diagnostics.
+		lastSentTileX = targetLocalTileX;
+		lastSentTileZ = targetLocalTileZ;
 
 		// Phase 3B fix #3: diagnostic logging for server sync analysis
 		System.out.println("[MODERN-MOVE] PACKET: localTile=" + targetLocalTileX + "," + targetLocalTileZ
@@ -684,6 +951,14 @@ public final class ModernMovementController {
 	 *
 	 * <p>Uses BasType fields: idleAnimationId, walkAnimation, runAnimationId.
 	 * Falls back to idleAnimationId if the walk/run animation is -1.
+	 *
+	 * <p>Round #6B/C P12: frame counters are reset when the selected
+	 * SEQUENCE actually changes, so the new animation starts cleanly at
+	 * frame 0 instead of inheriting a mid-sequence index from the previous
+	 * animation (a source-plausible flicker candidate: an inherited frame
+	 * index near/past the new sequence's end makes {@link NpcList#method879}
+	 * wrap immediately). No per-tick restart — this only runs on state
+	 * transitions. RUNTIME UNVERIFIED.
 	 */
 	private static void selectAnimationForState() {
 		Player self = PlayerList.self;
@@ -703,6 +978,11 @@ public final class ModernMovementController {
 				break;
 		}
 
+		if (self.movementSeqId != selectedAnim) {
+			// Clean start for the new sequence (P12).
+			self.anInt3407 = 0;
+			self.anInt3396 = 0;
+		}
 		self.movementSeqId = selectedAnim;
 	}
 

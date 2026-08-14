@@ -746,7 +746,12 @@ public class Protocol {
 			local54 = inboundBuffer.gBits(3);
 			PlayerList.self.move(1, local54);
 			// Phase 3B: drain legacy queue, store authoritative server tile
-			if (CameraMode.isModern()) {
+			// Round #6B/C P7: only while Q16 owns locomotion — in MODERN FREE
+			// the vanilla movement queue must keep these steps for method2247.
+			// Round P4B: isDrainingServerSteps() extends the gate through the
+			// short post-F11-exit window so residual in-flight steps are
+			// consumed instead of replaying as vanilla queue movement.
+			if (ModernMovementController.isDrainingServerSteps()) {
 				ModernMovementController.onServerStep(
 					PlayerList.self.movementQueueX[0],
 					PlayerList.self.movementQueueZ[0]);
@@ -760,7 +765,7 @@ public class Protocol {
 			if (inboundBuffer.gBits(1) == 1) {
 				local54 = inboundBuffer.gBits(3);
 				PlayerList.self.move(2, local54);
-				if (CameraMode.isModern()) {
+				if (ModernMovementController.isDrainingServerSteps()) {
 					ModernMovementController.onServerStep(
 						PlayerList.self.movementQueueX[0],
 						PlayerList.self.movementQueueZ[0]);
@@ -768,7 +773,7 @@ public class Protocol {
 				}
 				local64 = inboundBuffer.gBits(3);
 				PlayerList.self.move(2, local64);
-				if (CameraMode.isModern()) {
+				if (ModernMovementController.isDrainingServerSteps()) {
 					ModernMovementController.onServerStep(
 						PlayerList.self.movementQueueX[0],
 						PlayerList.self.movementQueueZ[0]);
@@ -777,7 +782,7 @@ public class Protocol {
 			} else {
 				local54 = inboundBuffer.gBits(3);
 				PlayerList.self.move(0, local54);
-				if (CameraMode.isModern()) {
+				if (ModernMovementController.isDrainingServerSteps()) {
 					ModernMovementController.onServerStep(
 						PlayerList.self.movementQueueX[0],
 						PlayerList.self.movementQueueZ[0]);
@@ -801,7 +806,9 @@ public class Protocol {
 			int preTeleportQueueX = PlayerList.self.movementQueueX[0];
 			int preTeleportQueueZ = PlayerList.self.movementQueueZ[0];
 			PlayerList.self.teleport(x, local64 == 1, local54);
-			if (CameraMode.isModern()) {
+			// Round #6B/C P7: teleport handling stays vanilla in MODERN FREE
+			// (teleport() already maintains queue + xFine/zFine correctly).
+			if (ModernMovementController.isModernQ16Owner()) {
 				boolean nearTeleport = (PlayerList.self.movementQueueX[0] != preTeleportQueueX
 					|| PlayerList.self.movementQueueZ[0] != preTeleportQueueZ);
 				if (nearTeleport) {
@@ -3574,6 +3581,13 @@ public class Protocol {
 	@OriginalMember(owner = "client!ah", name = "b", descriptor = "(I)V")
 	public static void method843() {
 		if (InterfaceList.clickedInventoryComponent != null || Cs1ScriptRunner.aClass13_14 != null) {
+			return;
+		}
+		// Round #8 P6: FP context menu owns input when open — suppress vanilla
+		// mouse action processing to prevent double-execution. The menu was
+		// opened by FPContextMenuController which uses the real vanilla menu
+		// arrays and doAction route, so no action reconstruction is needed.
+		if (FPContextMenuController.isMenuOpen()) {
 			return;
 		}
 		@Pc(20) int local20 = Mouse.clickButton;

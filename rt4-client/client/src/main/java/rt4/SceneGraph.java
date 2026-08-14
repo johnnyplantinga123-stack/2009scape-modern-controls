@@ -2981,6 +2981,9 @@ public class SceneGraph {
 			setUnderwater(false);
 		}
 		method3292(arg0, arg1, arg2, arg5, arg11, arg12, arg13, arg14);
+		// Round #7B P3: FP ceiling coverage pass — structural scan around the
+		// camera, independent of which tiles the traversal floor hook reached.
+		modernCeilingPass();
 	}
 
 	@OriginalMember(owner = "client!uc", name = "a", descriptor = "(III[[[BIBII)V")
@@ -3959,6 +3962,488 @@ public class SceneGraph {
 			local475 = Rasteriser.textureProvider.getAverageColor(arg0.anInt4869);
 			Rasteriser.fillGouraudTriangle(local283, local299, local331, local275, local291, local323, ColorUtils.multiplyLightness3(local475, arg0.anInt4872), ColorUtils.multiplyLightness3(local475, arg0.anInt4867), ColorUtils.multiplyLightness3(local475, arg0.anInt4864));
 		}
+	}
+
+	// ---------------------------------------------------------------------
+	// Round #7B: FIRST_PERSON generated ceiling underside (coverage pass).
+	//
+	// CEILING_SOURCE_RESULT = UPPER_FLOOR_SINGLE_SIDED: the engine has no
+	// underside geometry, so where the plane above has a real floor tile its
+	// underside is generated: same projection maths as method2610/method2762
+	// with the screen-space winding tests INVERTED (visible from below) and
+	// the material reused ~20% darker so the ceiling visually belongs to the
+	// building.
+	//
+	// Round #7B P0: the Round #7 per-tile hook crashed with
+	// ArrayIndexOutOfBoundsException: 1 because `tiles` is swapped to
+	// underWaterGroundTiles (Tile[1][][] — see setUnderwater/L659) and the
+	// guard used a hardcoded plane limit. Every access here is guarded by
+	// the ACTUAL array lengths (and null rows).
+	//
+	// Round #7B P2: triangles crossing the near plane are CLIPPED, not
+	// rejected — vanilla-style whole-tile early-outs produced an open-sky
+	// hole when looking straight up.
+	//
+	// Round #7B P3: coverage is driven by a bounded structural scan around
+	// the camera, independent of which tiles the floor traversal reached.
+	// ---------------------------------------------------------------------
+
+	/** Round #7B P3: ceiling coverage scan radius in tiles. */
+	static final int CEILING_COVERAGE_RADIUS = 16;
+	/** Vanilla near-plane depth (method2610 rejects vertices below this). */
+	private static final int CEILING_NEAR_PLANE = 50;
+	/** Software rasterizer safety gate: only draw ceilings when looking up. */
+	private static final int SOFTWARE_PITCH_GATE = 1280;
+
+	// Scratch vertex attribute buffers for the ceiling near-plane clipper.
+	// No per-frame allocation: sized for a clipped quad corner fan (max 4).
+	private static final int[] ceilRotX = new int[4];
+	private static final int[] ceilRotY = new int[4];
+	private static final int[] ceilDepth = new int[4];
+	private static final int[] ceilCol = new int[4];
+	private static final float[] ceilU = new float[4];
+	private static final float[] ceilV = new float[4];
+	private static final int[] ceilWX = new int[4];
+	private static final int[] ceilWY = new int[4];
+	private static final int[] ceilWZ = new int[4];
+	// Clipped output polygon (a clipped triangle has at most 4 vertices).
+	private static final int[] clipRotX = new int[4];
+	private static final int[] clipRotY = new int[4];
+	private static final int[] clipDepth = new int[4];
+	private static final int[] clipCol = new int[4];
+	private static final float[] clipU = new float[4];
+	private static final float[] clipV = new float[4];
+	private static final int[] clipWX = new int[4];
+	private static final int[] clipWY = new int[4];
+	private static final int[] clipWZ = new int[4];
+	// Screen-space projection of the clipped polygon (software path).
+	private static final int[] clipSX = new int[4];
+	private static final int[] clipSY = new int[4];
+	// Shaped-tile projected vertex scratch (ShapedTile has at most 8 verts).
+	private static final int[] shapedRotX = new int[8];
+	private static final int[] shapedRotY = new int[8];
+	private static final int[] shapedDepth = new int[8];
+
+	/**
+	 * Round #7B P3: FIRST_PERSON ceiling coverage pass. Scans
+	 * {@link #CEILING_COVERAGE_RADIUS} tiles around the camera on
+	 * {@code Player.plane + 1} and draws the underside of every structurally
+	 * valid upper floor tile. Called once per frame at the end of
+	 * {@link #method2954}. ORIGINAL/CHASE/FREE never reach this
+	 * ({@link ModernCeiling#isEnabled()}); the structural tile itself is the
+	 * authority — no tile above, no ceiling (no outdoor/courtyard fills).
+	 */
+	static void modernCeilingPass() {
+		// Round #7C P1: QUARANTINED — the Round #7/#7B generated ceiling pass
+		// failed user runtime (no ceiling + giant slab artifact) and must
+		// submit ZERO geometry until a future round decides otherwise.
+		if (!ModernCeiling.RENDER_ENABLED) {
+			return;
+		}
+		if (!ModernCeiling.isEnabled()) {
+			return;
+		}
+		ModernCeiling.beginCoverageFrame();
+		if (tiles == null || tileHeights == null) {
+			return;
+		}
+		// P6 safety: never render while the underwater scene is bound — its
+		// tile array has a different level count and no meaningful ceiling.
+		if (tileHeights == underwaterTileHeights) {
+			return;
+		}
+		int plane = Player.plane;
+		int planeAbove = plane + 1;
+		// P6 safety: no ceiling on the top plane and none beyond the arrays.
+		if (plane < 0 || plane >= 3 || planeAbove >= tiles.length || planeAbove >= tileHeights.length) {
+			return;
+		}
+		Tile[][] levelAbove = tiles[planeAbove];
+		int[][] heightsAbove = tileHeights[planeAbove];
+		if (levelAbove == null || heightsAbove == null) {
+			return;
+		}
+		// Software rasterizer has no depth buffer and this pass runs after
+		// the whole scene: only draw while looking up there (the ceiling can
+		// only project into frame then). GL has a depth buffer, so occlusion
+		// by walls/scenery is handled by the depth test and no gate is needed.
+		if (!GlRenderer.enabled && Camera.cameraPitch < SOFTWARE_PITCH_GATE) {
+			return;
+		}
+		int camTileX = cameraX >> 7;
+		int camTileZ = cameraZ >> 7;
+		int maxX = levelAbove.length - 1;
+		if (maxX < 0 || maxX >= heightsAbove.length) {
+			maxX = heightsAbove.length - 1;
+		}
+		int x0 = camTileX - CEILING_COVERAGE_RADIUS;
+		if (x0 < 0) {
+			x0 = 0;
+		}
+		int x1 = camTileX + CEILING_COVERAGE_RADIUS;
+		if (x1 > maxX) {
+			x1 = maxX;
+		}
+		for (int x = x0; x <= x1; x++) {
+			Tile[] row = levelAbove[x];
+			int[] heightRow = heightsAbove[x];
+			if (row == null || heightRow == null) {
+				continue;
+			}
+			int maxZ = row.length - 1;
+			if (maxZ < 0 || maxZ >= heightRow.length) {
+				maxZ = heightRow.length - 1;
+			}
+			int z0 = camTileZ - CEILING_COVERAGE_RADIUS;
+			if (z0 < 0) {
+				z0 = 0;
+			}
+			int z1 = camTileZ + CEILING_COVERAGE_RADIUS;
+			if (z1 > maxZ) {
+				z1 = maxZ;
+			}
+			for (int z = z0; z <= z1; z++) {
+				int dx = x - camTileX;
+				int dz = z - camTileZ;
+				if (dx * dx + dz * dz > CEILING_COVERAGE_RADIUS * CEILING_COVERAGE_RADIUS) {
+					continue;
+				}
+				Tile above = row[z];
+				if (above == null) {
+					continue;
+				}
+				if (above.plainTile != null) {
+					ModernCeiling.noteCandidate(true);
+					drawPlainCeilingTile(above.plainTile, planeAbove, x, z);
+				} else if (above.shapedTile != null) {
+					ModernCeiling.noteCandidate(false);
+					drawShapedCeilingTile(above.shapedTile, planeAbove);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Round #7B P2/P5: generated underside of one plain upper floor tile.
+	 * Corner basis and projection are identical to {@link #method2610};
+	 * triangles crossing the near plane are clipped instead of the tile
+	 * being rejected wholesale.
+	 */
+	private static void drawPlainCeilingTile(PlainTile tile, int planeAbove, int x, int z) {
+		if (tile.anInt4872 == 12345678 && tile.anInt4865 == 12345678) {
+			return; // invisible marker tile — no ceiling
+		}
+		int[][] heightsAbove = tileHeights[planeAbove];
+		// Corner heights need the +1 grid point in both axes.
+		if (x + 1 >= heightsAbove.length || z + 1 >= heightsAbove[x].length
+				|| z + 1 >= heightsAbove[x + 1].length) {
+			return;
+		}
+		int wx0 = (x << 7) - cameraX;
+		int wz0 = (z << 7) - cameraZ;
+		int wx1 = wx0 + 128;
+		int wz1 = wz0 + 128;
+		// C0=(x,z) C1=(x+1,z) C2=(x+1,z+1) C3=(x,z+1) — method2610 order.
+		int[] wxs = {wx0, wx1, wx1, wx0};
+		int[] wzs = {wz0, wz0, wz1, wz1};
+		int h0 = heightsAbove[x][z] - cameraY;
+		int h1 = heightsAbove[x + 1][z] - cameraY;
+		int h2 = heightsAbove[x + 1][z + 1] - cameraY;
+		int h3 = heightsAbove[x][z + 1] - cameraY;
+		int[] hs = {h0, h1, h2, h3};
+		int d = ModernCeiling.DARKEN_MULTIPLIER;
+		int[] cols = {
+				ColorUtils.multiplyLightness3(tile.anInt4872, d),
+				ColorUtils.multiplyLightness3(tile.anInt4867, d),
+				ColorUtils.multiplyLightness3(tile.anInt4865, d),
+				ColorUtils.multiplyLightness3(tile.anInt4864, d)
+		};
+		float[] us = {0.0F, 1.0F, 1.0F, 0.0F};
+		float[] vs = {0.0F, 0.0F, 1.0F, 1.0F};
+		int behind = 0;
+		for (int i = 0; i < 4; i++) {
+			// Exact method2610 yaw+pitch rotation.
+			int rotZ0 = wzs[i] * anInt5205 + wxs[i] * anInt2222 >> 16;
+			int rotX = wzs[i] * anInt2222 - wxs[i] * anInt5205 >> 16;
+			ceilRotX[i] = rotX;
+			ceilRotY[i] = hs[i] * anInt3038 - rotZ0 * anInt2886 >> 16;
+			ceilDepth[i] = hs[i] * anInt2886 + rotZ0 * anInt3038 >> 16;
+			ceilCol[i] = cols[i];
+			ceilU[i] = us[i];
+			ceilV[i] = vs[i];
+			ceilWX[i] = (i == 1 || i == 2) ? (x + 1) << 7 : x << 7;
+			ceilWY[i] = heightsAbove[i == 1 || i == 2 ? x + 1 : x][i >= 2 ? z + 1 : z];
+			ceilWZ[i] = (i >= 2) ? (z + 1) << 7 : z << 7;
+			if (ceilDepth[i] < CEILING_NEAR_PLANE) {
+				behind++;
+				ModernCeiling.noteBehindVertex();
+			}
+		}
+		if (behind == 4) {
+			// Entire tile behind the near plane — legitimately invisible.
+			ModernCeiling.noteNearRejectedTile();
+			return;
+		}
+		int textureId = tile.anInt4869;
+		// Tri 1 (C2,C3,C1), tri 2 (C0,C1,C3) — method2610 split.
+		renderCeilingTriangle(planeAbove, 2, 3, 1, textureId, tile.anInt4865 == 12345678);
+		renderCeilingTriangle(planeAbove, 0, 1, 3, textureId, tile.anInt4872 == 12345678);
+	}
+
+	/**
+	 * Round #7B P2: clips one ceiling triangle (attribute indices into the
+	 * scratch buffers) against the near plane and emits the result:
+	 * software = clipped fan with INVERTED winding test (visible from
+	 * below); GL = GPU-clipped immediate-mode triangles.
+	 *
+	 * @param invisible when true the triangle is the invisible-marker half
+	 *                  and is skipped on the software untextured path.
+	 */
+	private static void renderCeilingTriangle(int planeAbove, int i0, int i1, int i2, int textureId, boolean invisible) {
+		int n = clipCeilingTriangle(i0, i1, i2);
+		if (n < 3) {
+			return; // fully behind the near plane (tile-level counter covers it)
+		}
+		if (!GlRenderer.enabled) {
+			// Project clipped vertices; the clip guarantees depth >= 50.
+			for (int i = 0; i < n; i++) {
+				clipSX[i] = Rasteriser.centerX + (clipRotX[i] << 9) / clipDepth[i];
+				clipSY[i] = Rasteriser.centerY + (clipRotY[i] << 9) / clipDepth[i];
+			}
+			for (int i = 1; i + 1 < n; i++) {
+				// INVERTED winding test (method2610 uses > 0 for top surfaces).
+				if ((clipSX[0] - clipSX[i]) * (clipSY[i + 1] - clipSY[i]) - (clipSY[0] - clipSY[i]) * (clipSX[i + 1] - clipSX[i]) >= 0) {
+					continue;
+				}
+				Rasteriser.testX = clipSX[0] < 0 || clipSX[i] < 0 || clipSX[i + 1] < 0 || clipSX[0] > Rasteriser.width || clipSX[i] > Rasteriser.width || clipSX[i + 1] > Rasteriser.width;
+				Rasteriser.alpha = 0;
+				if (textureId == -1) {
+					if (!invisible) {
+						Rasteriser.fillGouraudTriangle(clipSY[0], clipSY[i], clipSY[i + 1], clipSX[0], clipSX[i], clipSX[i + 1], clipCol[0], clipCol[i], clipCol[i + 1]);
+					}
+				} else if (!Preferences.manyGroundTextures) {
+					int avg = Rasteriser.textureProvider.getAverageColor(textureId);
+					Rasteriser.fillGouraudTriangle(clipSY[0], clipSY[i], clipSY[i + 1], clipSX[0], clipSX[i], clipSX[i + 1], ColorUtils.multiplyLightness3(avg, clipCol[0]), ColorUtils.multiplyLightness3(avg, clipCol[i]), ColorUtils.multiplyLightness3(avg, clipCol[i + 1]));
+				} else {
+					Rasteriser.fillTexturedTriangle(clipSY[0], clipSY[i], clipSY[i + 1], clipSX[0], clipSX[i], clipSX[i + 1], clipCol[0], clipCol[i], clipCol[i + 1], clipRotX[0], clipRotX[i], clipRotX[i + 1], clipRotY[0], clipRotY[i], clipRotY[i + 1], clipDepth[0], clipDepth[i], clipDepth[i + 1], textureId);
+				}
+				ModernCeiling.noteTriangleDrawn();
+			}
+			return;
+		}
+		// GL: GPU near-plane clipping handles partial triangles; state is
+		// SCOPED via glPushAttrib/glPopAttrib — global culling never changes.
+		GL2 gl = GlRenderer.gl;
+		gl.glPushAttrib(GL2.GL_ENABLE_BIT | GL2.GL_LIGHTING_BIT | GL2.GL_CURRENT_BIT);
+		gl.glDisable(GL2.GL_LIGHTING);
+		gl.glDisable(GL2.GL_CULL_FACE);
+		if (textureId != -1 && Preferences.manyGroundTextures) {
+			Rasteriser.textureProvider.method3227(textureId);
+		} else {
+			GlRenderer.setTextureId(-1);
+		}
+		GlRenderer.method4159(201.5F - (float) (planeAbove + 1) * 50.0F);
+		gl.glBegin(GL2.GL_TRIANGLES);
+		for (int i = 1; i + 1 < n; i++) {
+			glCeilingVertex(gl, clipWX[0], clipWY[0], clipWZ[0], clipCol[0], clipU[0], clipV[0]);
+			glCeilingVertex(gl, clipWX[i], clipWY[i], clipWZ[i], clipCol[i], clipU[i], clipV[i]);
+			glCeilingVertex(gl, clipWX[i + 1], clipWY[i + 1], clipWZ[i + 1], clipCol[i + 1], clipU[i + 1], clipV[i + 1]);
+		}
+		gl.glEnd();
+		gl.glPopAttrib();
+		ModernCeiling.noteTriangleDrawn();
+	}
+
+	/**
+	 * Round #7B P2: Sutherland–Hodgman clip of triangle (i0,i1,i2) against
+	 * {@code depth >= CEILING_NEAR_PLANE}. Interpolates ALL vertex
+	 * attributes (colour/light, projection coords, UVs, world position) so
+	 * texture and shading survive clipping. Returns the clipped polygon
+	 * vertex count (0..4) in the clip* scratch buffers. No max(depth,50)
+	 * hack: true intersection geometry.
+	 */
+	private static int clipCeilingTriangle(int i0, int i1, int i2) {
+		int[] is = {i0, i1, i2};
+		int n = 0;
+		for (int e = 0; e < 3; e++) {
+			int a = is[e];
+			int b = is[(e + 1) % 3];
+			boolean aIn = ceilDepth[a] >= CEILING_NEAR_PLANE;
+			boolean bIn = ceilDepth[b] >= CEILING_NEAR_PLANE;
+			if (aIn) {
+				copyCeilVertex(a, n++);
+			}
+			if (aIn != bIn) {
+				int denom = ceilDepth[b] - ceilDepth[a];
+				// aIn != bIn guarantees differing depths, but guard anyway.
+				int t = denom == 0 ? 0 : (CEILING_NEAR_PLANE - ceilDepth[a]) * 65536 / denom;
+				if (t < 0) {
+					t = 0;
+				} else if (t > 65536) {
+					t = 65536;
+				}
+				clipRotX[n] = ceilRotX[a] + (ceilRotX[b] - ceilRotX[a]) * t >> 16;
+				clipRotY[n] = ceilRotY[a] + (ceilRotY[b] - ceilRotY[a]) * t >> 16;
+				clipDepth[n] = CEILING_NEAR_PLANE;
+				clipCol[n] = ceilCol[a] + (ceilCol[b] - ceilCol[a]) * t >> 16;
+				clipU[n] = ceilU[a] + (ceilU[b] - ceilU[a]) * t / 65536.0F;
+				clipV[n] = ceilV[a] + (ceilV[b] - ceilV[a]) * t / 65536.0F;
+				clipWX[n] = ceilWX[a] + (ceilWX[b] - ceilWX[a]) * t >> 16;
+				clipWY[n] = ceilWY[a] + (ceilWY[b] - ceilWY[a]) * t >> 16;
+				clipWZ[n] = ceilWZ[a] + (ceilWZ[b] - ceilWZ[a]) * t >> 16;
+				n++;
+			}
+		}
+		return n;
+	}
+
+	private static void copyCeilVertex(int src, int dst) {
+		clipRotX[dst] = ceilRotX[src];
+		clipRotY[dst] = ceilRotY[src];
+		clipDepth[dst] = ceilDepth[src];
+		clipCol[dst] = ceilCol[src];
+		clipU[dst] = ceilU[src];
+		clipV[dst] = ceilV[src];
+		clipWX[dst] = ceilWX[src];
+		clipWY[dst] = ceilWY[src];
+		clipWZ[dst] = ceilWZ[src];
+	}
+
+	/**
+	 * Round #7B P4: generated underside of one SHAPED upper floor tile
+	 * (stairs/slopes). Reuses the ShapedTile's actual vertices, per-triangle
+	 * colours and textures — nothing is flattened. Vertex projection mirrors
+	 * {@link #method2762}; per-triangle handling mirrors its fill logic with
+	 * the winding test INVERTED and near-plane clipping applied.
+	 */
+	private static void drawShapedCeilingTile(ShapedTile shaped, int planeAbove) {
+		int vertCount = shaped.anIntArray168.length;
+		if (vertCount == 0 || vertCount > shapedRotX.length) {
+			return;
+		}
+		int behind = 0;
+		for (int i = 0; i < vertCount; i++) {
+			int wx = shaped.anIntArray168[i] - cameraX;
+			int wy = shaped.anIntArray160[i] - cameraY;
+			int wz = shaped.anIntArray163[i] - cameraZ;
+			// Exact method2762 rotation order.
+			int rotX = wz * anInt5205 + wx * anInt2222 >> 16;
+			int rotZ = wz * anInt2222 - wx * anInt5205 >> 16;
+			shapedRotX[i] = rotX;
+			shapedRotY[i] = wy * anInt3038 - rotZ * anInt2886 >> 16;
+			shapedDepth[i] = wy * anInt2886 + rotZ * anInt3038 >> 16;
+			if (shapedDepth[i] < CEILING_NEAR_PLANE) {
+				behind++;
+				ModernCeiling.noteBehindVertex();
+			}
+		}
+		// Only the full method2762-style all-vertices-behind reject remains;
+		// partial crossings are clipped per triangle in the render step (P2).
+		if (behind == vertCount) {
+			ModernCeiling.noteNearRejectedTile();
+			return;
+		}
+		int triCount = shaped.anIntArray166.length;
+		for (int t = 0; t < triCount; t++) {
+			int a = shaped.anIntArray166[t];
+			int b = shaped.anIntArray162[t];
+			int c = shaped.anIntArray158[t];
+			if (a >= vertCount || b >= vertCount || c >= vertCount) {
+				continue;
+			}
+			int d = ModernCeiling.DARKEN_MULTIPLIER;
+			ceilCol[0] = ColorUtils.multiplyLightness3(shaped.anIntArray167[t], d);
+			ceilCol[1] = ColorUtils.multiplyLightness3(shaped.anIntArray172[t], d);
+			ceilCol[2] = ColorUtils.multiplyLightness3(shaped.anIntArray171[t], d);
+			int[] vi = {a, b, c};
+			for (int i = 0; i < 3; i++) {
+				ceilRotX[i] = shapedRotX[vi[i]];
+				ceilRotY[i] = shapedRotY[vi[i]];
+				ceilDepth[i] = shapedDepth[vi[i]];
+				// UVs: the textured software path uses vertex attributes for
+				// perspective mapping; corner fallback for GL only.
+				ceilU[i] = i == 1 ? 1.0F : 0.0F;
+				ceilV[i] = i == 2 ? 1.0F : 0.0F;
+				ceilWX[i] = shaped.anIntArray168[vi[i]];
+				ceilWY[i] = shaped.anIntArray160[vi[i]];
+				ceilWZ[i] = shaped.anIntArray163[vi[i]];
+			}
+			int textureId = (shaped.anIntArray161 == null || shaped.anIntArray161[t] == -1) ? -1 : shaped.anIntArray161[t];
+			renderShapedCeilingTriangle(planeAbove, textureId, shaped.anIntArray167[t] == 12345678, shaped, vi);
+		}
+	}
+
+	/**
+	 * Shaped-triangle variant of {@link #renderCeilingTriangle}: vanilla's
+	 * textured shaped path anchors UVs to the tile's corner vertices
+	 * ({@code aBoolean113} flat mode uses verts 0,1,3), which clipping can
+	 * remove — so a clipped textured triangle degrades to average-colour
+	 * gouraud rather than a distorted texture.
+	 */
+	private static void renderShapedCeilingTriangle(int planeAbove, int textureId, boolean invisible, ShapedTile shaped, int[] vi) {
+		int n = clipCeilingTriangle(0, 1, 2);
+		if (n < 3) {
+			return;
+		}
+		if (!GlRenderer.enabled) {
+			for (int i = 0; i < n; i++) {
+				clipSX[i] = Rasteriser.centerX + (clipRotX[i] << 9) / clipDepth[i];
+				clipSY[i] = Rasteriser.centerY + (clipRotY[i] << 9) / clipDepth[i];
+			}
+			boolean clipped = n != 3;
+			for (int i = 1; i + 1 < n; i++) {
+				// INVERTED winding test (method2762 uses > 0 for top surfaces).
+				if ((clipSX[0] - clipSX[i]) * (clipSY[i + 1] - clipSY[i]) - (clipSY[0] - clipSY[i]) * (clipSX[i + 1] - clipSX[i]) >= 0) {
+					continue;
+				}
+				Rasteriser.testX = clipSX[0] < 0 || clipSX[i] < 0 || clipSX[i + 1] < 0 || clipSX[0] > Rasteriser.width || clipSX[i] > Rasteriser.width || clipSX[i + 1] > Rasteriser.width;
+				Rasteriser.alpha = 0;
+				if (textureId == -1) {
+					if (!invisible) {
+						Rasteriser.fillGouraudTriangle(clipSY[0], clipSY[i], clipSY[i + 1], clipSX[0], clipSX[i], clipSX[i + 1], clipCol[0], clipCol[i], clipCol[i + 1]);
+					}
+				} else if (!Preferences.manyGroundTextures || clipped) {
+					int avg = Rasteriser.textureProvider.getAverageColor(textureId);
+					Rasteriser.fillGouraudTriangle(clipSY[0], clipSY[i], clipSY[i + 1], clipSX[0], clipSX[i], clipSX[i + 1], ColorUtils.multiplyLightness3(avg, clipCol[0]), ColorUtils.multiplyLightness3(avg, clipCol[i]), ColorUtils.multiplyLightness3(avg, clipCol[i + 1]));
+				} else if (shaped.aBoolean113) {
+					Rasteriser.fillTexturedTriangle(clipSY[0], clipSY[i], clipSY[i + 1], clipSX[0], clipSX[i], clipSX[i + 1], clipCol[0], clipCol[i], clipCol[i + 1], shapedRotX[0], shapedRotX[1], shapedRotX[3], shapedRotY[0], shapedRotY[1], shapedRotY[3], shapedDepth[0], shapedDepth[1], shapedDepth[3], textureId);
+				} else {
+					Rasteriser.fillTexturedTriangle(clipSY[0], clipSY[i], clipSY[i + 1], clipSX[0], clipSX[i], clipSX[i + 1], clipCol[0], clipCol[i], clipCol[i + 1], shapedRotX[vi[0]], shapedRotX[vi[1]], shapedRotX[vi[2]], shapedRotY[vi[0]], shapedRotY[vi[1]], shapedRotY[vi[2]], shapedDepth[vi[0]], shapedDepth[vi[1]], shapedDepth[vi[2]], textureId);
+				}
+				ModernCeiling.noteTriangleDrawn();
+			}
+			return;
+		}
+		// GL: average-colour gouraud (per-triangle textured immediate mode
+		// would need per-vertex UVs the shaped data doesn't provide).
+		GL2 gl = GlRenderer.gl;
+		gl.glPushAttrib(GL2.GL_ENABLE_BIT | GL2.GL_LIGHTING_BIT | GL2.GL_CURRENT_BIT);
+		gl.glDisable(GL2.GL_LIGHTING);
+		gl.glDisable(GL2.GL_CULL_FACE);
+		GlRenderer.setTextureId(-1);
+		GlRenderer.method4159(201.5F - (float) (planeAbove + 1) * 50.0F);
+		gl.glBegin(GL2.GL_TRIANGLES);
+		for (int i = 1; i + 1 < n; i++) {
+			glCeilingVertex(gl, clipWX[0], clipWY[0], clipWZ[0], clipCol[0], clipU[0], clipV[0]);
+			glCeilingVertex(gl, clipWX[i], clipWY[i], clipWZ[i], clipCol[i], clipU[i], clipV[i]);
+			glCeilingVertex(gl, clipWX[i + 1], clipWY[i + 1], clipWZ[i + 1], clipCol[i + 1], clipU[i + 1], clipV[i + 1]);
+		}
+		gl.glEnd();
+		gl.glPopAttrib();
+		ModernCeiling.noteTriangleDrawn();
+	}
+
+	/**
+	 * Round #7 P6: emits one ceiling underside vertex (GL immediate mode).
+	 * Coordinates are camera-relative like every other SceneGraph render
+	 * call; the small {@link ModernCeiling#GL_DEPTH_OFFSET} keeps the
+	 * generated underside below the real upper floor in the depth buffer.
+	 */
+	private static void glCeilingVertex(GL2 gl, int wx, int wy, int wz, int hsl, float u, float v) {
+		int rgb = Rasteriser.palette[hsl & 0xFFFF];
+		gl.glColor3ub((byte) (rgb >> 16 & 0xFF), (byte) (rgb >> 8 & 0xFF), (byte) (rgb & 0xFF));
+		gl.glTexCoord2f(u, v);
+		gl.glVertex3f((float) (wx - cameraX), (float) (wy - cameraY - ModernCeiling.GL_DEPTH_OFFSET), (float) (wz - cameraZ));
 	}
 
 	@OriginalMember(owner = "client!al", name = "a", descriptor = "(III)Z")

@@ -50,6 +50,18 @@ public final class FirstPersonCamera {
 	private static boolean cursorLocked;
 	private static boolean discardLockedMouseSample;
 
+	// ---- Round #6B/C P1: FP input substate (FP_GAMEPLAY / FP_UI_CURSOR) ----
+	/** CTRL key in game keycode space (Keyboard.CODE_MAP[VK_CONTROL] = 82). */
+	private static final int KEY_CTRL = 82;
+	/**
+	 * True while CTRL is held in FIRST_PERSON: mouse-look is suspended, the
+	 * cursor is unlocked/visible, and normal RuneScape interface interaction
+	 * has mouse authority. The camera itself stays exactly where it was.
+	 */
+	private static boolean uiCursorActive;
+	/** CTRL edge-detection state. */
+	private static boolean ctrlWasDown;
+
 	// Saved state for restoring normal camera
 	private static int savedCameraType;
 
@@ -75,6 +87,20 @@ public final class FirstPersonCamera {
 	 */
 	public static boolean isActive() {
 		return active;
+	}
+
+	/**
+	 * Returns whether the FP UI-cursor substate is active (CTRL held).
+	 * While true, mouse-look is suspended and the normal RuneScape cursor
+	 * is available for interface interaction. Round #6B/C P1.
+	 */
+	public static boolean isUiCursorActive() {
+		return uiCursorActive;
+	}
+
+	/** Returns whether the FP cursor is currently locked/hidden. Debug overlay. */
+	public static boolean isCursorLocked() {
+		return cursorLocked;
 	}
 
 	/**
@@ -116,6 +142,9 @@ public final class FirstPersonCamera {
 		// Reset mouse look tracking
 		lastMouseLookX = -1;
 		lastMouseLookY = -1;
+		// P1: enter FP_GAMEPLAY substate cleanly regardless of prior state.
+		uiCursorActive = false;
+		ctrlWasDown = false;
 		lockCursor();
 
 		// Try to validate terrain data immediately so F11 enter is safe.
@@ -135,6 +164,11 @@ public final class FirstPersonCamera {
 		active = false;
 		hasValidPosition = false;
 		sceneRebuildPending = false;
+		// P1: leaving FIRST_PERSON always ends the UI-cursor substate. If the
+		// cursor was locked, unlockCursor() restores the normal cursor; if the
+		// UI cursor was already visible it is simply left as-is.
+		uiCursorActive = false;
+		ctrlWasDown = false;
 		unlockCursor();
 		Camera.cameraType = savedCameraType;
 	}
@@ -209,8 +243,9 @@ public final class FirstPersonCamera {
 			// Reset mouse tracking to prevent a large delta spike
 			lastMouseLookX = -1;
 			lastMouseLookY = -1;
-			// Re-lock cursor if it was lost during rebuild
-			if (!cursorLocked) {
+			// Re-lock cursor if it was lost during rebuild (unless the
+			// P1 UI-cursor substate is active — the cursor must stay free).
+			if (!cursorLocked && !uiCursorActive) {
 				lockCursor();
 			}
 			sceneRebuildPending = false;
@@ -228,11 +263,30 @@ public final class FirstPersonCamera {
 		// updateHeadBob();
 		fpCamYOffset = 0;
 
+		// --- Round #6B/C P1: CTRL hold toggles the FP_UI_CURSOR substate ---
+		// Press: unlock/visible cursor, suspend mouse-look, interfaces usable.
+		// Release: re-lock/recentre, discard first locked sample so there is
+		// NO yaw/pitch jump, resume mouse-look seamlessly.
+		boolean ctrlDown = Keyboard.pressedKeys[KEY_CTRL];
+		if (ctrlDown && !ctrlWasDown) {
+			uiCursorActive = true;
+			unlockCursor();
+			lastMouseLookX = -1;
+			lastMouseLookY = -1;
+		} else if (!ctrlDown && ctrlWasDown) {
+			uiCursorActive = false;
+			lockCursor(); // sets discardLockedMouseSample + recentres
+			lastMouseLookX = -1;
+			lastMouseLookY = -1;
+		}
+		ctrlWasDown = ctrlDown;
+
 		// --- Mouse Look ---
 		// Skip mouse-look when chat input is active to prevent camera
-		// disturbance while typing.
-		if (ModernControlController.isChatInputActive()) {
-			// Reset tracking so no delta accumulates while typing
+		// disturbance while typing, and while the P1 UI-cursor substate is
+		// active (CTRL held) so the mouse belongs to the interfaces.
+		if (ModernControlController.isChatInputActive() || uiCursorActive) {
+			// Reset tracking so no delta accumulates
 			lastMouseLookX = -1;
 			lastMouseLookY = -1;
 		} else {

@@ -1387,6 +1387,37 @@ public final class ScriptRunner {
 		}
 		API.EnsureRoofVisibilityBuffers();
 		boolean roofVisibilityActive = API.IsRoofVisibilityActive();
+		// Round #6A (P4): MODERN CHASE/FREE keeps cameraType=0 (the rig owns
+		// the camera transform), but structural visibility must use the vanilla
+		// chase-camera roof path — player-tile removal + camera→player roof
+		// walk — so walking INTO a building hides the roof exactly as normal
+		// RT4 behavior expects. The FP rig state already returned above (its
+		// no-removal override + rolling-stamp reset is preserved untouched).
+		// ORIGINAL is unaffected: it runs with cameraType==1 as vanilla.
+		//
+		// Round #6A HOTFIX: the vanilla walk below DIVIDES by the camera↔player
+		// tile distance (local146/local174). In vanilla cameraType==1 the
+		// camera is always offset from the player, so this is never 0 — but a
+		// modern chase camera converged onto the player (FP entry frames, or an
+		// obstruction-compressed boom) lands ON the player's tile and crashed
+		// with ArithmeticException: / by zero (method4302:1455). The gate is
+		// therefore a STABLE FRAME SNAPSHOT: only when the camera actually
+		// stands on a different tile than the player. When the camera is on
+		// the player's tile the walk would have zero length anyway, so the
+		// division-free cameraType branch is exactly equivalent. Requiring
+		// "at least one tile axis differs" guarantees both divisions below
+		// (local146 in the X-dominant branch, local174 in the Z-dominant
+		// branch) always have a non-zero divisor.
+		boolean modernThirdPersonRoofs = false;
+		if (CameraMode.isModern() && ModernCameraRig.isActive()
+				&& !ModernCameraRig.isFirstPersonRigState()
+				&& PlayerList.self != null) {
+			int camTileX = Camera.renderX >> 7;
+			int camTileZ = Camera.renderZ >> 7;
+			int selfTileX = PlayerList.self.xFine >> 7;
+			int selfTileZ = PlayerList.self.zFine >> 7;
+			modernThirdPersonRoofs = (camTileX != selfTileX || camTileZ != selfTileZ);
+		}
 		@Pc(27) byte local27 = (byte) (anInt3325 - 4 & 0xFF);
 		@Pc(31) int local31 = anInt3325 % 104;
 		@Pc(33) int local33;
@@ -1406,7 +1437,7 @@ public final class ScriptRunner {
 			anIntArray476[local33] = 1000000;
 			anIntArray134[local33] = 0;
 		}
-		if (Camera.cameraType != 1) {
+		if (Camera.cameraType != 1 && !modernThirdPersonRoofs) {
 			local33 = SceneGraph.getTileHeight(Player.plane, Camera.renderX, Camera.renderZ);
 			if (local33 - Camera.anInt40 < 800 && (SceneGraph.renderFlags[Player.plane][Camera.renderX >> 7][Camera.renderZ >> 7] & API.TILE_FLAG_UNDER_ROOF) != 0) {
 				method4348(false, Camera.renderX >> 7, Camera.renderZ >> 7, SceneGraph.tiles, 1);

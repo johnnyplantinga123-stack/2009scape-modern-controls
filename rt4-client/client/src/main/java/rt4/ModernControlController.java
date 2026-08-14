@@ -26,6 +26,62 @@ package rt4;
  * person cameras, WASD movement, targeting and interactions are added in later
  * phases. This keeps original RuneScape behaviour fully intact while the mode
  * framework and F11 cycling are in place.
+ *
+ * <h2>Round #6B/C P13 — INPUT OWNERSHIP MATRIX (single source of truth)</h2>
+ * <pre>
+ * ORIGINAL:
+ *   vanilla everything — no modern filtering, cursor, keys or camera.
+ *
+ * MODERN FIRST_PERSON:
+ *   CTRL held?           yes → FP_UI_CURSOR substate: normal cursor, mouse
+ *                                belongs to interfaces, world 1-9/E disabled
+ *                                ({@link FirstPersonCamera#isUiCursorActive()})
+ *                        no  → FP mouse-look (cursor locked)
+ *   explicit chat entry?  chat owns the keyboard (chatInputActive)
+ *   dialogue active?      dialogue owns 1-9/SPACE
+ *                         ({@link ModernDialogueKeyboard#hasActiveDialogue()});
+ *                         world overlay has ZERO input authority
+ *   otherwise:            WASD movement (ModernMovementController Q16),
+ *                         E = primary world action, 1-3 = world actions
+ *
+ * MODERN CHASE:
+ *   modern WASD movement (Q16 owner)
+ *   dialogue/chat priorities still apply
+ *   no FP crosshair world actions (overlay gated on FP rig state)
+ *
+ * MODERN FREE:
+ *   VANILLA click-to-walk locomotion (movement queue + method2247)
+ *   WASD DISABLED for movement (ModernMovementController.update() no-ops)
+ *   vanilla interface/mouse behaviour
+ *   MODERN FREE camera + expanded zoom (rig stays FREE, profile stays MODERN)
+ *
+ * Movement ownership is exclusive ({@link ModernMovementController#getMovementOwner()}):
+ *   ORIGINAL → "ORIGINAL" (vanilla)
+ *   MODERN FP/CHASE → "MODERN_Q16"
+ *   MODERN FREE → "VANILLA_FREE"
+ * F11 toggles ONLY ORIGINAL ↔ MODERN. CHASE ↔ FREE handoffs happen via the
+ * scroll wheel inside the rig and never involve F11.
+ *
+ * <h2>Round #7 P1 — KEYBOARD OWNERSHIP MATRIX (single source of truth:
+ * {@link #isModernGameplayKeyboardOwner()})</h2>
+ * <pre>
+ * FIRST_PERSON / CHASE:
+ *   MODERN GAMEPLAY keyboard ownership — W/A/S/D/E/1-9/SPACE are gameplay
+ *   bindings and are filtered out of the chatbox while chat is closed
+ *   ({@link #shouldForwardKeyToChat}); dialogue keys belong to
+ *   {@link ModernDialogueKeyboard}.
+ *
+ * FREE:
+ *   VANILLA keyboard ownership — the MODERN gameplay-character suppression
+ *   is bypassed entirely. W/A/S/D/E/1-9/SPACE are ordinary keyboard
+ *   characters again, vanilla direct chat entry works (no explicit-ENTER
+ *   ownership requirement), click-to-walk remains functional and the camera
+ *   stays the MODERN expanded camera. {@link ModernDialogueKeyboard} and the
+ *   FP world overlay are inert in FREE.
+ *
+ * ORIGINAL:
+ *   untouched vanilla keyboard ownership (never filtered).
+ * </pre>
  */
 public final class ModernControlController {
 
@@ -68,6 +124,15 @@ public final class ModernControlController {
 	private static final int KEY_A = 48;
 	private static final int KEY_S = 49;
 	private static final int KEY_D = 50;
+
+	// ---- Gameplay key codes (round #6A, P3: chat ownership) ----
+	/** Interact key (FP action layer). */
+	private static final int KEY_E = 34;
+	/** SPACE: dialogue continue / gameplay action. */
+	private static final int KEY_SPACE = 83;
+	/** First digit keycode ('1'); codes are contiguous 16..24 ('1'..'9'). */
+	private static final int KEY_1 = 16;
+	private static final int KEY_9 = 24;
 
 	// ---- ORIGINAL wheel zoom (Phase 3C round #4, P4) ----
 	// SOURCE PROOF: the classic camera transform (ScriptRunner.method4326,
@@ -133,10 +198,19 @@ public final class ModernControlController {
 	 * inside each controller; the dialogue/choice layer runs first and when
 	 * it consumes a key the FP world-action layer is skipped for this tick.
 	 * ORIGINAL mode never reaches this method.
+	 *
+	 * <p>Round #8 P7: FP context menu sits between dialogue and quick overlay
+	 * in the priority chain. When the menu is open, it owns wheel/left-click
+	 * and the quick overlay is suppressed.</p>
 	 */
 	private static void updateInteractionLayer() {
 		boolean uiConsumed = ModernDialogueKeyboard.update();
 		if (!uiConsumed) {
+			// Round #8 P7: FP context menu update (right-click open, wheel select,
+			// left-click execute). Runs before quick overlay so the menu can
+			// suppress overlay input when open.
+			FPContextMenuController.update();
+			// Quick overlay is gated on !FPContextMenuController.isMenuOpen()
 			ModernActionOverlay.update();
 		}
 	}
@@ -173,14 +247,68 @@ public final class ModernControlController {
 	}
 
 	/**
+	 * Round #7 P1 — ONE source of truth for keyboard ownership.
+	 *
+	 * <p>The MODERN gameplay keyboard (WASD movement, E interact, 1-9 world
+	 * shortcuts, SPACE dialogue/gameplay — filtered from the chatbox and
+	 * consumed by the dialogue/world layers) belongs to MODERN rigs whose
+	 * state is FIRST_PERSON or CHASE. When the rig is FREE, vanilla keyboard
+	 * ownership applies: every key is an ordinary keyboard character and the
+	 * vanilla chat/interface routes receive them unfiltered.
+	 *
+	 * <p>Conceptually:
+	 * <pre>modernGameplayKeyboardOwner = CameraMode.isModern()
+	 *     && rig is FIRST_PERSON or CHASE</pre>
+	 * (An inactive rig inside a modern mode conservatively keeps gameplay
+	 * ownership — the rig activates on the first modern update tick.)
+	 */
+	public static boolean isModernGameplayKeyboardOwner() {
+		return CameraMode.isModern()
+				&& (!ModernCameraRig.isActive()
+						|| ModernCameraRig.isFirstPersonRigState()
+						|| ModernCameraRig.isChaseRigState());
+	}
+
+	/**
+	 * Round #7 P1 — whether FREE currently owns the keyboard with FULL
+	 * VANILLA behaviour (modern mode, rig in FREE).
+	 */
+	public static boolean isVanillaFreeKeyboardOwner() {
+		return CameraMode.isModern() && ModernCameraRig.isFreeRigState();
+	}
+
+	/** Debug overlay name for the current keyboard owner (Round #7 P8). */
+	public static String getKeyboardOwnerName() {
+		if (CameraMode.getCurrent() == CameraMode.Mode.ORIGINAL) {
+			return "ORIGINAL";
+		}
+		return isVanillaFreeKeyboardOwner() ? "VANILLA_FREE" : "MODERN_GAMEPLAY";
+	}
+
+	/**
 	 * Returns whether the given typed key entry should be forwarded to the
 	 * interface/chat system. When in a modern camera mode with gameplay input
-	 * allowed (chat not active), WASD movement keys are filtered out so they
+	 * allowed (chat not active), ALL gameplay keys are filtered out so they
 	 * do not reach the CS2 chatbox script as typed characters.
 	 *
-	 * <p>This is the correct fix for the WASD/chat conflict: instead of just
-	 * blocking movement (which the previous approach did), we prevent the
-	 * character codes from reaching the chat text insertion path entirely.
+	 * <p>Round #7 P1: FREE rig = FULL VANILLA keyboard/chat behaviour — the
+	 * gameplay-character suppression is bypassed entirely (W/A/S/D/E/1-9/
+	 * SPACE become ordinary keyboard characters; no explicit-ENTER ownership
+	 * requirement). Both Keyboard.nextKey() drain sites (Protocol.java and
+	 * client.java mainUpdate) route through this single method, so this one
+	 * gate covers every keyboard entry.
+	 *
+	 * <p>Round #6A (P3, HARD FIX): the keyboard produces TWO queue entry types
+	 * per key press — a keycode entry ({@code keyPressed}: keyCode ≥ 0,
+	 * keyChar = -1) and a char entry ({@code keyTyped}: keyCode = -1,
+	 * keyChar = the character). BOTH must be filtered, otherwise held keys
+	 * leak into chat via the char-only repeat entries (the "eeeefddddss..."
+	 * runtime failure). Filtered gameplay keys: W/A/S/D (movement), E
+	 * (interact), 1-9 (FP action shortcuts), SPACE (dialogue/gameplay).
+	 *
+	 * <p>Priority chain: explicit chat entry (ENTER) > dialogue/choice UI >
+	 * modal UI > FP action keys > movement. When {@code chatInputActive},
+	 * everything is forwarded and gameplay yields to chat.
 	 *
 	 * @param keyCode the game keycode from {@link Keyboard#keyCode}, or -1 for char-only entries.
 	 * @param keyChar the character from {@link Keyboard#keyChar}, or -1 for code-only entries.
@@ -190,23 +318,41 @@ public final class ModernControlController {
 		if (CameraMode.getCurrent() == CameraMode.Mode.ORIGINAL) {
 			return true; // Original mode: never filter
 		}
+		if (!isModernGameplayKeyboardOwner()) {
+			// Round #7 P1: FREE rig — restore the exact vanilla keyboard/chat
+			// behaviour. No gameplay-character suppression, no explicit-ENTER
+			// ownership requirement.
+			return true;
+		}
 		if (chatInputActive) {
 			return true; // Chat typing active: allow all keys through
 		}
-		// In modern gameplay mode with chat closed, block movement keys
-		// from reaching the chatbox. Both the keycode entry (from keyPressed)
-		// and the character entry (from keyTyped) must be filtered.
-		if (keyCode == KEY_W || keyCode == KEY_A || keyCode == KEY_S || keyCode == KEY_D) {
+		// In modern gameplay mode with chat closed, block gameplay keys from
+		// reaching the chatbox. Both the keycode entry (from keyPressed) and
+		// the character entry (from keyTyped) must be filtered.
+		if (isGameplayKeyCode(keyCode)) {
 			return false;
 		}
-		// Also filter the character-only entries (keyCode == -1) for w/a/s/d
-		if (keyCode < 0) {
-			if (keyChar == 'w' || keyChar == 'W' || keyChar == 'a' || keyChar == 'A'
-					|| keyChar == 's' || keyChar == 'S' || keyChar == 'd' || keyChar == 'D') {
-				return false;
-			}
+		if (keyCode < 0 && isGameplayChar(keyChar)) {
+			return false;
 		}
 		return true;
+	}
+
+	/** Whether a game keycode belongs to a gameplay binding (chat closed). */
+	private static boolean isGameplayKeyCode(int keyCode) {
+		return keyCode == KEY_W || keyCode == KEY_A || keyCode == KEY_S || keyCode == KEY_D
+				|| keyCode == KEY_E || keyCode == KEY_SPACE
+				|| (keyCode >= KEY_1 && keyCode <= KEY_9);
+	}
+
+	/** Whether a typed character belongs to a gameplay binding (chat closed). */
+	private static boolean isGameplayChar(int keyChar) {
+		return keyChar == 'w' || keyChar == 'W' || keyChar == 'a' || keyChar == 'A'
+				|| keyChar == 's' || keyChar == 'S' || keyChar == 'd' || keyChar == 'D'
+				|| keyChar == 'e' || keyChar == 'E'
+				|| (keyChar >= '1' && keyChar <= '9')
+				|| keyChar == ' ';
 	}
 
 	// ---- Private helpers ----

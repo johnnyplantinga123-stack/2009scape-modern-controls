@@ -50,6 +50,10 @@ public final class Npc extends PathingEntity {
 			return;
 		}
 
+		// Round #7D P2: NPC pick-chain render-entry counter (F12 diagnostics;
+		// zero behavioural change).
+		ModernActionOverlay.diagNpcRendered++;
+
 		@Pc(29) SeqType local29 = this.seqId != -1 && this.anInt3420 == 0 ? SeqTypeList.get(this.seqId) : null;
 		@Pc(53) SeqType local53 = this.movementSeqId == -1 || this.movementSeqId == this.getBasType().idleAnimationId && local29 != null ? null : SeqTypeList.get(this.movementSeqId);
 		@Pc(74) Model body = this.type.getBodyModel(this.aClass147Array3, this.anInt3388, this.anInt3407, this.anInt3373, this.anInt3360, this.anInt3425, local53, this.anInt3396, local29);

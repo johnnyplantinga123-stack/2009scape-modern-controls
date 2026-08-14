@@ -4057,3 +4057,1234 @@ Build: `build_rt4.bat` -> **BUILD SUCCESSFUL in 34s (EXIT_CODE=0)**.
 15. "Click here to continue": SPACE continues?
 16. ORIGINAL camera/zoom/input still normal?
 17. Ceiling still missing / any new source finding?
+
+---
+
+## Section 32 — Round #6A: Runtime Regression Fixes (Chase Movement / Camera State / Input Ownership / Roofs)
+
+Date: 2026-08-14. Input: user runtime results from Round #5 (7 verified
+PASSES preserved; 5 failures addressed here). USER RUNTIME RESULTS OVERRIDE
+ALL STATIC CLAIMS.
+
+**Round #5 runtime-verified passes (untouched this round):** F12 overlay,
+FP WASD, FP diagonals, crosshair interaction, numbered object actions,
+SPACE dialogue continue, smooth wheel zoom.
+
+**Constraints honored:** no Round #5 reverts, no combat changes, no ceiling
+fix attempt, no global culling change, FP WASD basis unchanged, ORIGINAL
+untouched, Round #4 rolling-stamp roof fix preserved.
+
+### 32.1 P0 — CHASE -> FP semantic rig authority
+
+**Runtime failure:** camera obstruction pulled the chase camera inward and
+the rig accidentally transitioned to FIRST_PERSON.
+
+**Root cause (SOURCE TRACED):** `ModernCameraRig.updateStateTransitions()`
+CHASE case gated FP entry on `visDistanceD <= FP_ENTER_DISTANCE` ALONE.
+`visDistanceD` follows `min(desiredDistance, safeDistance)` in
+`renderUpdate()` (CHASE branch), so obstruction (small safeDistance)
+compressed the visual boom into FP range and flipped the semantic rig.
+
+**Fix:** CHASE -> FP now requires BOTH:
+- A. explicit USER zoom intent: `desiredDistance <= FP_ENTER_DISTANCE`
+- B. rendered camera convergence: `visDistanceD <= FP_ENTER_DISTANCE`
+
+Obstruction alone can NEVER change the rig. Example preserved:
+rig=CHASE desired=600 safe=20 stays CHASE (boom visually shortens only).
+
+Status: SOURCE VERIFIED / COMPILE VERIFIED / STATICALLY REVIEWED /
+RUNTIME UNVERIFIED.
+
+### 32.2 P1 — FIRST_PERSON -> CHASE intent-driven exit (no hitch)
+
+**Runtime failure:** zooming outward from FP hesitated/hung before CHASE
+returned — the visual-distance gate kept semantic FP alive while the FP
+camera still hard-owned the final camera and a hidden visDistanceD timer grew.
+
+**Root cause (SOURCE TRACED):** FP exit waited for
+`visDistanceD >= FP_EXIT_DISTANCE`; visDistanceD approaches its target at
+DIST_RATE_PER_S=9/s at RENDER timing, so FP remained semantically active
+long after the user's scroll intent had passed the threshold.
+
+**Fix:** FP -> CHASE now triggers IMMEDIATELY on outward USER INTENT:
+`desiredDistance >= FP_EXIT_DISTANCE` (200). On the transition tick:
+- semantic rig flips to CHASE immediately (FirstPersonCamera deactivated);
+- `seedVisualFromCamera = true` (existing Round #5 mechanism, renderUpdate
+  seed block): next render seeds the CHASE visual camera from the LIVE FP
+  eye camera — same position (pivot=self), same yaw (Camera.cameraYaw),
+  same pitch (Camera.cameraPitch), boom distance starts at 0;
+- render-timed interpolation extends the boom outward smoothly.
+
+Hysteresis preserved: enter <= 100, exit >= 200 (2+ wheel notches).
+No frame exists where desired says "leave FP" but FP still owns the camera.
+FREE escape hatch (desired >= FREE_ENTER) subsumed by the >= 200 gate.
+
+Status: SOURCE VERIFIED / COMPILE VERIFIED / STATICALLY REVIEWED /
+RUNTIME UNVERIFIED (10+ FP<->CHASE cycles to be re-tested).
+
+### 32.3 P2 — CHASE diagonal WASD
+
+**Runtime failure:** FP W+D worked; CHASE W+D/W+A did not produce normal
+diagonal free movement.
+
+**Trace (all listed steps re-read):**
+- `readInput()` — independent `if` per key (W/S forward, D/A right). No
+  `else if`; W and D are simultaneously represented.
+- `MovementIntent.normalize()` — divides both components by magnitude.
+- Yaw selection — CHASE uses `movementHeading` (stable heading, camera
+  convention) via `CameraMode.getCameraRelativeYaw()` returning -1.
+- Velocity composition — proven FP basis untouched (L391-394):
+  `velX = fwd*(-sin) + right*(+cos)`, `velZ = fwd*(+cos) + right*(+sin)`.
+- DDA — simultaneous X+Z crossing sends diagonal target tile.
+- Body write — CHASE: `anInt3400 = cameraYawToBodyYaw(atan2(velX,velZ))`.
+
+**Root cause identified:** the movement math was already correct. The
+runtime CHASE diagonal failure was a CONSEQUENCE of the P0 bug: near any
+wall/object, obstruction flipped the semantic rig to FIRST_PERSON, swapping
+the movement basis from the stable movementHeading to the live FP look yaw
+(and the `wasFirstPersonLastTick` edge re-sync ran on every flicker back).
+CHASE diagonals therefore only failed in exactly the obstructed contexts
+the user tested. The P0 dual-gate fix removes this basis-swapping.
+
+**Diagnostics added (temporary, no stdout flood):**
+- F12 overlay: intentF/intentR (percent), movementHeading, chaseYawT,
+  rigFlips counter, visDist, obstructed YES/NO.
+- `[MOVE-DEBUG]` console line at 1 Hz ONLY while moving in CHASE/FREE
+  (intentF/intentR/movementHeading/velocityX/velocityZ/bodyTarget/
+  chaseTargetYaw).
+
+Status: movement math SOURCE VERIFIED / COMPILE VERIFIED / STATICALLY
+REVIEWED. Runtime diagonal behavior RUNTIME UNVERIFIED — if it still fails
+with rig=CHASE shown on the overlay, the [MOVE-DEBUG] lines isolate which
+stage drops a component.
+
+### 32.4 P3 — MODERN chat input ownership (hard fix)
+
+**Runtime failure:** gameplay keys still typed into the chatbox
+("eeeefddddss..."; pressing 2 executed the FP action AND typed "2").
+
+**Real vanilla typed-key path (SOURCE TRACED):**
+- `Keyboard.keyPressed()` queues a KEYCODE entry (keyCode >= 0, keyChar=-1).
+- `Keyboard.keyTyped()` queues a CHAR-ONLY entry (keyCode=-1, keyChar=c).
+- `Keyboard.nextKey()` drains both entry types into `keyCode`/`keyChar`.
+- Two drain sites copy into `InterfaceList.keyCodes/keyChars`:
+  `client.mainUpdate` L1170 and `Protocol` L2819 — BOTH apply
+  `shouldForwardKeyToChat`. Consumers (Camera L377, InterfaceList L1026,
+  Protocol L2566) only read the filtered queue. No third gameplay path
+  exists (the only other nextKey() call is the safe-mode loader).
+
+**Root cause:** the Round #5 filter only blocked W/A/S/D keycodes and
+w/a/s/d char entries. E, 1-9 and SPACE (and their char forms) leaked;
+held-key char-only repeats produced the "ddddss" streams.
+
+**Fix:** `shouldForwardKeyToChat` now blocks ALL gameplay keys when MODERN
+and chat is closed — keycode entries: W/A/S/D (33/48/49/50), E (34),
+1-9 (16..24), SPACE (83); char-only entries: w/a/s/d/e (both cases),
+'1'..'9', space. ENTER activates explicit chat mode (chatInputActive) ->
+everything forwards, gameplay yields. ORIGINAL mode never filters.
+Priority: 1. explicit chat, 2. dialogue/choice UI, 3. modal UI,
+4. FP action keys, 5. movement (dialogue/action layers poll
+`Keyboard.pressedKeys` directly, so blocking the typed queue does not
+affect SPACE-continue or numbered actions).
+
+Status: SOURCE VERIFIED / COMPILE VERIFIED / STATICALLY REVIEWED /
+RUNTIME UNVERIFIED.
+
+### 32.5 P4 — CHASE/FREE vanilla roof removal restored
+
+**Runtime failure:** walking INTO a building in CHASE left the roof rendered.
+
+**Root causes (two, SOURCE TRACED in ScriptRunner.method4302):**
+1. The P0 bug flipped the rig to FIRST_PERSON whenever obstruction
+   compressed the chase boom (entering buildings always obstructs) — the FP
+   early return skips selective roof removal entirely.
+2. Even staying in CHASE, the rig runs with `Camera.cameraType = 0`, and
+   method4302's `cameraType != 1` branch only removes the roof at the
+   CAMERA tile then returns — it never runs the vanilla chase-camera path
+   (player-tile removal + camera->player roof walk), so a camera parked
+   outside the building never hid the roof above the player.
+
+**Fix:**
+- P0 dual-gate (32.1) keeps the rig in CHASE near/inside buildings, so the
+  FP no-removal override no longer misfires.
+- New gate in method4302: `modernThirdPersonRoofs = CameraMode.isModern()
+  && ModernCameraRig.isActive() && !isFirstPersonRigState()` forces the
+  vanilla cameraType==1 roof path (player-tile UNDER_ROOF removal +
+  camera->player roof walk) for MODERN CHASE/FREE while cameraType stays 0.
+
+**Preserved:** FP early return untouched (FP keeps its intentional
+no-removal behavior); Round #4 rolling-column stale-stamp reset still runs
+every frame inside the FP branch (no roof flashing); ORIGINAL unaffected
+(runs with cameraType==1 as vanilla — the new gate is false there); no
+global all-levels hack; no GL culling change.
+
+Status: SOURCE VERIFIED / COMPILE VERIFIED / STATICALLY REVIEWED /
+RUNTIME UNVERIFIED. Ceiling remains a separate later issue (P8 CASE B).
+
+### 32.6 P5 — Diagnostics retained/added
+
+F12 overlay now shows: CONTROL profile, rig, cameraType, chat/gameplay
+gates, desired/safe/act distances, visDist + obstructed YES/NO, intentF/
+intentR/heading, chaseYawT, rigFlips counter, body target/visual/locoYaw,
+roofMode/allLvl/fpStruct, lastCamWriter/lastBodyYawWriter/lastRebase.
+Console: existing 1 Hz `[CAMERA-RIG-DEBUG]` extended with vis +
+obstructed; transition log now includes safe/vis/obstructed; new 1 Hz
+`[MOVE-DEBUG]` only while moving in CHASE/FREE. No flooding.
+
+### 32.7 Round #6A files modified
+
+| File | Change |
+|---|---|
+| `rt4/ModernCameraRig.java` | P0 dual-gate CHASE->FP; P1 intent-driven FP exit; new accessors (getVisualDistance/isObstructionLimited/getChaseYawTarget); rig debug lines + rigFlips |
+| `rt4/ModernControlController.java` | P3: full gameplay-key filter (keycodes + char forms) via isGameplayKeyCode/isGameplayChar |
+| `rt4/ModernMovementController.java` | P2/P5: overlay intent/heading writes; temporary 1 Hz [MOVE-DEBUG] |
+| `rt4/ScriptRunner.java` | P4: modernThirdPersonRoofs gate -> vanilla chase roof path |
+| `rt4/DebugOverlay.java` | New fields + overlay lines (visDist/obstructed/intent/heading/chaseYawT/rigFlips) |
+
+Build: `build_rt4.bat` -> **BUILD SUCCESSFUL in 46s (EXIT_CODE=0)**.
+
+### 32.8 Static review checklist (round #6A)
+
+- FP WASD basis unchanged: L391-394 identical (-sin/+cos, +cos/+sin). PASS.
+- No CHASE camera feedback loop: movementHeading never reads visual camera
+  yaw; authority remains WASD -> heading -> velocity -> body -> chaseYawTarget
+  -> visYawD. PASS.
+- Obstruction cannot change semantic rig: CHASE->FP requires
+  desired<=100 AND vis<=100; safeDistance only feeds visual boom. PASS.
+- FP exit user-intent driven and seeded from live eye camera:
+  desired>=200 immediate; seedVisualFromCamera seeds pivot/yaw/pitch from
+  live Camera fields with visDistanceD=0. PASS.
+- ORIGINAL untouched: shouldForwardKeyToChat returns true for ORIGINAL;
+  roof gate requires CameraMode.isModern(); ORIGINAL camera path unchanged.
+  PASS.
+- No global roof/culling hack: single per-path boolean in method4302; GL
+  culling state untouched. PASS.
+- No gameplay-key leak path: all three typed-queue consumers read the
+  filtered InterfaceList queue; both drain sites filter; only other
+  nextKey() caller is the safe-mode loader. PASS.
+- Hysteresis: enter<=100 / exit>=200 / FREE enter 1200 / FREE exit 1100.
+  PASS.
+
+### 32.9 Verification status (round #6A)
+
+| Item | Status |
+|------|--------|
+| P0 obstruction cannot enter FP | SOURCE VERIFIED / COMPILE VERIFIED / RUNTIME UNVERIFIED |
+| P1 intent-driven FP exit + live seed | SOURCE VERIFIED / COMPILE VERIFIED / RUNTIME UNVERIFIED |
+| P2 CHASE diagonal basis (math) | SOURCE VERIFIED / STATICALLY REVIEWED |
+| P2 CHASE diagonal runtime | **RUNTIME UNVERIFIED** (root cause was P0 flicker) |
+| P3 gameplay keys never reach chat | SOURCE VERIFIED / COMPILE VERIFIED / RUNTIME UNVERIFIED |
+| P4 CHASE/FREE vanilla roof removal | SOURCE VERIFIED / COMPILE VERIFIED / RUNTIME UNVERIFIED |
+| P5 diagnostics | COMPILE VERIFIED |
+| Round #5 passes preserved | STATICALLY REVIEWED (no regressions in touched paths) |
+
+### 32.10 Round #6A runtime test list (given to user)
+
+1. CHASE W+D
+2. CHASE W+A
+3. CHASE S+D
+4. CHASE S+A
+5. CHASE camera smooth while diagonally moving
+6. Stand beside object/wall in CHASE: camera may shorten, but NEVER enters FP
+7. Scroll CHASE -> FP normally
+8. Scroll FP -> CHASE: no hesitation
+9. Repeat FP <-> CHASE 10 times
+10. WASD no longer types into chat
+11. Number keys no longer leak into chat
+12. Explicitly open chat with ENTER: typing still works
+13. Enter building in CHASE: roof hides normally
+14. Leave building: roof restores normally
+15. Roof flashing remains gone
+16. ORIGINAL unchanged
+
+---
+
+## Section 33 — Round #6A HOTFIX: FIRST_PERSON entry crash
+
+**RUNTIME FAILED:** "Round #6A initial implementation crashed on entering
+FIRST_PERSON." (User runtime report — overrides all Round #6A static claims.)
+
+### 33.1 Exact crash (P0 — found, not guessed)
+
+From the client terminal stdout after the crash (no hs_err needed — pure
+Java exception, game thread):
+
+```
+Error: rt4.ScriptRunner.method4302:1455 rt4.ScriptRunner.method4326:273
+rt4.Cs1ScriptRunner.renderComponent:392 ... rt4.GameShell.run:662
+java.lang.Thread.run | java.lang.ArithmeticException: / by zero
+error_game_crash
+```
+
+- Exception: `java.lang.ArithmeticException: / by zero`
+- Class/method: `ScriptRunner.method4302` (roof removal), line 1455:
+  `local192 = local174 * 65536 / local146;`
+- Thread: main game thread (`GameShell.run`), via scene render.
+- Category from the brief: **E. ScriptRunner.method4302 roof logic** — the
+  Round #6A P4 `modernThirdPersonRoofs` gate.
+
+### 33.2 Root cause (SOURCE VERIFIED)
+
+The vanilla camera→player roof walk DIVIDES by the camera↔player tile
+distance on each axis (`local146` = Z tile delta, `local174` = X tile
+delta). In vanilla this code only runs with `cameraType == 1`, where the
+chase camera is ALWAYS offset from the player, so neither delta is 0.
+
+Round #6A P4 routed MODERN CHASE/FREE (cameraType=0) into this same walk.
+A modern chase camera whose boom has converged onto the player — which
+happens on the CHASE→FP entry frames (zoom ≈ 0 → camera sits ON the
+player's tile) and whenever obstruction compresses the boom to ~0 — makes
+BOTH deltas 0 → division by zero → `error_game_crash`. This is exactly
+why the crash occurred "when entering FIRST_PERSON": the frames just
+before/at FP entry have the camera on the player tile while the rig is
+still CHASE (or has just flipped), so the FP early-return does not apply.
+
+### 33.3 Hotfix (smallest proven cause — P5)
+
+`ScriptRunner.method4302` only: the `modernThirdPersonRoofs` gate is now a
+STABLE FRAME SNAPSHOT. It additionally requires that the camera stands on
+a different tile than the player (at least one axis differs):
+
+```java
+boolean modernThirdPersonRoofs = false;
+if (CameraMode.isModern() && ModernCameraRig.isActive()
+        && !ModernCameraRig.isFirstPersonRigState()
+        && PlayerList.self != null) {
+    modernThirdPersonRoofs = (camTileX != selfTileX || camTileZ != selfTileZ);
+}
+```
+
+Why this is correct and complete:
+
+- If the camera shares the player's tile, the roof walk would have ZERO
+  length anyway (nothing to walk), so falling back to the division-free
+  cameraType branch (camera-tile-only removal) is exactly equivalent.
+- "At least one tile axis differs" guarantees BOTH divisions below are
+  safe: the X-dominant branch divides by `local146` (>0 because Z tiles
+  differ), the Z-dominant branch divides by `local174` (>0 because X
+  tiles differ).
+- FP entry frames (camera on player tile) → gate false → no division.
+- FP→CHASE seed frames (boom starts at 0, camera on player tile) → gate
+  false until the boom exceeds one tile → then normal roof walk resumes.
+- Genuinely offset CHASE/FREE camera → gate true → full vanilla roof
+  behavior (Round #6A P4 intent preserved).
+
+Files changed: ONLY `rt4/ScriptRunner.java` (gate hardening). No camera,
+movement, input or overlay code touched. No Round #6A semantics reverted.
+
+### 33.4 Static review (hotfix)
+
+1. CHASE→FP can execute without invalid intermediate state: PASS (roof
+   walk unreachable while camera is on the player tile; writeFpCameraImmediate
+   null/bounds guards unchanged).
+2. FirstPersonCamera.active matches rigState: PASS (untouched).
+3. Exactly one final camera owner: PASS (FP: writeFpCameraImmediate →
+   FirstPersonCamera.update; CHASE/FREE: rig renderUpdate).
+4. ORIGINAL untouched: PASS (gate requires CameraMode.isModern()).
+5. FP WASD basis unchanged: PASS.
+6. No global roof/culling hack: PASS.
+7. Round #6A chat filtering intact: PASS (untouched).
+8. Debug overlay fields: simple int/bool writes, no division, no null
+   deref: PASS.
+
+Build: `build_rt4.bat` -> **BUILD SUCCESSFUL in 29s (EXIT_CODE=0)**.
+
+### 33.5 Verification status (hotfix)
+
+| Item | Status |
+|------|--------|
+| Crash reproduced + exact site identified | RUNTIME VERIFIED (user report + stdout trace) |
+| Root cause (division by zero in roof walk) | SOURCE VERIFIED |
+| Tile-snapshot gate fix | SOURCE VERIFIED / COMPILE VERIFIED / STATICALLY REVIEWED / **RUNTIME UNVERIFIED** |
+| FP entry survival | **RUNTIME UNVERIFIED** — pending user test |
+| FP <-> CHASE cycling stability | **RUNTIME UNVERIFIED** — pending user test |
+
+### 33.6 Next user test — ONLY this
+
+1. Launch client.
+2. Stay in CHASE for 10 seconds.
+3. Slowly scroll into FIRST_PERSON.
+4. Does client survive?
+5. Move W/A/S/D in FIRST_PERSON.
+6. Scroll back to CHASE.
+7. Repeat FP <-> CHASE 5 times.
+
+Do NOT test anything else until this crash is resolved.
+
+## Section 34 — Round #6B/C COMBINED: Complete Modern Interaction + FREE Legacy Movement + FP UI Cursor + Chase Animation
+
+Date: 2026-08-14. Build: `build_rt4.bat` -> **BUILD SUCCESSFUL in 39s (EXIT_CODE=0)**, `:client:compileJava` clean, zero errors.
+
+### 34.0 Architecture update — MODERN FREE
+
+**MODERN FREE now uses VANILLA LOCOMOTION + MODERN EXPANDED CAMERA.**
+
+- F11 toggles ONLY ORIGINAL <-> MODERN (unchanged).
+- Inside MODERN: FIRST_PERSON (WASD + mouse-look + FP interaction), CHASE (WASD + chase camera), FREE (**vanilla click-to-walk**, WASD disabled, vanilla movement queue/path ownership, modern FREE camera with expanded zoom retained).
+- FREE IS NOT ORIGINAL: profile stays MODERN, rig stays FREE, camera stays modern/expanded — only MOVEMENT AUTHORITY changes.
+- CHASE <-> FREE handoffs happen via the scroll wheel inside the rig; F11 is never involved.
+- Movement ownership is exclusive and queryable: `ModernMovementController.getMovementOwner()` returns `ORIGINAL` / `MODERN_Q16` / `VANILLA_FREE`. The single predicate `ModernMovementController.isModernQ16Owner()` replaced `CameraMode.isModern()` at exactly the movement-ownership sites (NpcList.method4514 self gate + 5 Protocol.readSelfPlayerInfo drain/teleport blocks + the update() gate).
+
+### 34.1 P0 — crash hotfix preserved
+
+Round #6A tile-snapshot gate in `ScriptRunner` (modernThirdPersonRoofs, L1411/L1419/L1440) untouched. `method4302` not rewritten. SOURCE VERIFIED / STATICALLY REVIEWED.
+
+### 34.2 P1 — FP hold-CTRL UI cursor substate
+
+Implemented in `FirstPersonCamera` as a real FP input substate (FP_GAMEPLAY / FP_UI_CURSOR):
+
+- CTRL press edge (KEY_CTRL = 82): `uiCursorActive = true`, `unlockCursor()` (visible normal cursor), mouse-look tracking reset. Camera stays where it was; FIRST_PERSON is NOT left.
+- While held: mouse-look fully gated (`isChatInputActive() || uiCursorActive`), normal interfaces own the mouse; world shortcuts 1-3/E are gated out via `FirstPersonCamera.isUiCursorActive()` in the overlay; WASD remains active.
+- CTRL release edge: `uiCursorActive = false`, `lockCursor()` — which sets `discardLockedMouseSample = true` and recentres — plus `lastMouseLookX/Y` reset, so the first locked sample is discarded and there is NO yaw/pitch jump.
+- Scene-rebuild re-lock respects the substate (`!cursorLocked && !uiCursorActive`); activate()/deactivate() reset it.
+
+SOURCE VERIFIED / COMPILE VERIFIED / STATICALLY REVIEWED / **RUNTIME UNVERIFIED**.
+
+### 34.3 P2 — dialogue fully overrides world actions
+
+`ModernDialogueKeyboard` is now the ONE source of truth: `hasActiveDialogue()` (continue pending OR continue component OR >=1 visible choice), `hasActiveChoiceDialogue()`, `getDialogueChoiceCount()`. Same scan predicates as the SPACE/number execution routes, so authority can never disagree with what the keys would execute.
+
+- `ModernActionOverlay.isOverlayActive()` now additionally requires `!ModernDialogueKeyboard.hasActiveDialogue()` and `!FirstPersonCamera.isUiCursorActive()`. Since `snapshot()` clears the snapshot when inactive, the FP world overlay is hidden AND input-dead while a dialogue owns input — 1-9/E can only reach the dialogue, even with the crosshair on a bank booth.
+- Input priority chain (P13 matrix): 1. explicit chat, 2. dialogue, 3. modal (aBoolean108), 4. CTRL-held UI cursor, 5. FP world shortcuts, 6. movement.
+
+SOURCE VERIFIED / COMPILE VERIFIED / STATICALLY REVIEWED / **RUNTIME UNVERIFIED**.
+
+### 34.4 P3 — dialogue 1..N actually works (generic, no hardcoding)
+
+`collectChatboxButtons` now collects BOTH component families the existing menu builder would make clickable, from interfaces opened on the chatbox layer (clientCode 1406):
+
+- CS1 `buttonType == 1` buttons (classic choice buttons) -> executed via the exact existing UNKNOWN_8 route: `p1isaac(10); p4(component.id)` (+ method4265 clientCode gate).
+- if3 components with a server-enabled op (`InterfaceList.getOp` predicate — the same predicate `MiniMenu.addComponentEntries` uses) -> executed via the exact existing UNKNOWN_9/1003 route: `ClientProt.method4512(optionBase, createdComponentId, opIndex + 1, component.id)`.
+- Hidden components skipped; options sorted by component `y` (rendered top-to-bottom order).
+- Server semantics confirmed from `DialogueInterpreter.handle()` (topic index = buttonId - 2; else handle(componentId, buttonId - 1)) — no server change needed.
+- One-shot `[DLG-DIAG]` dump on the dialogue-open edge prints EVERY chatbox-layer component (iface, child, buttonType, if3, type, y, createdComponentId, hidden, text, option) so the runtime proves which components are rendered options.
+- SPACE continue route untouched and still works (same code path).
+
+SOURCE VERIFIED (routes traced byte-for-byte incl. server DialogueInterpreter) / COMPILE VERIFIED / STATICALLY REVIEWED / **RUNTIME UNVERIFIED**.
+
+### 34.5 P4 — NPC crosshair overlay
+
+The overlay snapshot machinery is entity-agnostic (matches MiniMenu entries by keys + action + tile args); `addNpcEntries` was re-traced and stores the same tile args (intArgs1/2) as LOC entries with action codes 17/16/4/19/2 (+2000 for higher-level Attack). Changes:
+
+- Whitelist now includes Examine entries (`LOC_ACTION_EXAMINE` 1004 shared LOC/NPC, `OBJ_EXAMINE` 1002) so e.g. Goblin -> "1 Attack / 2 Examine" fully displays.
+- Acquisition range raised (see P5) — out-of-range was the prime suspect.
+- Throttled `[FP-TARGET]` diagnostic (1 Hz, only when NPC action entries exist but no target was acquired) prints NPC entry count / out-of-range count / menu size so the remaining runtime cause is provable on the next test.
+- Execution remains 100% existing pipeline: live-entry match -> `MiniMenu.doAction(i)`. No new packets, no second interaction engine.
+
+SOURCE VERIFIED / COMPILE VERIFIED / STATICALLY REVIEWED / **RUNTIME UNVERIFIED** (root cause of the prior NPC failure not fully source-provable; diagnostics added).
+
+### 34.6 P5 — display/acquisition range ~8 tiles
+
+`INTERACT_RANGE_TILES` 3 -> 8, applied to overlay acquisition/hysteresis only. DISPLAY RANGE != GAME ACTION RANGE: execution still goes through `MiniMenu.doAction` -> existing RuneScape action logic; existing pathfinding/server decides approach distance and legality. No server checks changed. SOURCE VERIFIED / COMPILE VERIFIED / STATICALLY REVIEWED / **RUNTIME UNVERIFIED**.
+
+### 34.7 P6 — E = primary world action
+
+E executes overlay slot 0 (primary existing MiniMenu action) for ANY target type — no per-entity behavior. Gates: FIRST_PERSON rig state, CTRL not held, chat inactive, dialogue inactive, right-click menu closed. E never reaches chat (gameplay key filter). Existing from round #5; gates hardened this round. SOURCE VERIFIED / COMPILE VERIFIED / STATICALLY REVIEWED / **RUNTIME UNVERIFIED**.
+
+### 34.8 P7-P11 — FREE vanilla locomotion + handoffs
+
+Root cause of the prior FREE failure (source proven, exactly two blockers):
+
+1. `NpcList.method4514` skipped vanilla `method2247` for self in ANY modern state.
+2. `Protocol.readSelfPlayerInfo` drained the movement queue on every server step in ANY modern state.
+
+Both now gated on `isModernQ16Owner()` (false in FREE) -> in FREE, `move()` steps accumulate in the vanilla queue and `method2247` consumes/interpolates/animates exactly like ORIGINAL. Click-to-walk, minimap walk, and vanilla run all flow through the untouched vanilla PathFinder/MOVE_GAMECLICK path (`Protocol.method1756` one-shot, `anInt1742` — never touched by modern code).
+
+- **CHASE -> FREE (P9)**: rig transition calls `ModernMovementController.onEnterFreeMode()` — Q16 velocity/intent zeroed, pending cleared, `movementQueueX[0]/Z[0]` rebased to the live tile then `method2689()` (queue empty, stationary at the actual position — xFine/zFine untouched, NO tile snap; mid-tile offsets are safe for vanilla interpolation). Vanilla queue becomes the single movement owner; WASD inert (update() no-ops).
+- **FREE -> CHASE (P10)**: rig transition calls `onExitFreeMode()` — vanilla auto-path cancelled (`method2689()`), prediction seeded from live xFine/zFine (no snap), server tile rebased, heading from body facing, stale pending discarded, WASD re-enabled. **Arbitration rule (documented in code):** client queue cleared immediately; the next modern DDA walk packet resets the server-side route; residual server steps for the cancelled path arrive through the Q16 drain hooks and are reconciled — never replayed as vanilla movement.
+- **P11**: FREE camera untouched — arrows/middle-mouse/expanded zoom/no-behind-character all remain; no vanilla zoom max restored; profile stays MODERN.
+- `aBoolean187` (minimap destination) verified render-only (SceneGraph cross marker) — no per-tick re-path, no handoff cleanup needed.
+
+SOURCE VERIFIED / COMPILE VERIFIED / STATICALLY REVIEWED / **RUNTIME UNVERIFIED**.
+
+### 34.9 P12 — CHASE run animation flicker
+
+All `movementSeqId` writers enumerated and gated correctly during continuous RUN (ModernMovementController transition-only writes + idle branch; method949 overwrites gated on `idleAnimationId == movementSeqId`, impossible during RUN; method879 advances frames without seq changes). Sequence alternation is therefore NOT source-provable as the cause. Delivered:
+
+- Throttled diagnostics: `[MOVE-DEBUG]` (1 Hz, CHASE moving) now includes moveSeqId, frame/anInt3407, anInt3396, state, runRequested, queueSize, movement owner; F12 overlay gained moveSeq + queueSize + velocity + predicted tile.
+- One safe structural fix: `selectAnimationForState()` resets `anInt3407/anInt3396` when the selected sequence actually CHANGES, so WALK->RUN starts at frame 0 instead of inheriting a mid-sequence index (source-plausible flicker candidate; no per-tick restart; BasType/sequence system untouched).
+
+SOURCE VERIFIED (writer audit) / COMPILE VERIFIED / STATICALLY REVIEWED / **RUNTIME UNVERIFIED** — true cause pending `[MOVE-DEBUG]` output from the next runtime.
+
+### 34.10 P13 — input ownership matrix
+
+Documented as the class-level javadoc authority table on `ModernControlController` (ORIGINAL / MODERN FIRST_PERSON incl. CTRL substate / MODERN CHASE / MODERN FREE), matching the implementation 1:1. No ambiguous dual owners: movement = exactly one owner via `getMovementOwner()`; keyboard = priority chain above; mouse = FP lock vs CTRL UI vs vanilla.
+
+### 34.11 P14 — debug overlay
+
+F12 unchanged/safe. Added: `movementOwner`, `cameraOwner`, `ctrlUICursor`, `cursorLocked` (CONTROL); new DIALOGUE/TARGET section (`dlgActive`, `choices`, `modal`, `worldBlockedByDlg`, targetType/targetName/targetDist, action1/2/3); new MOVEMENT section (velX/velZ, run, queueSize, moveSeq, predictedTile). Existing serverTile/intent/heading lines retained. No stdout flooding (overlay-only; diagnostics prints are throttled 1 Hz or edge-triggered).
+
+### 34.12 P15 — ORIGINAL invariant
+
+All new gates require `CameraMode.isModern()` and/or the modern rig; `isModernQ16Owner()` is false in ORIGINAL; `shouldForwardKeyToChat` returns true unconditionally in ORIGINAL; FirstPersonCamera/overlay/dialogue controller never run in ORIGINAL. ORIGINAL remains authentic vanilla 2009Scape. STATICALLY REVIEWED.
+
+### 34.13 P16 — build + static sweeps A-R
+
+Build: **BUILD SUCCESSFUL (EXIT_CODE=0)**, `:client:compileJava` executed, zero compile errors. Sweeps:
+
+- A. Cursor lock/unlock ownership — only lockCursor/unlockCursor mutate cursorLocked; CTRL substate + activate/deactivate are the sole callers. PASS
+- B. CTRL held cannot rotate FP camera — mouse-look gated on uiCursorActive. PASS
+- C. CTRL release cannot produce a first-frame jump — lockCursor sets discardLockedMouseSample + recentres; lastMouseLook reset. PASS
+- D. Dialogue blocks world 1-9/E — uiConsumed chain + isOverlayActive dialogue gate. PASS
+- E. Dialogue 1..N uses exact existing button execution — UNKNOWN_8 / method4512(UNKNOWN_9/1003) routes. PASS
+- F. NPC overlay uses existing MiniMenu entries — snapshot + doAction only. PASS
+- G. Range raised without changing interaction range — overlay-only constant. PASS
+- H. E routes through primary existing action — executeAction(0) -> doAction. PASS
+- I. FREE has no ModernMovementController writes — update() gated on isModernQ16Owner. PASS
+- J. FREE vanilla movement queue active — NpcList + 5 Protocol sites gated. PASS
+- K. FREE->CHASE rebases safely — onExitFreeMode seeds from live state. PASS
+- L. CHASE->FREE rebases safely — onEnterFreeMode rebases queue, no xFine write. PASS
+- M. No dual movement owners — single predicate, 7 call sites. PASS
+- N. FP WASD basis unchanged — velocity math untouched. PASS
+- O. ORIGINAL untouched — see 34.12. PASS
+- P. Roof crash hotfix preserved — ScriptRunner gate verbatim. PASS
+- Q. No global culling hack — none introduced. PASS
+- R. No new handcrafted combat/action packets — existing routes only. PASS
+
+### 34.14 Verification summary
+
+| Item | Status |
+|------|--------|
+| P0 crash hotfix preserved | SOURCE VERIFIED / STATICALLY REVIEWED |
+| P1 CTRL UI cursor | SOURCE / COMPILE / STATIC / RUNTIME UNVERIFIED |
+| P2 dialogue authority | SOURCE / COMPILE / STATIC / RUNTIME UNVERIFIED |
+| P3 dialogue 1..N | SOURCE / COMPILE / STATIC / RUNTIME UNVERIFIED |
+| P4 NPC overlay | SOURCE / COMPILE / STATIC / RUNTIME UNVERIFIED (diagnostics added) |
+| P5 range 8 | SOURCE / COMPILE / STATIC / RUNTIME UNVERIFIED |
+| P6 E primary | SOURCE / COMPILE / STATIC / RUNTIME UNVERIFIED |
+| P7-P11 FREE vanilla locomotion | SOURCE / COMPILE / STATIC / RUNTIME UNVERIFIED |
+| P12 run flicker | SOURCE / COMPILE / STATIC / RUNTIME UNVERIFIED (diagnostics added) |
+| P13 ownership matrix | SOURCE / STATIC |
+| P14 debug overlay | SOURCE / COMPILE / STATIC / RUNTIME UNVERIFIED |
+| P15 ORIGINAL invariant | STATIC |
+
+No runtime success is claimed. The 31-item user runtime test list from the round brief is the acceptance gate.
+
+---
+
+## Section 35 — Round #7: FREE Vanilla Input + NPC Pick Fix + Real Dialogue Route + Ceiling
+
+Date: 2026-08-14. Build: `build_rt4.bat` -> **BUILD SUCCESSFUL in 38s (EXIT_CODE=0)**, `:client:compileJava` clean, zero errors.
+
+### 35.0 USER RUNTIME from Round #6B/C — AUTHORITATIVE
+
+**PASS (preserved, not touched this round):**
+- FIRST_PERSON CTRL-hold free mouse works correctly.
+- Releasing CTRL returns to locked FP with no camera jump.
+- When dialogue is visible, the FP object/world action overlay disappears.
+- FREE movement ownership improved: WASD no longer moves the player in FREE.
+
+**FAIL (addressed this round):**
+1. FREE kept MODERN keyboard/chat filtering (W/A/S/D blocked from chatbox).
+2. NPC crosshair/action overlay never appeared (object overlay worked) — NOT a range problem.
+3. Dialogue number shortcuts 1-5 did not select choices (SPACE continue worked).
+4. FIRST_PERSON had no visible ceiling indoors.
+
+### 35.1 P1 — FREE keyboard ownership architecture
+
+Single source of truth: `ModernControlController.isModernGameplayKeyboardOwner()` = `CameraMode.isModern() && (!ModernCameraRig.isActive() || isFirstPersonRigState() || isChaseRigState())`.
+
+- Both `Keyboard.nextKey()` drain sites (`Protocol` L2826 region, `client` L1173 region) route through `shouldForwardKeyToChat`, which now returns TRUE (fully unfiltered vanilla) for ORIGINAL **and** FREE.
+- `ModernDialogueKeyboard` is fully inert in FREE — every gate switched from `CameraMode.isModern()` to `isModernGameplayKeyboardOwner()` (vanilla has no SPACE-continue / number-choice shortcuts).
+- FREE needs no explicit-ENTER chat ownership: vanilla accepts typing directly. FREE click-to-walk + modern expanded camera retained.
+
+**Ownership matrix (documented in code):**
+| Mode/rig | Keyboard owner | Chat forward mode |
+|---|---|---|
+| MODERN FIRST_PERSON | MODERN_GAMEPLAY | MODERN_FILTER (gameplay letters suppressed) |
+| MODERN CHASE | MODERN_GAMEPLAY | MODERN_FILTER |
+| MODERN FREE | VANILLA_FREE | VANILLA (W/A/S/D/E/1-9 are ordinary characters) |
+| ORIGINAL | ORIGINAL (untouched) | VANILLA |
+
+### 35.2 P2 — NPC pick finding (source-proven root cause)
+
+The pick/menu pipeline WAS delivering NPC entries; the overlay rejected them because of a key-decoding asymmetry in `MiniMenu.addEntries` (L1224-1228):
+
+```
+x = (int) key & 0x7F;                     // NPC keys: 0
+local133 = (int) key >> 29 & 0x3;         // type: 0=player 1=NPC 2=loc 3=objstack
+local140 = (int)(key >>> 32) & MAX_INT;   // entity index
+z = (int) key >> 7 & 0x7F;                // NPC keys: 0
+```
+
+NPC pick tags are `npcIndex << 32 | 0x20000000L` — the low tile bits are ZERO, so `addNpcEntries` stored `intArgs1 = intArgs2 = 0` for every NPC. The old overlay range check compared those zeros against the player tile and rejected EVERY NPC at any range (runtime proof: `[FP-TARGET] NPC menu entries=1 outOfRange=1`).
+
+**Fix (`ModernActionOverlay.snapshot` rewrite):**
+- New `resolveEntryTile(key, fallbackX, fallbackZ, out)`: NPC/player tiles resolved LIVE from `NpcList.npcs[index].xFine/zFine >> 7` / `PlayerList.players[index]`; loc/objstack keep intArgs tiles.
+- Hysteresis re-resolves the previous target's live tile each frame; fresh acquisition walks the menu backwards with per-entry live-tile range check; collect loop matches on the pick KEY only (intArgs are unreliable for entities).
+- `NPC_EXAMINE` (1007) added to the world-action whitelist + getTargetType.
+- Execution unchanged: live-entry match -> `MiniMenu.doAction(i)`. doAction's NPC branches use the live NPC from the key, so the zero tile args are irrelevant there. No second interaction engine.
+- Old `[FP-TARGET]` print replaced with throttled `NPC_PICK:` diagnostic (F12 on, ~1 Hz): npcUnderCrosshair / scenePickTagSeen (scans `Model.aLongArray11[0..MiniMenu.anInt7)`) / npcMiniMenuEntries / firstNpcAction / overlayAccepted / rejectReason.
+
+### 35.3 P3 — dialogue click-route finding + fix
+
+**Why 1-5 failed while SPACE worked:** `collectChatboxButtons` scanned ONLY the chatbox-layer interface (clientCode 1406 subs). The continue component that SPACE found lived in a DIFFERENT open interface (`findContinueComponent` already had the any-open-interface fallback — that is why SPACE worked). The choice buttons live in that same interface, so the number-key collector found zero candidates.
+
+**Fix:** `collectChatboxButtons` is now two-pass — pass 1: chatbox-layer subs (unchanged); pass 2 (only if pass 1 found nothing): ANY open interface with the same predicates, mirroring the proven-working continue scan. Ordering still by component `y` (visual top-to-bottom). Execution routes unchanged and byte-identical to vanilla:
+- CS1 button -> UNKNOWN_8: `p1isaac(10); p4(component.id)`.
+- if3 op -> UNKNOWN_9/1003: `ClientProt.method4512(optionBase, createdComponentId, op+1, component.id)`.
+
+**Runtime trace added (observation only):** `MiniMenu.doAction` logs `[DIALOGUE-CLICK-TRACE]` ONCE per distinct (component, action) for action codes 8/9/1003/41 with interfaceId, childId, component.id, createdComponentId, if3, type, buttonType, clientCode, actionCode, key, intArg1/2, opIndex, text, option, executionRoute. Compare a manual mouse click against a number-key press to prove identical routes. No packets invented, no interface IDs hardcoded.
+
+`ModernDialogueKeyboard` records `lastNumberKey / lastChoiceRoute (IF3_METHOD4512 / CS1_BUTTON) / lastChoiceComponent` for the F12 overlay. Input priority chain unchanged (chat > dialogue > modal > CTRL UI cursor > world keys > locomotion).
+
+### 35.4 P4 — CEILING_SOURCE_RESULT = UPPER_FLOOR_SINGLE_SIDED
+
+Source trace (no implementation guesses):
+- No dedicated ceiling/underside geometry exists in the engine or cache build path.
+- `SceneGraph.method2610` (software floor render) culls via explicit screen-space winding tests; GL floors are baked `GlTile` VBOs rendered with `GL_CULL_FACE`/`GL_BACK`.
+- Roof LOC models are ordinary one-sided models.
+- Upper-plane floors (`tiles[plane+1]`, `PlainTile`/`ShapedTile`) are therefore single-sided surfaces seen from above only.
+
+Conclusion: P5 (un-cull real geometry) is impossible — there is no real underside. **P6 generated-underside path implemented.**
+
+### 35.5 P6 — ceiling implementation approach (GENERATED, FP-only)
+
+New `ModernCeiling.java` (gate + diagnostics) + `SceneGraph.modernCeilingUnderside(x, z, heightPlane)` hooked in `method4245` immediately after the floor dispatch, gated by `ModernCeiling.isEnabled() && level == Player.plane`:
+
+- **Authority:** only when the tile ABOVE (`tiles[plane+1][x][z]`) has a real floor `PlainTile`. No outdoor/courtyard/overhang fake ceilings — the structural upper floor IS the authority.
+- **Projection:** exact `method2610` maths (camera-relative corners, yaw/pitch rotate, near-clip < 50, `(x<<9)/depth` screen projection).
+- **Software path:** same two triangles with INVERTED winding tests (visible from below), corner colours darkened ~20% via `ColorUtils.multiplyLightness3(hsl, 102)`; textured tiles reuse the upper tile's texture (`manyGroundTextures` gate + `getAverageColor` fallback exactly like vanilla); texture orientation flag ignored for the underside (first-impl simplification).
+- **GL path:** dedicated immediate-mode pass; `glPushAttrib`-scoped `GL_LIGHTING`/`GL_CULL_FACE` disable (restored by `glPopAttrib` — global state never changed), texture bound via `Rasteriser.textureProvider.method3227`, brightness `201.5 - (plane+1)*50` like vanilla upper floors, palette-derived vertex colours, 2-unit downward offset against z-fighting.
+- **Deferred:** `TILE_FLAG_UNDER_ROOF` flat-roof fallback ceiling (reported in diagnostics only) until user runtime feedback on upper-floor coverage.
+
+**P7 preservation:** gate is FIRST_PERSON-only; CHASE/FREE/ORIGINAL never reach the hook; roof logic, Round #4 rolling-stamp reset and Round #6A divide-by-zero hotfix untouched (verified in `ScriptRunner.method4302` L1361-1367 / L1411-1440); global `allLevelsVisible` and scene occlusion untouched.
+
+### 35.6 P8 — debug overlay extensions
+
+F12 gained: INPUT `keyboardOwner` (MODERN_GAMEPLAY / VANILLA_FREE / ORIGINAL) + `chatForwardMode`; DIALOGUE `lastNumberKey / lastChoiceComp / lastChoiceRoute`; new **NPC TARGET** block (`npcPickSeen / npcMenuEntries / accepted / npcUnderXhair / firstNpcAction / rejectReason`); new **CEILING** block (`sourceMode / overheadPlane / quadsDrawn / overheadTile / underRoofFlag / textureId`). No AWT, no crashes.
+
+### 35.7 P9 — static review (15 points)
+
+1. FREE receives NO Q16 writes — PASS (`isModernQ16Owner()` gates intact, L196-231/L395).
+2. FREE receives FULL vanilla keyboard/chat — PASS (`shouldForwardKeyToChat` bypass + inert dialogue keyboard).
+3. FP/CHASE still filter gameplay letters — PASS (same gate, positive branch).
+4. ORIGINAL untouched — PASS (early return preserved).
+5. CTRL FP cursor unchanged — PASS (no FirstPersonCamera edits this round beyond prior approved work).
+6. Dialogue blocks world overlay — PASS (`isOverlayActive` gates unchanged).
+7. Dialogue 1..N invokes vanilla mouse-click route — PASS (UNKNOWN_8 / method4512 only).
+8. NPC target uses existing MiniMenu route — PASS (doAction only).
+9. E invokes slot 1 — PASS (unchanged).
+10. No invented packets — PASS.
+11. Ceiling pass FIRST_PERSON only — PASS (gate + plane check).
+12. No global backface/culling disable — PASS (scoped pushAttrib; software winding).
+13. CHASE/FREE roof removal unchanged — PASS.
+14. Roof flash fix unchanged — PASS (L1361-1367).
+15. Round #6A divide-by-zero fix unchanged — PASS (L1411-1440).
+
+### 35.8 Verification summary
+
+| Item | Status |
+|------|--------|
+| P1 FREE vanilla keyboard/chat | SOURCE / COMPILE / STATIC / **RUNTIME UNVERIFIED** |
+| P2 NPC crosshair fix | SOURCE / COMPILE / STATIC / **RUNTIME UNVERIFIED** |
+| P3 dialogue 1..N two-pass + trace | SOURCE / COMPILE / STATIC / **RUNTIME UNVERIFIED** |
+| P4 ceiling source trace | SOURCE VERIFIED (UPPER_FLOOR_SINGLE_SIDED) |
+| P6 generated ceiling | SOURCE / COMPILE / STATIC / **RUNTIME UNVERIFIED** |
+| P8 overlay blocks | SOURCE / COMPILE / STATIC |
+| P9 build | **BUILD SUCCESSFUL in 38s (EXIT_CODE=0)** |
+
+No runtime success is claimed. Next user runtime is the acceptance gate.
+
+**Next user test checklist:**
+1. FREE: type `wasd` in chatbox — letters must appear; click-to-walk still works.
+2. FP: aim crosshair at a Goblin — expect `Goblin / 1 Attack / 2 Examine`; press E. F12 NPC TARGET block shows the pick state.
+3. FP dialogue with choices: press 1/2 — must equal mouse click (compare `[DIALOGUE-CLICK-TRACE]` lines); SPACE continue still works.
+4. FP indoors: look up — ceiling visible, ~20% darker than the floor above, matching material. F12 CEILING block: sourceMode=GENERATED, quadsDrawn > 0.
+5. CHASE/FREE roofs + ORIGINAL unchanged.
+
+---
+
+## Section 36 — Round #7B: NPC Overlay Crash Root Cause + Ceiling Coverage/Near-Plane Hardening
+
+Date: 2026-08-14. Build: `build_rt4.bat` -> **BUILD SUCCESSFUL in 42s (EXIT_CODE=0)** (one transient Kotlin daemon restart, build recovered), zero compile errors.
+
+### 36.0 USER RUNTIME from Round #7 — AUTHORITATIVE
+
+**CONFIRMED PASS (not touched this round):**
+- FP CTRL-hold free mouse + release relock.
+- Object crosshair overlay.
+- Dialogue hides world overlay.
+- FREE no longer uses WASD locomotion.
+- **Generated ceiling underside fundamentally works — ceiling textures are visible.**
+- Smooth zoom / FP / CHASE foundations; roof flashing fix; Round #6A divide-by-zero hotfix.
+
+**NEW FAILURES:**
+1. Aiming at an NPC in FIRST_PERSON crashes the client around the moment the NPC overlay would activate. **User correction: the NPC overlay has NEVER been confirmed rendered — no "NPC pick -> overlay render = pass" claim is made.**
+2. Ceiling: looking straight up can clip the ceiling away exposing sky; coverage extends only a few tiles ahead.
+
+### 36.1 P0 — EXACT CRASH RETRIEVED (no guessing)
+
+Exact stacktrace from client stdout at crash:
+
+```
+Error: rt4.SceneGraph.modernCeilingUnderside:3995
+       rt4.SceneGraph.method4245:1799
+       rt4.SceneGraph.method3292:3123
+       rt4.SceneGraph.method2954:2981
+       rt4.ScriptRunner.method4326:315
+       rt4.Cs1ScriptRunner.renderComponent:392 ...
+java.lang.ArrayIndexOutOfBoundsException: 1
+```
+
+- **NPC_CRASH_BOUNDARY = the CEILING render pass — NOT the NPC overlay.** The crash coincided with aiming at an NPC only in timing; a region reload (localTile jump 22,46 -> 54,54) preceded it.
+- **NPC_CRASH_SITE = rt4.SceneGraph.modernCeilingUnderside:3995** (Round #7 per-tile ceiling hook indexing `tiles[plane+1]`).
+- **NPC_CRASH_EXCEPTION = java.lang.ArrayIndexOutOfBoundsException: 1.**
+
+**Root cause (SOURCE VERIFIED):** `SceneGraph` rebinds `tiles`/`tileHeights` to the UNDERWATER scene (`underWaterGroundTiles` / `underwaterTileHeights`), which is allocated `new Tile[1][width][length]` — only ONE level. The Round #7 hook guarded with a hardcoded `planeAbove >= 4` check, so on the underwater scene `tiles[1]` threw `AIOOBE: 1`.
+
+**NPC overlay code audit (unchanged, bounds-safe):** `ModernActionOverlay` NPC index decode `(int)(key >>> 32)` is guarded by `index >= 0 && index < NpcList.npcs.length` at both use sites (L366 snapshot, L552 resolveEntryTile); E still routes through `MiniMenu.doAction(i)` (L532). Per the user's instruction, the new tile-resolution logic was NOT assumed guilty and was left untouched.
+
+### 36.2 P0/P3 fix — structural coverage pass replaces the per-tile hook
+
+The Round #7 per-tile hook in `method4245` was REMOVED. Replaced by `SceneGraph.modernCeilingPass()`, called ONCE per frame at the end of `method2954`, gated by `ModernCeiling.isEnabled()` (MODERN + FIRST_PERSON only). Guard chain (actual array lengths everywhere — P0 class of bug eliminated):
+
+1. `tiles` / `tileHeights` null check.
+2. **`tileHeights == underwaterTileHeights` -> return** (the exact P0 crash condition).
+3. `plane < 0 || plane >= 3 || planeAbove >= tiles.length || planeAbove >= tileHeights.length` -> return.
+4. Null level / null row guards per scanned column.
+5. Software-renderer pitch gate (`cameraPitch >= 1280`): the software rasterizer has no depth buffer and the pass runs after the whole scene, so it draws only while looking up; GL relies on its depth test for occlusion.
+
+**Coverage (P3):** circle scan of `CEILING_COVERAGE_RADIUS = 16` tiles around the camera (`cameraX/Z >> 7`) on `Player.plane + 1` — bounded per-frame work, independent of which tiles the floor traversal reached. A tile renders ONLY if `tiles[plane+1][x][z]` holds a real `PlainTile` or `ShapedTile` (structural authority — no outdoor/courtyard fills, no blind square fill).
+
+### 36.3 P2 — near-plane TRIANGLE clipping (no whole-tile reject)
+
+Vanilla `method2610`/`method2762` reject an entire tile when ANY vertex has depth < 50 — that is what opened the sky hole looking straight up. The ceiling pass instead clips per triangle (Sutherland–Hodgman against `depth >= 50`):
+
+- 3 vertices in front -> draw normally; 0 in front -> skip; 1-2 in front -> true edge intersections (16.16 fixed-point `t`, clamped), producing a 3-4 vertex clipped polygon fanned to triangles.
+- ALL attributes interpolated across the clip: colour/light, projection rotX/rotY, UVs, absolute world position.
+- Software path keeps the INVERTED winding test (visible from below) and vanilla fill branches (untextured gouraud / `manyGroundTextures` average-colour fallback / textured).
+- GL path submits clipped triangles to immediate mode; GPU clipping + depth buffer handle the rest. GL state is scoped by `glPushAttrib`/`glPopAttrib` — **global culling never changes**.
+- No `depth = max(depth, 50)` hack; the global near plane is untouched.
+- The only remaining whole-tile reject is the vanilla all-vertices-behind case (unavoidable: nothing to clip to).
+
+### 36.4 P4 — shaped upper floors
+
+`drawShapedCeilingTile` reuses the `ShapedTile`'s REAL vertices (`anIntArray168/160/163`), per-triangle colours (`anIntArray167/172/171` darkened ×102/128) and textures (`anIntArray161`) with exact `method2762` rotation — stairs/slopes are NOT flattened. Texture anchoring mirrors vanilla (`aBoolean113` flat mode uses corner verts 0,1,3). A clipped textured shaped triangle degrades to average-colour gouraud because vanilla's UV basis vertices can be clipped away (documented in code). GL shaped triangles draw as average-colour gouraud (shaped data carries no per-vertex UVs).
+
+### 36.5 P5 — material quality preserved
+
+`DARKEN_MULTIPLIER = 102` (~20% darker) and full material inheritance from the upstairs floor are unchanged from Round #7. No universal beige/gray.
+
+### 36.6 P1 — F12 diagnostics
+
+CEILING block extended with Round #7B counters (per-frame latched on `client.loop`, no stdout spam): `candidateTiles`, `drawnTiles`, `nearRejected` (all-vertices-behind rejects), `behindVerts` (vertices crossing the near plane), `plainTiles`, `shapedTiles`; `quadsDrawn` now reports total triangles drawn. `ModernCeiling.updateDiagnostics` hardened: actual-length bounds, null-row guards, shaped tiles accepted for `overheadTilePresent`.
+
+### 36.7 P7 — static review (brief checklist)
+
+1. NPC overlay no crash route preserved — code untouched; the actual crash was the ceiling pass (36.1). SOURCE VERIFIED.
+2. NPC index bounds checked — PASS (L366 + L552 guards intact).
+3. NPC target still through existing MiniMenu — PASS (doAction L532).
+4. E still uses `MiniMenu.doAction` — PASS (unchanged).
+5. Object overlay unchanged — PASS (no edits).
+6. Ceiling only active in MODERN FIRST_PERSON — PASS (`isEnabled()` gate + FP-only call site).
+7. No global culling disable — PASS (scoped `glPushAttrib`/`glPopAttrib`; software uses inverted winding).
+8. No global near-plane hack — PASS (local `CEILING_NEAR_PLANE = 50`, vanilla methods untouched).
+9. Clipping doesn't expose sky at vertical pitch — STATIC PASS (true triangle clipping; software pitch gate); RUNTIME UNVERIFIED.
+10. Coverage scans only structurally valid overhead tiles — PASS (null/PlainTile/ShapedTile authority + actual-length bounds + underwater + plane<3 guards).
+11. CHASE/FREE roof behaviour untouched — PASS (no roof code edits).
+12. ORIGINAL untouched — PASS (no ORIGINAL-path edits).
+
+### 36.8 Verification summary
+
+| Item | Status |
+|------|--------|
+| P0 crash boundary/site/exception | **SOURCE VERIFIED** (exact stacktrace, root cause proven) |
+| P0 fix (underwater guard + coverage pass) | SOURCE / COMPILE / STATIC / **RUNTIME UNVERIFIED** |
+| P1 F12 ceiling counters | SOURCE / COMPILE / STATIC |
+| P2 near-plane triangle clipping | SOURCE / COMPILE / STATIC / **RUNTIME UNVERIFIED** |
+| P3 16-tile structural coverage scan | SOURCE / COMPILE / STATIC / **RUNTIME UNVERIFIED** |
+| P4 shaped upper floors | SOURCE / COMPILE / STATIC / **RUNTIME UNVERIFIED** |
+| P5 material inheritance + 20% darkening | SOURCE / COMPILE / STATIC (unchanged from Round #7) |
+| P6 structural safety | STATIC PASS / **RUNTIME UNVERIFIED** |
+| Build | **BUILD SUCCESSFUL in 42s (EXIT_CODE=0)** |
+| NPC OVERLAY | **RUNTIME UNVERIFIED / CURRENTLY CRASHING** until user sees the layout without a crash |
+
+No runtime success is claimed. Stopping after build/static review per brief.
+
+**Next user test checklist:**
+1. FP: aim at a Goblin-equivalent NPC — expect `Goblin / 1 Attack / 2 Examine` WITHOUT a crash; E executes slot 1 (MiniMenu route). If it still crashes, capture the new stacktrace.
+2. FP indoors: look STRAIGHT up — ceiling must stay closed (no sky hole) while crossing the near plane. F12 `behindVerts > 0` with `nearRejected` low while this happens.
+3. FP: walk a long corridor/large building — ceiling coverage should extend continuously (~16-tile radius), not stop after a few tiles. F12: `candidateTiles`/`drawnTiles` track coverage.
+4. FP outdoors/courtyard/under an overhang with no upper floor — no ceiling appears.
+5. Underwater areas — no crash (the exact P0 condition).
+6. CHASE/FREE roofs + ORIGINAL unchanged.
+
+---
+
+## Section 37 — Round #7C: STABILIZATION — Ceiling Quarantine + Overlay Blocking Boundary Proven + Dialogue Numbers AWAITING
+
+Date: 2026-08-14. Build: `gradlew compileJava` -> **BUILD SUCCESSFUL in 27s (EXIT_CODE=0)**, zero compile errors (only pre-existing Kotlin plugin-playground warnings). One transient Kotlin daemon cache error — build recovered via fallback, as in Round #7B.
+
+### 37.0 USER RUNTIME from Round #7B — AUTHORITATIVE
+
+**FAIL:**
+1. Round #7B generated ceiling: **RUNTIME FAILED** — ceiling visible indoors: **FAIL** (no ceiling appears at all).
+2. New severe geometry artifact: **FAIL** — giant horizontal textured slab/triangle crossing the FIRST_PERSON view at certain locations/angles (user screenshot: huge green/black horizontal surface spanning the view). Strong suspect = Round #7B coverage/near-plane pass.
+3. Object crosshair/action overlay: **FAIL — REGRESSION** (worked in an earlier runtime round).
+4. NPC crosshair/action overlay: **FAIL** (NEVER user-runtime verified in any round).
+5. Dialogue number keys 1/2/3/4/5: **FAIL** (NPC dialogue and object/interface dialogue; mouse/dialogue otherwise works).
+
+**PASS / NOT TOUCHED:** ORIGINAL, FREE vanilla keyboard/chat ownership, click-to-walk, FIRST_PERSON CTRL-hold free mouse + release, smooth zoom, CHASE/FP movement basis, roof flashing fix, Round #6A divide-by-zero roof hotfix, camera rig state machine, combat, world generation.
+
+### 37.1 P1 — Generated ceiling pass QUARANTINED (single source gate, zero geometry)
+
+- `ModernCeiling.RENDER_ENABLED = false` — ONE explicit source gate. `SceneGraph.modernCeilingPass()` now returns as its FIRST statement, before any scan/projection/rasterizer code: the pass submits **ZERO geometry** this round. Implementation fully preserved (not deleted); flip the single flag to re-enable in a future round.
+- No vanilla roof/scene code touched, no global culling change, no camera transform change.
+- F12 CEILING block now shows `rendererEnabled N` and `trianglesSubmitted 0` so the quarantine is runtime-visible.
+- **Boundary rule:** if the giant slab STILL appears at runtime with the generated ceiling quarantined, then `CEILING_ARTIFACT_CAUSE = NOT_GENERATED_CEILING` and the next renderer boundary must be source-traced (the slab provably cannot originate from the disabled pass).
+- No replacement ceiling rendering this round (per brief).
+
+### 37.2 P2 — Overlay blocking boundary: dialogue false-positive PROVEN FROM SOURCE
+
+The exact predicate chain that disabled the world overlay everywhere:
+
+1. Round #7 P3 added a "pass 2: scan ANY open interface" fallback to `ModernDialogueKeyboard.collectChatboxButtons`.
+2. Its if3 predicate accepts ANY visible component with ANY server-enabled op — `InterfaceList.getOp(c, op)` returns non-null whenever `getServerActiveProperties(c).isButtonEnabled(op)` and `ops[op]` is non-empty.
+3. The ALWAYS-OPEN gameframe/HUD interfaces contain visible if3 components with enabled ops, so the scan returns > 0 with NO dialogue open.
+4. `hasActiveDialogue()` = pending resume || continue component || that scan > 0 → permanently TRUE.
+5. `ModernActionOverlay.isOverlayActive()` requires `!hasActiveDialogue()` → overlay permanently disabled (object + NPC), and number keys were consumed by guessed HUD-button "choices" that do nothing.
+
+**Fix (false-positive detection ONLY removed; the correct rule preserved):**
+- Choice collection is CHATBOX-LAYER-ONLY again (pass 2 removed).
+- Detection now = pending resume (`Cs1ScriptRunner.aClass13_10`) || continue component (`buttonType==6` CS1 / if3 resume-pause — narrow predicates that do not match ordinary HUD components; the proven-RUNTIME two-pass SPACE continue scan is preserved) || chatbox-layer choice buttons.
+- Result: NO real dialogue → world overlay allowed; REAL dialogue → world overlay hard blocked.
+- F12 WORLD OVERLAY block proves the boundary at next runtime: `overlayGate`, `blockedReason` (NOT_MODERN / NOT_FP / RCLICK_MENU / CHAT_INPUT / DIALOGUE_BLOCK / CTRL_UI_CURSOR), `dialogueBlock`, `dialogueActive`, `choiceCount`, `menuSize`, `scenePickTags`, `worldEntries`, `locEntries`, `npcEntries`, `accepted`, `targetType`, `targetName`.
+
+### 37.3 P3 — LOC/object route: intact, blocker removed
+
+The known-good architecture is untouched: scene pick → existing LOC MiniMenu entries → `ModernActionOverlay.snapshot()` → `draw()` → E/1/2/3 → `MiniMenu.doAction(i)` (exact mouse-click route). No new raycaster, no custom packets, no fake proximity targeting. The ONLY change affecting this route is the P2 gate fix. Runtime target: aim at Door → `Door / 1 Open / 2 Examine`, E executes slot 1. **RUNTIME UNVERIFIED.**
+
+### 37.4 P4 — NPC route: same architecture + independent boundary diagnostics
+
+Round #7 source finding kept: NPC pick tag = `npcIndex << 32 | 0x20000000L` with NO useful x/z tile bits — range therefore uses the LIVE NPC (`NpcList.npcs[index].xFine/zFine`), never MiniMenu intArgs. Index decode is bounds-guarded at every use site. F12 NPC TARGET block extended for independent boundary proof: `npcIndex`, `npcExists`, `liveTile x,z`, `playerTile`, `distance` alongside `npcPickSeen`, `npcMenuEntries`, `accepted`, `npcUnderXhair`, `firstNpcAction`, `rejectReason`. Expected: `Goblin / 1 Attack / 2 Examine`, E → slot 1 via `MiniMenu.doAction`. **NEVER RUNTIME VERIFIED.**
+
+### 37.5 P5 — Dialogue numbers: NO real trace exists → AWAITING (no third guess)
+
+- Searched for a captured `[DIALOGUE-CLICK-TRACE]` of a REAL manual mouse click: **NONE EXISTS** (client stdout is console-only; the only persisted logs are JVM crash dumps — no trace lines).
+- Therefore: **DIALOGUE_NUMERIC_ROUTE = AWAITING_RUNTIME_CLICK_TRACE** (shown on F12 as `numericRoute`).
+- Number-key choice execution is QUARANTINED this round: `ModernDialogueKeyboard.update()` consumes SPACE continue only (proven route); number keys are NOT consumed and fall through to the FP world-action layer. No third guessed component predicate was added.
+- The one-shot `[DIALOGUE-CLICK-TRACE]` in `MiniMenu.doAction` (codes 8/9/1003/41) stays armed: the next runtime the user manually clicks ONE visible dialogue option, producing the exact route record (interfaceId, childId, component.id, createdComponentId, if3, type, buttonType, clientCode, actionCode, key, intArg1/2, opIndex, text, option, executionRoute) for a tiny follow-up round implementing 1..N from that exact route, ordered visually top-to-bottom.
+
+### 37.6 P6 — Input priority preserved
+
+FIRST_PERSON/CHASE: (1) explicit chat/text input → (2) REAL active dialogue → (3) modal/interface input → (4) FP CTRL cursor → (5) FP world action E/1/2/3 → (6) gameplay movement. With no dialogue present the world overlay is no longer blocked by unrelated open interfaces (P2 fix). FREE keeps full vanilla keyboard/interface ownership.
+
+### 37.7 P7 — Static review (15 points)
+
+1. Generated ceiling submits ZERO geometry — PASS (`RENDER_ENABLED=false` gate returns before all geometry code).
+2. Vanilla scene/roof code otherwise unchanged — PASS (only the now-inert `modernCeilingPass()` call exists in the scene path).
+3. Screenshot-style slab cannot originate from disabled ModernCeiling code — PASS (zero submission; if it persists → NOT_GENERATED_CEILING).
+4. Object MiniMenu path intact — PASS (snapshot → whitelist → doAction unchanged).
+5. NPC bounds/index logic safe — PASS (all `NpcList.npcs[index]` accesses bounds-guarded).
+6. NPC uses live tile for range — PASS (`resolveEntryTile` type==1 → live `xFine/zFine`).
+7. World overlay blocked only by REAL dialogue — PASS (detection = pending resume / narrow continue predicate / chatbox-layer choices).
+8. No generic always-open UI false-positive — PASS (any-interface choice scan removed).
+9. E still calls `MiniMenu.doAction` — PASS (`executeAction`).
+10. No invented packets — PASS (numeric execution fully disabled; SPACE uses the existing method10 route).
+11. FREE keyboard behaviour unchanged — PASS (no ownership edits).
+12. CTRL FP mouse unchanged — PASS.
+13. ORIGINAL unchanged — PASS.
+14. Round #4 roof stamp fix unchanged — PASS.
+15. Round #6A roof divide-by-zero fix unchanged — PASS.
+
+### 37.8 Verification summary
+
+| Item | Status |
+|------|--------|
+| P1 ceiling quarantine (single gate, zero geometry) | SOURCE VERIFIED / COMPILE VERIFIED / STATIC PASS / RUNTIME UNVERIFIED |
+| P2 overlay blocking cause | **SOURCE PROVEN** (predicate chain 37.2) / runtime confirmation on next F12 |
+| P2 false-positive removal + real-dialogue rule preserved | SOURCE VERIFIED / COMPILE VERIFIED / RUNTIME UNVERIFIED |
+| P3 LOC route restoration | SOURCE VERIFIED (route untouched, blocker removed) / RUNTIME UNVERIFIED |
+| P4 NPC route + diagnostics | SOURCE VERIFIED / RUNTIME UNVERIFIED (never verified) |
+| P5 real [DIALOGUE-CLICK-TRACE] exists | **NO** → DIALOGUE_NUMERIC_ROUTE = AWAITING_RUNTIME_CLICK_TRACE |
+| Build | **BUILD SUCCESSFUL in 27s (EXIT_CODE=0)** |
+
+No runtime success is claimed. Stopping after build/static review per brief — no new ceiling implementation, no combat/viewmodel/world-generation changes.
+
+**Next user test checklist:**
+1. FP indoors — no generated ceiling should appear (quarantine active); F12 CEILING: `rendererEnabled N`, `trianglesSubmitted 0`. If the giant slab STILL appears: capture screenshot + location/angle → `CEILING_ARTIFACT_CAUSE = NOT_GENERATED_CEILING`.
+2. FP: aim at a Door/object — expect `Door / 1 Open / 2 Examine` overlay; E executes slot 1. F12 WORLD OVERLAY: `overlayGate Y`, `blockedReason -`, `locEntries > 0`, `accepted Y`. If still blocked: read `blockedReason` — it names the exact gate.
+3. FP: aim at a Goblin — expect `Goblin / 1 Attack / 2 Examine`; E executes slot 1. F12 NPC TARGET: `npcPickSeen Y`, `npcExists Y`, `liveTile`, `distance`, `accepted Y`.
+4. Open a REAL dialogue — world overlay must be hard blocked (`dialogueBlock Y`), SPACE continue still works.
+5. Dialogue with visible choices: manually MOUSE-CLICK one option once; copy the `[DIALOGUE-CLICK-TRACE]` stdout line. Number keys 1..5 deliberately do nothing this round (AWAITING that trace).
+6. CHASE/FREE roofs + ORIGINAL + smooth zoom + CTRL-hold FP mouse — unchanged.
+
+## Section 38 — Round #7D: REAL DIALOGUE OPTION INTERFACES (cache-proven family 228..238) + NPC PICK BOUNDARY TRACE + FP GATE DIAGNOSTICS
+
+Date: 2026-08-14. Build: `gradlew :client:compileJava` -> **BUILD SUCCESSFUL (EXIT_CODE=0)**, zero compile errors, zero IDE problems on all six edited files (only pre-existing Kotlin plugin-playground warnings; one transient Kotlin daemon cache error recovered via fallback, as in prior rounds).
+
+### 38.0 USER RUNTIME from Round #7C — AUTHORITATIVE
+
+**PASS:** LOC/object crosshair overlay WORKS again (Round #7C P2 gate fix confirmed). False dialogue block GONE (`dialogueBlock N`, `dialogueActive N`, `choiceCount 0`). Ceiling quarantine intact (`rendererEnabled N`, `trianglesSubmitted 0`).
+
+**FAIL:**
+1. NPC overlay still does NOT appear — F12: `scenePickTags=0`, `npcEntries=0` with an NPC at the crosshair. Per brief: do NOT touch NPC range/overlay acceptance first — trace the pick chain instead.
+2. Dialogue number keys 1–5 still do not work. Manual trace observed `[CONTINUE OPT] Iface:241 Child:5 Slot:65535` — interface 241 child 5 is a "Click here to continue" component, NOT a multi-choice option. 241–244 are NPC continue dialogues.
+
+### 38.1 P0 — Source/cache proof of the choice-interface family (NO guesses)
+
+Proven from the cache, not from scanning:
+- `dumps/530/530_interface_names.txt`: 228/230/232/234 = `multi2`..`multi5`; 236/237/238 = `multivar2`/`multivar4`/`multivar5`; 241–244 = `npcchat1..4`. The 229/231/233/235 variants belong to the same multi-choice family structure.
+- `dumps/498/498_interface_dump.txt`: every interface 228..238 has child 0 = "Select an Option" title and children 1..N = option1..optionN **in rendered top-to-bottom order**; 241–244 have Name/Line/"Click here to continue" children only.
+- `MiniMenu.addComponentEntries` routes (byte-verified against this fork's source): CS1 `buttonType==1` → action 8 (`UNKNOWN_8`); if3 ops 0..4 → action 9 (`UNKNOWN_9`, key=op+1), ops 5..9 → 1003; if3 resume-pause → 41. `MiniMenu.doAction` routes: UNKNOWN_8 = `method4265` clientCode gate + `p1isaac(10); p4(componentId)`; UNKNOWN_9/1003 = `ClientProt.method4512(optionBase, intArgs1(createdComponentId), (int)key(op+1), intArgs2(componentId))`; left-click executes `doAction(size-1)` (primary entry after `sort()` = first enabled op).
+
+### 38.2 P1 — Real 1..N dialogue keys via structural family detection (ModernDialogueKeyboard)
+
+- **Detection = STRUCTURAL**: `findChoiceInterfaceId()` walks `InterfaceList.openInterfaces` and accepts only interface ids **228..238** that have at least one clickable option child (children 1..5, not hidden). No generic op-scan of arbitrary interfaces → the Round #7C HUD false-positive mode is structurally impossible. 241..244 deliberately excluded (continue dialogues).
+- **Option mapping**: Nth visible clickable child in INDEX order = option N (index order == rendered top-to-bottom order, cache-proven). Child 0 (title) is never selectable.
+- **Execution = EXACT vanilla mouse-click routes** (no invented packets, no mouse simulation, no hardcoded text/NPCs):
+  - if3 option → `ClientProt.method4512(c.optionBase, c.createdComponentId, op+1, c.id)` — byte-identical to `doAction` UNKNOWN_9/1003.
+  - CS1 `buttonType==1` option → `method4265` gate + `Protocol.outboundBuffer.p1isaac(10); p4(c.id)` — byte-identical to `doAction` UNKNOWN_8.
+- **Ownership**: while a choice-family interface is open, the dialogue OWNS 1..9 (keys beyond the visible option count are consumed as no-ops — they never reach the world layer). With NO family open, 1..9 fall through to the FP world-action layer exactly as before. SPACE continue keeps its proven UNKNOWN_41 route untouched.
+- `NUMERIC_ROUTE_STATUS` = `FAMILY_STRUCTURAL_7D` (supersedes AWAITING_RUNTIME_CLICK_TRACE).
+- New F12 (DIALOGUE/TARGET): `choiceIface`, `choiceCount`, `ch1..ch5` (child index of each visible option), `lastChoiceKey`, `lastActionCode`, `lastChoiceRoute`.
+
+### 38.3 P2 — NPC pick boundary TRACE (instrumentation only, zero behavioural change)
+
+No statically provable NPC-vs-LOC boundary exists (interactive NPC key is positive → `miniMenuPick` true; `Npc.render` sets `body.pickable=true` for size==1; allowInput/pick coords are shared statics). The FIRST divergent stage must be proven at runtime, so per-stage counters now sit INSIDE the vanilla chain:
+- `Npc.render`: `diagNpcRendered++` after the null-type guard (render-chain entry).
+- `GlModel.render`: `npcKeyDiag = (arg8 >>> 29 & 0x3L) == 1L` (key type bits == NPC). Inside the existing pick gate (`(miniMenuPick || roofVisibilityLocPick) && RawModel.allowInput && local70 > 0`): `diagNpcPickAttempts++`. At the mouse-bounds box hit: `diagNpcBoundsHits++` + `diagNpcCandidateIndex = (int)(arg8 >>> 32)` + capture of `this.pickable` / `miniMenuPick`. At BOTH `Model.aLongArray11[MiniMenu.anInt7++] = arg8` write sites: `diagNpcTagsWritten++`.
+- `ModernActionOverlay.snapshot()` calls `refreshNpcPickChain()` FIRST (before the gate return, so diagnostics refresh even while the overlay is blocked). It folds counters into `diagNpcRejectBoundary`, publishes per-frame copies (`*Last`), then resets the accumulators.
+- **Boundary ladder** (first failing stage, matching the brief's chain order): `NPC_NOT_RENDERED` → `ALLOW_INPUT`/`PICK_GATE` → `BOUNDS_MISS` → `NOT_PICKABLE`/`WRITE_MISS` → `MENU_BUILD` → `""` (no divergence).
+- NO range-check change, NO custom raycaster, NO behavioural fix this round — the boundary must be proven by user runtime first.
+- New F12 (NPC TARGET): `npcRendered`, `attempts`, `boundsHit`, `candNpc`, `pickable`, `mmPick`, `allowInput`, `tagWritten`, `boundary` alongside the existing `scenePickTags`/`npcEntries`.
+
+### 38.4 P3 — FP gate disagreement check (diagnostics only; NO gate change)
+
+Static analysis: `ModernCameraRig` self-heal (update step 2b) enforces `rigState == FIRST_PERSON ⇔ FirstPersonCamera.isActive()` every 50Hz tick, so in a STABLE frame the gate `isFirstPersonRigState()` cannot disagree with a visually-FP camera. The one legitimate divergence is BY DESIGN (Round #6A semantic rig authority): an obstruction-compressed CHASE boom sits at the eye position and LOOKS FP but stays CHASE — the Round #7C `blockedReason=NOT_FP` screenshot is consistent with either genuine CHASE or that designed case. Therefore NO gate/accessor rewrite (per brief: fix only if disagreement exists); instead `ModernCameraRig.getVisualMode()` (`INACTIVE` / `FIRST_PERSON` if `FirstPersonCamera.isActive()` / else `rigState.name()`) now lets the user PROVE any disagreement. New F12 (WORLD OVERLAY): `visualMode`, `rigState`, `overlayFpGate`.
+
+### 38.5 P4 — Preserve (untouched)
+
+Working LOC overlay route (snapshot → whitelist → `doAction`), E/number world action execution architecture, FREE keyboard behaviour, CTRL free mouse, movement, zoom, roofs, ceiling quarantine (`RENDER_ENABLED=false`), ORIGINAL mode. No ceiling code touched this round.
+
+### 38.6 Static review
+
+1. Choice detection is structural (ids 228..238 + clickable children 1..5) — PASS (no HUD false-positive possible).
+2. if3 route byte-identical to `doAction` UNKNOWN_9/1003 (arg order `optionBase, createdComponentId, op+1, id` matches `method4512(JagString,int,int,int)`) — PASS.
+3. CS1 route byte-identical to UNKNOWN_8 (method4265 gate + p1isaac(10)/p4(id)) — PASS.
+4. Dialogue owns 1..9 only while a family interface is open; otherwise keys fall through to world layer — PASS.
+5. SPACE continue route unchanged — PASS.
+6. NPC instrumentation is pure counters inside existing branches; zero control-flow change in `Npc.render`/`GlModel.render` — PASS.
+7. `refreshNpcPickChain()` runs before the overlay gate return and resets accumulators after publishing `*Last` copies — PASS (F12 never reads a reset counter).
+8. No NPC range/raycaster/overlay-acceptance change — PASS.
+9. FP gate logic unchanged; `getVisualMode()` is read-only — PASS.
+10. No ceiling code touched; `ModernCeiling.RENDER_ENABLED` stays false — PASS.
+11. LOC overlay path untouched — PASS.
+12. FREE/CTRL/movement/zoom/roofs/ORIGINAL untouched — PASS.
+13. No invented packets anywhere — PASS.
+14. `GetProblems` on all six edited files: no errors — PASS.
+15. Build: `gradlew :client:compileJava` BUILD SUCCESSFUL (EXIT_CODE=0) — PASS.
+
+### 38.7 Verification summary
+
+| Item | Status |
+|------|--------|
+| P0 family proof (cache names + 498 dump + doAction routes) | **SOURCE PROVEN** |
+| P1 real 1..N dialogue keys (family 228..238) | SOURCE VERIFIED / COMPILE VERIFIED / STATIC PASS / RUNTIME UNVERIFIED |
+| P2 NPC pick-chain boundary instrumentation | COMPILE VERIFIED / STATIC PASS / boundary AWAITING USER RUNTIME |
+| P3 FP gate disagreement check | STATICALLY ANALYZED (no stable disagreement; diagnostics added) |
+| P4 preservation | STATIC PASS |
+| Build | **BUILD SUCCESSFUL (EXIT_CODE=0)** |
+
+No runtime success is claimed. Stopping after build/static review per brief.
+
+**Next user test checklist:**
+1. FP: talk to an NPC with CHOICES — F12 should show `choiceIface 228..238`, `choiceCount > 0`, `ch1..ch5` child indices. Press 1..5 — the matching option must be selected via the real server route (`lastChoiceKey`, `lastActionCode 9 or 8`, `lastChoiceRoute IF3_FAMILY_x/CS1_FAMILY_x`).
+2. Continue dialogues (241..244): SPACE must still work; number keys must NOT be consumed by the dialogue layer (they fall through to world actions).
+3. FP: aim at an NPC — copy the F12 NPC TARGET line (`npcRendered / attempts / boundsHit / candNpc / pickable / mmPick / allowInput / tagWritten / boundary`). The `boundary` value names the FIRST stage where NPC diverges from the working LOC path — that is the only thing a future round may fix.
+4. FP: if the world overlay shows `blockedReason NOT_FP` while the view LOOKS first-person, copy `visualMode / rigState / overlayFpGate` — this proves or disproves the designed compressed-CHASE case.
+5. LOC overlay, ceiling quarantine (`rendererEnabled N`), FREE keyboard, CTRL mouse, movement/zoom/roofs — unchanged.
+
+---
+
+## 39. ROUND P4B — F11 MODERN → ORIGINAL SCENE/COLLISION RESYNC
+
+User runtime (authoritative): after F11 MODERN → ORIGINAL, some normally
+walkable tiles are blocked and some objects clip incorrectly; walking into a
+new chunk/region load repairs it automatically → stale client-side
+scene/collision/pathfinding state. Brief constraints honoured: NO OpenGL /
+GlRenderer restart, NO display recreate, NO texture reload, NO reconnect,
+NO fake teleport packet, NO collision-map clearing without rebuild, NO
+custom collision rebuild, ORIGINAL region loading untouched.
+
+### 39.1 P0/P1 — Source trace: root cause + smallest vanilla refresh
+
+**Root cause (SOURCE PROVEN).** While MODERN Q16 owns locomotion,
+`ModernMovementController.update()` writes `self.xFine/zFine` every tick but
+never touches `movementQueueX/Z`. Vanilla pathfinding seeds its BFS exactly
+at `PlayerList.self.movementQueueX[0]/movementQueueZ[0]`
+(`PathFinder.findPathToLoc` → `findPath(...)`; `findPathN/2/1` seed
+`parents/queueX[0]` from those args). The old `exitModernMode()` rebased
+xFine/zFine but **never synced movementQueueX[0]/Z[0]** — so after F11,
+click-to-walk BFS radiated from the tile where the player stood when MODERN
+was entered. Result: walkable tiles unreachable, wrong adjacency targets
+near walls/doors — exactly the reported symptoms.
+
+**Why a region load heals it (SOURCE PROVEN).**
+`LoginManager.method2463` (region shift) ends in
+`PlayerList.self.teleport(...)` → `PathingEntity.method2683` hard branch:
+`movementQueueX[0]/Z[0] = target`, `movementQueueSize = 0`,
+`xFine/zFine = tile centre` — the vanilla authoritative entity reset. This
+is what restores BFS origin correctness, NOT any collision rebuild.
+
+**Collision maps are never stale (SOURCE PROVEN by exhaustive grep).** All
+`CollisionMap.flags` mutators are vanilla (`flagScenery/flagWall/flagTile/
+flagGroundDecor` + unflag pairs during `rebuildMap`/loc reads, NPC per-tick
+flagging in `client.mainUpdate`, SceneGraph loc clears of the 0x1000000
+bit). The only direct `flags = 0` writer is the `::noclip` chat cheat.
+Modern code performs ZERO collision-flag writes. Therefore NO collision
+rebuild is needed — the smallest proven vanilla refresh is the
+teleport-style entity reset, reused verbatim.
+
+**Secondary staleness found.** Server-step drain hooks
+(`Protocol.readSelfPlayerInfo`) are gated by `isModernQ16Owner()`; after F11
+exit the gate closes, so residual in-flight steps from the last modern walk
+requests would land in the vanilla queue and replay as ghost movement.
+`mapFlagX/Z` are NOT written by the modern path
+(`sendModernWalkPacket` omits flag markers by design) — no action needed.
+
+### 39.2 P2 — Exit resync implementation (ModernMovementController.exitModernMode)
+
+Order of operations (brief-mandated):
+1. Capture before-state (fine, queue[0], pending count) for F12.
+2. Authoritative tile = last server-confirmed LOCAL tile
+   (`lastServerReportedTileX/Z`; fallback live tile if never reported).
+3. Stop modern Q16 writes: velocity/intent zeroed, pending ring cleared,
+   `initialized/suspended/wasFirstPersonLastTick` reset,
+   `lastMovementState = IDLE`.
+4. Vanilla-proven refresh (route `VANILLA_TELEPORT_RESET`):
+   `self.teleport(authTileX, true, authTileZ)` — the EXACT call
+   `method2463` uses. Hard branch of `method2683` resets queue[0],
+   queueSize and xFine/zFine to the authoritative tile centre, so
+   PathFinder BFS originates at the live player tile. Side effect is the
+   vanilla far-teleport `FogManager.setInstantFade()` (same as any server
+   teleport) — noted, not suppressed.
+5. Post-exit drain window: new `isDrainingServerSteps()`
+   (= `isModernQ16Owner() || client.loop < postExitDrainUntil`, 150 ticks)
+   replaces the drain gate in `Protocol.readSelfPlayerInfo` type 1/2
+   branches so residual in-flight steps are consumed (`onServerStep` +
+   `method2689`) instead of replaying. Type 3 (teleport) stays vanilla.
+6. Only then is movement ownership handed to ORIGINAL.
+
+MODERN FREE exit (rig FREE = vanilla already owns): route
+`VANILLA_FREE_NOOP` — queue untouched (it is live and consistent); touching
+it would cancel legitimate walking. ORIGINAL-only users: `exitModernMode`
+never runs; `postExitDrainUntil = -1` keeps the drain gate byte-identical
+to prior behaviour.
+
+### 39.3 P3 — F12 diagnostics + one-shot log
+
+- New F12 section **F11 EXIT** (last MODERN → ORIGINAL snapshot):
+  `beforeFine / afterFine`, `authTile`, `serverTile`, `queue0Before / after`,
+  `lastSent` (last DDA walk target sent — new `lastSentTileX/Z` tracked in
+  `maybeSendWalkRequest`), `pendingMoves`, `collisionRefresh Y/N`, `route`.
+- One-shot per exit: `[F11-ORIGINAL-RESYNC] authTile=... queue0Before=...
+  queue0After=... collisionRefreshRoute=...`.
+
+### 39.4 Static review
+
+1. `teleport(x, true, z)` → `method2683(size, x, z, true)` → hard branch
+   (arg3=true skips near-queue path) — PASS.
+2. Drain gate only EXTENDS prior behaviour in time; `postExitDrainUntil=-1`
+   ⇒ ORIGINAL-only semantics unchanged — PASS.
+3. Type-3 teleport branch untouched — PASS.
+4. No collision-map writes/clears anywhere in the change — PASS.
+5. No renderer/display/texture/reconnect changes — PASS.
+6. No fake teleport packet (no outbound writes added) — PASS.
+7. `onServerStep` during drain window: `reconcile()` early-returns
+   (`!initialized`); `consumePendingExact` on empty ring is a no-op — PASS.
+8. `GetProblems` on all three edited files: no errors — PASS.
+9. Build: `gradlew :client:compileJava` BUILD SUCCESSFUL (EXIT_CODE=0) — PASS.
+
+### 39.5 Verification summary
+
+| Item | Status |
+|------|--------|
+| P0 trace (BFS origin, method2463/teleport repair, flag mutators) | **SOURCE PROVEN** |
+| P1 smallest vanilla refresh = teleport-style entity reset | **SOURCE PROVEN** (no collision rebuild needed) |
+| P2 exit resync + drain window | COMPILE VERIFIED / STATIC PASS / RUNTIME UNVERIFIED |
+| P3 F12 F11 EXIT + [F11-ORIGINAL-RESYNC] log | COMPILE VERIFIED / STATIC PASS |
+| ORIGINAL-only user unchanged | STATIC PASS |
+| Build | **BUILD SUCCESSFUL (EXIT_CODE=0)** |
+
+No runtime success is claimed. Stopping after build/static review per brief.
+
+**Next user test checklist (brief's required runtime, 10×):**
+1. Enter MODERN (F11), WASD around buildings/walls/doors.
+2. F11 back to ORIGINAL — console must print one `[F11-ORIGINAL-RESYNC]`
+   line with `collisionRefreshRoute=VANILLA_TELEPORT_RESET` (or
+   `VANILLA_FREE_NOOP` if exiting from FREE).
+3. Immediately click tiles around walls/doors/objects — clipping must match
+   a fresh vanilla region load; NO walk into a new chunk needed to repair.
+4. Repeat 10×.
+5. F12 → **F11 EXIT** section: `authTile` should equal `serverTile`,
+   `queue0After` should equal `authTile`, `collisionRefresh Y`.
+6. ORIGINAL-only session without F11 — behaviour unchanged.
+
+---
+
+## 40. Round #8 — FP Context Menu + P4B Hotfix + Overlay Range
+
+**Date:** 15-08-2026  
+**Status:** SOURCE VERIFIED · COMPILE VERIFIED · STATICALLY REVIEWED · RUNTIME UNVERIFIED
+
+### 40.1 Scope
+
+Round #8 addresses three user-reported issues:
+1. **FP vanilla context menu** — right-click in FIRST_PERSON must open the real vanilla MiniMenu at the crosshair, with wheel-scroll selection and left-click execution.
+2. **P4B post-F11 drain hotfix** — the 150-tick blanket drain was swallowing ORIGINAL click-to-walk immediately after F11 exit.
+3. **Quick overlay range** — restore from 8 tiles back to 2 tiles (user preference).
+
+### 40.2 Implementation Summary
+
+#### P1-P7: FP Context Menu Controller
+
+**New file:** `rt4-client/client/src/main/java/rt4/FPContextMenuController.java`
+
+This controller provides FIRST_PERSON-specific INPUT CONTROL for the EXISTING vanilla MiniMenu. It does NOT implement a second custom context-menu data model — it uses the real MiniMenu arrays, sorting, rendering, and `doAction()` execution.
+
+**Activation conditions (ALL must be true):**
+- `CameraMode.isModern()` is true
+- `ModernCameraRig` semantic state == FIRST_PERSON
+- Real dialogue inactive (`ModernDialogueKeyboard.hasActiveDialogue()` == false)
+- Chat/text inactive (`ModernControlController.isChatInputActive()` == false)
+- CTRL UI cursor inactive (`FirstPersonCamera.isUiCursorActive()` == false)
+- FP cursor/crosshair mode active
+
+**Menu opening (P2):**
+On FP right-click, the crosshair point is computed as:
+```
+viewportX + viewportWidth / 2
+viewportY + viewportHeight / 2
+```
+This point is fed into the EXISTING vanilla scene-pick/menu build authority (`ScriptRunner.method3901()`) which sets `Cs1ScriptRunner.aBoolean108` and positions the menu. Menu contents remain FULL VANILLA.
+
+**Scroll selection (P3):**
+While the FP-owned vanilla context menu is open, MOUSE WHEEL OWNER = FP CONTEXT MENU. `ModernCameraRig` MUST NOT receive that wheel delta. Wheel down = next visible row, wheel up = previous visible row (wrap-around).
+
+**Visual highlight (P4):**
+The vanilla menu already highlights rows based on hover coordinates in `MiniMenu.drawA()`/`drawB()`. This controller adds a visual highlight pass over the SELECTED row (wheel-selected, not just mouse-hovered) using the exact menu x/y/width/height from vanilla.
+
+**Left click execution (P5):**
+When FP context menu owns input, left click executes `MiniMenu.doAction(selectedArrayIndex)` with the selected array index, then closes via the vanilla-equivalent close route. No new packets, no action reconstruction.
+
+**Input priority (P7):**
+```
+1. explicit chat/text
+2. real dialogue / modal UI
+3. FP vanilla context menu (THIS controller)
+4. CTRL UI cursor
+5. quick crosshair overlay
+6. camera/movement
+```
+While context menu open: wheel = menu, no camera zoom, no FP->CHASE zoom transition, E cannot fire quick overlay, number keys cannot fire quick overlay, WASD suspended, left click confirms menu row.
+
+#### P6: Protocol.method843 Input Ownership
+
+**Modified:** `rt4-client/client/src/main/java/rt4/Protocol.java`
+
+Added early return in `method843()` when `FPContextMenuController.isMenuOpen()` is true. This prevents vanilla mouse action processing from double-executing actions while the FP context menu owns input.
+
+#### P8: Quick Overlay Range 8->2 Tiles
+
+**Modified:** `rt4-client/client/src/main/java/rt4/ModernActionOverlay.java`
+
+Changed `INTERACT_RANGE_TILES` from 8 to 2. This is DISPLAY/ACQUISITION range only — executing an action still goes through existing RuneScape action logic; existing pathfinding/server decides where the player must stand and whether the action is in range.
+
+#### P10: P4B Hotfix — Remove Post-F11 Drain
+
+**Modified:** `rt4-client/client/src/main/java/rt4/ModernMovementController.java`
+
+**REMOVED:**
+- `postExitDrainUntil` field
+- `POST_EXIT_DRAIN_TICKS` constant (was 150)
+- Time-based drain window in `exitModernMode()`
+- Time-based check in `isDrainingServerSteps()`
+
+**NEW:**
+`isDrainingServerSteps()` now returns `isModernQ16Owner()` ONLY. No time-based window. ORIGINAL click-to-walk must work IMMEDIATELY after F11. Residual in-flight steps are handled by the vanilla queue naturally (they arrive through the normal vanilla `move()` path and append cleanly to the live queue).
+
+**Rationale:** The 150-tick blanket drain was causing ORIGINAL click-to-walk to be swallowed after F11. The vanilla queue already handles residual steps correctly — they arrive through the normal `move()` path and append cleanly. No time-based drain window is needed.
+
+#### P11: F12 Diagnostics Update
+
+**Modified:** `rt4-client/client/src/main/java/rt4/DebugOverlay.java`
+
+Added new **FP CONTEXT MENU** section:
+```
+== FP CONTEXT MENU ==
+menuOpen Y/N  selectedIdx <int>  wheelConsumed Y/N
+selectedOp <action code>
+selectedTarget <target name or "->
+```
+
+#### P9: Frontmost/Nearest Crosshair Target Selection (DEFERRED)
+
+**Status:** SOURCE UNPROVEN — DEFERRED TO DEDICATED TARGETING ROUND
+
+The user requirement is: CAMERA -> DOOR -> TABLE must select DOOR (nearest/frontmost target along the camera/crosshair hit).
+
+**Source trace findings:**
+- `Model.aLongArray11` is the scene pick tag array, populated by `GlModel.render()` and `SoftwareModel.render()`.
+- The write order in `GlModel.render()` is: iterate `SceneGraph.sceneObjects`, for each object call `model.render()` which writes pick tags.
+- The iteration order is `SceneGraph.sceneObjects` array order, which is NOT guaranteed front-to-back or back-to-front — it's insertion order from the region load.
+- There is NO per-hit depth authority in the current RT4 picking pipeline. The pick tags are written in scene-object iteration order, not camera-space depth order.
+
+**Conclusion:** Without a true per-hit depth authority, implementing frontmost target selection would require a custom raycaster or depth-sort pass. This is deferred to a dedicated targeting round. The current overlay uses the existing pick order (which is source-proven but not depth-sorted).
+
+### 40.3 Files Modified
+
+| File | Change |
+|------|--------|
+| `FPContextMenuController.java` | **NEW** — FP vanilla context menu controller (P1-P7) |
+| `ModernActionOverlay.java` | Changed `INTERACT_RANGE_TILES` 8→2 (P8); added `FPContextMenuController.isMenuOpen()` gate (P7); added `toPlainStringPublic()` accessor |
+| `ModernControlController.java` | Integrated `FPContextMenuController.update()` into `updateInteractionLayer()` (P7) |
+| `ModernCameraRig.java` | Added `FPContextMenuController.wasWheelConsumed()` gate in `processWheelInput()` (P3/P7) |
+| `Protocol.java` | Added `FPContextMenuController.isMenuOpen()` early return in `method843()` (P6) |
+| `ModernMovementController.java` | **REMOVED** time-based post-exit drain (P10); `isDrainingServerSteps()` now == `isModernQ16Owner()` |
+| `DebugOverlay.java` | Added **FP CONTEXT MENU** section (P11) |
+
+### 40.4 Static Review Checklist
+
+| Item | Status |
+|------|--------|
+| FP context menu uses real MiniMenu arrays/rendering | **SOURCE VERIFIED** |
+| Execution only `MiniMenu.doAction()` | **SOURCE VERIFIED** |
+| No hardcoded action packets | **STATIC PASS** |
+| No double wheel consumption | **STATIC PASS** (gate in `ModernCameraRig.processWheelInput()`) |
+| No guessed pick-depth ordering | **SOURCE VERIFIED** (P9 deferred — no depth authority proven) |
+| Overlay max range exactly 2 | **STATIC PASS** (`INTERACT_RANGE_TILES = 2`) |
+| NPC live tile resolution retained | **STATIC PASS** (unchanged from Round #7) |
+| ORIGINAL untouched | **STATIC PASS** (no ORIGINAL-mode code paths modified) |
+| FREE untouched | **STATIC PASS** (no FREE-mode code paths modified) |
+| No 150-tick post-F11 drain | **STATIC PASS** (removed `postExitDrainUntil` + `POST_EXIT_DRAIN_TICKS`) |
+| New ORIGINAL click not swallowed after F11 | **STATIC PASS** (`isDrainingServerSteps()` == `isModernQ16Owner()`) |
+| Ceiling untouched | **STATIC PASS** (no `ModernCeiling.java` changes) |
+| Build | **BUILD SUCCESSFUL (EXIT_CODE=0)** |
+
+### 40.5 Verification Summary
+
+| Item | Status |
+|------|--------|
+| P0 trace (MiniMenu, Protocol, ScriptRunner, ModernActionOverlay, ModernCameraRig, ModernMovementController) | **SOURCE PROVEN** |
+| P1-P7 FP context menu controller | COMPILE VERIFIED / STATIC PASS / RUNTIME UNVERIFIED |
+| P8 overlay range 8->2 | COMPILE VERIFIED / STATIC PASS |
+| P9 frontmost target selection | **DEFERRED** (no proven depth authority) |
+| P10 P4B hotfix (remove post-F11 drain) | COMPILE VERIFIED / STATIC PASS / RUNTIME UNVERIFIED |
+| P11 F12 diagnostics | COMPILE VERIFIED / STATIC PASS |
+| Build | **BUILD SUCCESSFUL (EXIT_CODE=0)** |
+
+No runtime success is claimed. Stopping after build/static review per brief.
+
+**Next user test checklist:**
+1. Enter MODERN (F11), scroll to FIRST_PERSON.
+2. Right-click — vanilla context menu must open at crosshair.
+3. Scroll wheel — menu selection must cycle (no camera zoom).
+4. Left-click — selected action must execute (e.g., Open door, Talk-to NPC).
+5. F11 back to ORIGINAL — click-to-walk must work IMMEDIATELY (no 3-second wait).
+6. F12 → **FP CONTEXT MENU** section: `menuOpen`, `selectedIdx`, `wheelConsumed` must update.
+7. Quick overlay (E key) — must only show targets within 2 tiles (was 8).
+8. ORIGINAL-only session without F11 — behaviour unchanged.
+
+

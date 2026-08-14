@@ -442,6 +442,62 @@ public class MiniMenu {
 		}
 	}
 
+	// ---- Round #7 P3: dialogue click route trace (once per component+op) ----
+	/** Dedupe key of the last component/op logged by [DIALOGUE-CLICK-TRACE]. */
+	private static long lastTracedDialogueClick = Long.MIN_VALUE;
+
+	/**
+	 * Round #7 P3: logs the REAL vanilla dialogue click route exactly once
+	 * per (component, action, slot) so number keys 1..N can be proven to
+	 * invoke THE SAME route as a manual mouse click. No behaviour change —
+	 * observation only.
+	 */
+	private static void traceDialogueClick(int actionCode, int intArg1, int intArg2, int keyLow, long key) {
+		long dedupe = (((long) intArg2) << 32) | ((long) (intArg1 & 0xFFFF) << 16) | (actionCode & 0xFFFFL);
+		if (dedupe == lastTracedDialogueClick) {
+			return;
+		}
+		lastTracedDialogueClick = dedupe;
+
+		Component comp;
+		String route;
+		int opIndex;
+		if (actionCode == UNKNOWN_8) {
+			// CS1 button: p1isaac(10) intArg1=0 + p4(component.id)
+			comp = InterfaceList.getComponent(intArg2);
+			route = "CS1_BUTTON(p1isaac10+p4)";
+			opIndex = -1;
+		} else if (actionCode == UNKNOWN_41) {
+			// Continue: method10 + aClass13_10 + redraw
+			comp = InterfaceList.method1418(intArg2, intArg1);
+			route = "CONTINUE(method10+redraw)";
+			opIndex = -1;
+		} else {
+			// if3 op: ClientProt.method4512(opBase, createdId, op+1, componentId)
+			comp = InterfaceList.method1418(intArg2, intArg1);
+			route = "IF3_OP(ClientProt.method4512)";
+			opIndex = keyLow - 1;
+		}
+
+		System.out.println("[DIALOGUE-CLICK-TRACE]"
+				+ " interfaceId=" + (comp != null ? (comp.id >>> 16) : -1)
+				+ " childId=" + (comp != null ? (comp.id & 0xFFFF) : -1)
+				+ " component.id=" + (comp != null ? comp.id : -1)
+				+ " createdComponentId=" + (comp != null ? comp.createdComponentId : intArg1)
+				+ " if3=" + (comp != null && comp.if3)
+				+ " type=" + (comp != null ? comp.type : -1)
+				+ " buttonType=" + (comp != null ? comp.buttonType : -1)
+				+ " clientCode=" + (comp != null ? comp.clientCode : -1)
+				+ " actionCode=" + actionCode
+				+ " key=" + key
+				+ " intArg1=" + intArg1
+				+ " intArg2=" + intArg2
+				+ " opIndex=" + opIndex
+				+ " text=" + (comp != null ? comp.text : "null")
+				+ " option=" + (comp != null ? (comp.if3 ? comp.optionBase : comp.optionSuffix) : "null")
+				+ " executionRoute=" + route);
+	}
+
 	@OriginalMember(owner = "client!i", name = "p", descriptor = "(II)V")
 	public static void doAction(@OriginalArg(1) int arg0) {
 		if (arg0 < 0) {
@@ -455,6 +511,12 @@ public class MiniMenu {
 		}
 		@Pc(31) long local31 = keys[arg0];
 		@Pc(36) int local36 = (int) keys[arg0];
+		// Round #7 P3: one-shot trace of the real vanilla dialogue click
+		// route (CS1 button / if3 op / continue) — observation only.
+		if (actionCode == UNKNOWN_8 || actionCode == UNKNOWN_9
+				|| actionCode == UNKNOWN_1003 || actionCode == UNKNOWN_41) {
+			traceDialogueClick(actionCode, local15, local19, local36, local31);
+		}
 		@Pc(43) Player local43;
 		if (actionCode == PLAYER_FOLLOW_ACTION) {
 			local43 = PlayerList.players[local36];

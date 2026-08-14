@@ -35,17 +35,36 @@ package rt4;
  *       as {@link DebugOverlay}/{@link ModernCrosshair} (no AWT Graphics2D).</li>
  * </ul>
  *
+ * <h2>Round #7 P2 — NPC pick finding + fix (source-proven)</h2>
+ * <p>Scene pick tags for NPCs (and players) carry the entity index in the
+ * high 32 bits and NO tile bits in the low 29 bits
+ * ({@code key = npcIndex << 32 | 0x20000000L}). {@link MiniMenu#addEntries}
+ * decodes x/z from the key's low bits, so every NPC/player menu entry has
+ * {@code intArgs1 = intArgs2 = 0}. The old range check compared those zeros
+ * against the player's tile and rejected EVERY NPC regardless of range
+ * (Round #6B/C runtime: {@code [FP-TARGET] NPC menu entries=1 outOfRange=1}).
+ * This is NOT a range problem — the pick/menu pipeline delivers NPC entries
+ * correctly. The fix resolves NPC/player tiles from the LIVE entity lists
+ * ({@link NpcList#npcs} / {@link PlayerList#players}) before the range
+ * check; loc/objstack entries keep their intArgs tiles. Execution still
+ * goes through the exact existing {@link MiniMenu#doAction(int)} route
+ * (its NPC branches use the live NPC from the key, so tile args are
+ * irrelevant there). {@code NPC_EXAMINE} (1007) added to the whitelist.
+ * A throttled {@code NPC_PICK:} diagnostic (F12 on) replaces [FP-TARGET].
+ *
  * <p>STATUS: SOURCE VERIFIED (routes traced), COMPILE VERIFIED after build,
  * RUNTIME UNVERIFIED.</p>
  */
 public final class ModernActionOverlay {
 
 	/**
-	 * World interaction range (in tiles) for the FP crosshair action UI only.
-	 * This is NOT a combat range rule — combat continues to use existing
-	 * RuneScape mechanics.
+	 * World interaction DISPLAY/ACQUISITION range (in tiles) for the FP
+	 * crosshair action UI only. Round #8 P8: restored to 2 tiles (was 8).
+	 * DISPLAY RANGE != GAME ACTION RANGE — executing an action still goes
+	 * through existing RuneScape action logic; existing pathfinding/server
+	 * decides where the player must stand and whether the action is in range.
 	 */
-	private static final int INTERACT_RANGE_TILES = 3;
+	private static final int INTERACT_RANGE_TILES = 2;
 
 	/** Maximum number of actions displayed for the targeted entity. */
 	private static final int MAX_DISPLAYED_ACTIONS = 3;
@@ -61,14 +80,16 @@ public final class ModernActionOverlay {
 	 * ({@link ModernDialogueKeyboard}).
 	 */
 	private static final int[] WORLD_ACTION_WHITELIST = {
-			// Scenery / loc ops 1-5
+			// Scenery / loc ops 1-5 (+ Examine, existing menu entry 1004)
 			MiniMenu.LOC_ACTION_1, MiniMenu.LOC_ACTION_2, MiniMenu.LOC_ACTION_3,
-			MiniMenu.LOC_ACTION_4, MiniMenu.LOC_ACTION_5,
-			// NPC ops 1-5
+			MiniMenu.LOC_ACTION_4, MiniMenu.LOC_ACTION_5, MiniMenu.LOC_ACTION_EXAMINE,
+			// NPC ops 1-5 (+ Examine — NPC_EXAMINE 1007, Round #7 P2)
 			MiniMenu.NPC_ACTION_1, MiniMenu.NPC_ACTION_2, MiniMenu.NPC_ACTION_3,
-			MiniMenu.NPC_ACTION_4, MiniMenu.NPC_ACTION_5,
+			MiniMenu.NPC_ACTION_4, MiniMenu.NPC_ACTION_5, MiniMenu.NPC_EXAMINE,
 			// Ground item stack ops 1-5 (21/34/18/20/24 from MiniMenu.addEntries)
+			// + Examine (existing menu entry 1002)
 			21, 34, MiniMenu.OBJSTACK_ACTION_1, MiniMenu.OBJSTACK_ACTION_2, 24,
+			MiniMenu.OBJ_EXAMINE,
 			// Player options
 			MiniMenu.PLAYER_ACTION_1, MiniMenu.PLAYER_ACTION_TRADE,
 			MiniMenu.PLAYER_FOLLOW_ACTION, MiniMenu.PLAYER_REQ_ASSIST_ACTION,
@@ -102,17 +123,264 @@ public final class ModernActionOverlay {
 	private static boolean key3WasPressed;
 	private static boolean keyEWasPressed;
 
+	/** Scratch buffer for live entity tile resolution (no per-frame alloc). */
+	private static final int[] scratchTile = new int[2];
+
+	// ---- Round #7 P2/P8: NPC_PICK diagnostics (read by DebugOverlay) ----
+	/** Whether the scene pick pass produced at least one NPC pick tag. */
+	public static boolean diagNpcPickTagSeen;
+	/** Number of NPC action entries currently in the MiniMenu arrays. */
+	public static int diagNpcMenuEntries;
+	/** First NPC entry's action code/op ("" if none). */
+	public static String diagFirstNpcAction = "";
+	/** NPC under the crosshair this frame ("none" if no target). */
+	public static String diagNpcUnderCrosshair = "none";
+	/** Whether the overlay accepted (acquired) a target this frame. */
+	public static boolean diagOverlayAccepted;
+	/** Why the overlay rejected ("" when accepted or overlay inactive). */
+	public static String diagRejectReason = "";
+
+	// ---- Round #7C P4: extended NPC pick diagnostics (DebugOverlay) ----
+	/** Scene-pick NPC list index (-1 if no NPC pick tag this frame). */
+	public static int diagNpcIndex = -1;
+	/** Whether NpcList.npcs[diagNpcIndex] holds a live Npc. */
+	public static boolean diagNpcExists;
+	/** Live tile of the picked NPC (-1/-1 if none). */
+	public static int diagNpcLiveX = -1;
+	public static int diagNpcLiveZ = -1;
+
+	// ---- Round #7D P2: NPC pick-chain boundary counters (DebugOverlay) ----
+	// Incremented by the vanilla render/pick chain itself (Npc.render and
+	// GlModel.render) so the FIRST boundary where the NPC path diverges from
+	// the working LOC path is visible on F12 without any behavioural change.
+	/** NPCs that reached Npc.render this frame (render chain entry). */
+	public static int diagNpcRendered;
+	/** NPC-keyed models that entered the GlModel.render pick gate. */
+	public static int diagNpcPickAttempts;
+	/** NPC-keyed models that passed the mouse-bounds box check. */
+	public static int diagNpcBoundsHits;
+	/** NPC pick tags actually written to Model.aLongArray11 this frame. */
+	public static int diagNpcTagsWritten;
+	/** Index of the last NPC-keyed model that passed the bounds check. */
+	public static int diagNpcCandidateIndex = -1;
+	/** this.pickable of the last NPC-keyed bounds-hit model. */
+	public static boolean diagNpcLastPickable;
+	/** miniMenuPick (key > 0) of the last NPC-keyed bounds-hit model. */
+	public static boolean diagNpcLastMiniMenuPick;
+	/** RawModel.allowInput at the last snapshot refresh (shared gate). */
+	public static boolean diagAllowInput;
+	/** First pick-chain stage where NPC diverges from working LOC ("" = none). */
+	public static String diagNpcRejectBoundary = "";
+	// Folded per-frame copies for F12 (the live accumulators above are reset
+	// by refreshNpcPickChain before the overlay draw reads them).
+	/** diagNpcRendered folded at the last snapshot. */
+	public static int diagNpcRenderedLast;
+	/** diagNpcPickAttempts folded at the last snapshot. */
+	public static int diagNpcPickAttemptsLast;
+	/** diagNpcBoundsHits folded at the last snapshot. */
+	public static int diagNpcBoundsHitsLast;
+	/** diagNpcTagsWritten folded at the last snapshot. */
+	public static int diagNpcTagsWrittenLast;
+
 	private ModernActionOverlay() {
 	}
 
 	/**
 	 * Whether this overlay is active right now (all display/input gates).
+	 *
+	 * <p>Round #6B/C input authority (brief P2/P6): a dialogue owns 1-9/E
+	 * completely ({@link ModernDialogueKeyboard#hasActiveDialogue()}), and
+	 * the P1 CTRL-held UI-cursor substate gives the mouse/keys to normal
+	 * interfaces — in both cases the world overlay has ZERO authority.
 	 */
 	private static boolean isOverlayActive() {
 		return CameraMode.isModern()
 				&& ModernCameraRig.isFirstPersonRigState()
 				&& !Cs1ScriptRunner.aBoolean108 // right-click menu owns input
-				&& !ModernControlController.isChatInputActive();
+				&& !ModernControlController.isChatInputActive()
+				// P2: dialogue owns 1-9/E — world target has zero authority.
+				&& !ModernDialogueKeyboard.hasActiveDialogue()
+				// P1: CTRL-held UI cursor — no world shortcuts.
+				&& !FirstPersonCamera.isUiCursorActive()
+				// Round #8 P7: FP context menu owns input — no quick overlay.
+				&& !FPContextMenuController.isMenuOpen();
+	}
+
+	// ---- Round #7C P2: WORLD OVERLAY gate diagnostics (DebugOverlay) ----
+
+	/** Whether all overlay gates pass this frame (same as the private gate). */
+	public static boolean isGateActive() {
+		return isOverlayActive();
+	}
+
+	/**
+	 * Which gate currently blocks the overlay ("" when active). Evaluated in
+	 * the exact {@link #isOverlayActive()} order so the FIRST failing gate is
+	 * reported — proves the blocking boundary at runtime.
+	 */
+	public static String getBlockedReason() {
+		if (!CameraMode.isModern()) {
+			return "NOT_MODERN";
+		}
+		if (!ModernCameraRig.isFirstPersonRigState()) {
+			return "NOT_FP";
+		}
+		if (Cs1ScriptRunner.aBoolean108) {
+			return "RCLICK_MENU";
+		}
+		if (ModernControlController.isChatInputActive()) {
+			return "CHAT_INPUT";
+		}
+		if (ModernDialogueKeyboard.hasActiveDialogue()) {
+			return "DIALOGUE_BLOCK";
+		}
+		if (FirstPersonCamera.isUiCursorActive()) {
+			return "CTRL_UI_CURSOR";
+		}
+		return "";
+	}
+
+	/** Whitelisted world-action entries currently in the MiniMenu arrays. */
+	public static int countWorldEntries() {
+		int n = 0;
+		for (int i = 1; i < MiniMenu.size; i++) {
+			if (isWorldAction(MiniMenu.actions[i])) {
+				n++;
+			}
+		}
+		return n;
+	}
+
+	/** Whitelisted LOC (scenery/object) entries: key type bits == 2. */
+	public static int countLocEntries() {
+		return countEntriesByType(2);
+	}
+
+	/** Whitelisted NPC entries: key type bits == 1. */
+	public static int countNpcEntries() {
+		return countEntriesByType(1);
+	}
+
+	/**
+	 * Round #7D P2: fold the per-frame NPC pick-chain counters into the F12
+	 * boundary string, then reset them for the next frame. Called FIRST in
+	 * {@link #snapshot()} so the diagnostics refresh even while the overlay
+	 * gate blocks (the counters come from the vanilla render path and must
+	 * never depend on the overlay being active).
+	 */
+	private static void refreshNpcPickChain() {
+		diagAllowInput = RawModel.allowInput;
+		diagNpcMenuEntries = countNpcEntries();
+		int rendered = diagNpcRendered;
+		int attempts = diagNpcPickAttempts;
+		int boundsHits = diagNpcBoundsHits;
+		int tagsWritten = diagNpcTagsWritten;
+		if (tagsWritten > 0) {
+			// Tags reached Model.aLongArray11 — divergence (if any) is in the
+			// menu build after SceneGraph pickup.
+			diagNpcRejectBoundary = diagNpcMenuEntries > 0 ? "" : "MENU_BUILD";
+		} else if (boundsHits > 0) {
+			// Model passed the mouse-bounds box but wrote no tag.
+			diagNpcRejectBoundary = diagNpcLastPickable
+					? "WRITE_MISS" : "NOT_PICKABLE";
+		} else if (attempts > 0) {
+			// Model entered the pick gate but missed the bounds box.
+			diagNpcRejectBoundary = "BOUNDS_MISS";
+		} else if (rendered > 0) {
+			// NPC rendered but its model never reached the pick gate.
+			diagNpcRejectBoundary = diagAllowInput ? "PICK_GATE" : "ALLOW_INPUT";
+		} else {
+			diagNpcRejectBoundary = "NPC_NOT_RENDERED";
+		}
+		// Publish the folded frame counts for F12, then reset the accumulators.
+		diagNpcRenderedLast = rendered;
+		diagNpcPickAttemptsLast = attempts;
+		diagNpcBoundsHitsLast = boundsHits;
+		diagNpcTagsWrittenLast = tagsWritten;
+		diagNpcRendered = 0;
+		diagNpcPickAttempts = 0;
+		diagNpcBoundsHits = 0;
+		diagNpcTagsWritten = 0;
+		diagNpcCandidateIndex = -1;
+	}
+
+	private static int countEntriesByType(int type) {
+		int n = 0;
+		for (int i = 1; i < MiniMenu.size; i++) {
+			if (isWorldAction(MiniMenu.actions[i])
+					&& ((int) MiniMenu.keys[i] >> 29 & 0x3) == type) {
+				n++;
+			}
+		}
+		return n;
+	}
+
+	// ---- Round #6B/C P14: debug overlay accessors ----
+
+	/** Whether a valid world target snapshot exists this frame. */
+	public static boolean isSnapshotValid() {
+		return snapshotValid;
+	}
+
+	/** Display name of the current crosshair target (empty if none). */
+	public static String getTargetName() {
+		return snapshotValid ? snapshotTargetName : "";
+	}
+
+	/** Number of displayed actions for the current target. */
+	public static int getActionCount() {
+		return snapshotValid ? snapshotCount : 0;
+	}
+
+	/** Displayed op text for slot i (empty if absent). */
+	public static String getActionOp(int slot) {
+		if (!snapshotValid || slot < 0 || slot >= snapshotCount) {
+			return "";
+		}
+		return snapshotOps[slot];
+	}
+
+	/** Chebyshev tile distance from self to the current target (-1 if none). */
+	public static int getTargetDistance() {
+		if (!snapshotValid || PlayerList.self == null) {
+			return -1;
+		}
+		int selfTileX = PlayerList.self.xFine >> 7;
+		int selfTileZ = PlayerList.self.zFine >> 7;
+		return Math.max(Math.abs(lastTargetX - selfTileX), Math.abs(lastTargetZ - selfTileZ));
+	}
+
+	/**
+	 * Coarse entity type of the current target, derived from the primary
+	 * snapshot's MiniMenu action code (existing action constants only).
+	 * For the debug overlay (P14).
+	 */
+	public static String getTargetType() {
+		if (!snapshotValid || snapshotCount == 0) {
+			return "NONE";
+		}
+		int code = snapshotAction[0];
+		if (code >= 2000) {
+			code -= 2000;
+		}
+		if (code == MiniMenu.LOC_ACTION_1 || code == MiniMenu.LOC_ACTION_2
+				|| code == MiniMenu.LOC_ACTION_3 || code == MiniMenu.LOC_ACTION_4
+				|| code == MiniMenu.LOC_ACTION_5
+				|| code == MiniMenu.OBJ_LOC_ACTION || code == MiniMenu.COMPONENT_LOC_ACTION) {
+			return "OBJECT";
+		}
+		if (code == MiniMenu.NPC_ACTION_1 || code == MiniMenu.NPC_ACTION_2
+				|| code == MiniMenu.NPC_ACTION_3 || code == MiniMenu.NPC_ACTION_4
+				|| code == MiniMenu.NPC_ACTION_5 || code == MiniMenu.NPC_EXAMINE
+				|| code == MiniMenu.OBJ_NPC_ACTION || code == MiniMenu.COMPONENT_NPC_ACTION) {
+			return "NPC";
+		}
+		if (code == 21 || code == 34 || code == 18 || code == 20 || code == 24
+				|| code == MiniMenu.OBJSTACK_ACTION_1 || code == MiniMenu.OBJSTACK_ACTION_2
+				|| code == MiniMenu.OBJ_OBJSTACK_ACTION || code == MiniMenu.COMPONENT_OBJSTACK_ACTION) {
+			return "ITEM";
+		}
+		return "PLAYER";
 	}
 
 	/**
@@ -121,6 +389,9 @@ public final class ModernActionOverlay {
 	 * {@link LoginManager#method1841()} has rebuilt and sorted the menu.
 	 */
 	public static void snapshot() {
+		// Round #7D P2: refresh the NPC pick-chain boundary diagnostics from
+		// the vanilla render-path counters BEFORE any gate return.
+		refreshNpcPickChain();
 		snapshotValid = false;
 		snapshotCount = 0;
 		if (!isOverlayActive()) {
@@ -136,42 +407,74 @@ public final class ModernActionOverlay {
 		// MiniMenu entries are appended in pick order and sort()ed so the
 		// PRIMARY (top-of-menu) action sits at the END of the arrays. Walk
 		// backwards so the first whitelisted entry we hit is the primary op.
-		// All world entries carry the local tile coords in intArgs1/intArgs2.
+		// Round #7 P2: NPC/player keys carry NO tile bits (intArgs are 0),
+		// so tiles are resolved from the LIVE entity lists via
+		// resolveEntryTile before any range check. The collect loop below
+		// therefore matches on the pick KEY only.
 
 		// Hysteresis: prefer last frame's target if it is still in the menu.
 		long targetKey = Long.MIN_VALUE;
 		int targetX = -1;
 		int targetZ = -1;
-		if (lastTargetKey != Long.MIN_VALUE && targetExists(lastTargetKey, lastTargetX, lastTargetZ, selfTileX, selfTileZ)) {
-			targetKey = lastTargetKey;
-			targetX = lastTargetX;
-			targetZ = lastTargetZ;
-		} else {
+		String reject = "";
+		if (lastTargetKey != Long.MIN_VALUE) {
+			for (int i = 1; i < MiniMenu.size; i++) {
+				if (MiniMenu.keys[i] != lastTargetKey || !isWorldAction(MiniMenu.actions[i])) {
+					continue;
+				}
+				if (!resolveEntryTile(lastTargetKey, MiniMenu.intArgs1[i], MiniMenu.intArgs2[i], scratchTile)) {
+					continue;
+				}
+				if (Math.max(Math.abs(scratchTile[0] - selfTileX), Math.abs(scratchTile[1] - selfTileZ)) <= INTERACT_RANGE_TILES) {
+					targetKey = lastTargetKey;
+					targetX = scratchTile[0];
+					targetZ = scratchTile[1];
+					break;
+				}
+			}
+		}
+		if (targetKey == Long.MIN_VALUE) {
 			for (int i = MiniMenu.size - 1; i >= 1; i--) {
 				if (!isWorldAction(MiniMenu.actions[i])) {
 					continue;
 				}
-				int tx = MiniMenu.intArgs1[i];
-				int tz = MiniMenu.intArgs2[i];
-				if (Math.max(Math.abs(tx - selfTileX), Math.abs(tz - selfTileZ)) > INTERACT_RANGE_TILES) {
+				if (!resolveEntryTile(MiniMenu.keys[i], MiniMenu.intArgs1[i], MiniMenu.intArgs2[i], scratchTile)) {
+					reject = "NO_LIVE_TILE";
+					continue;
+				}
+				if (Math.max(Math.abs(scratchTile[0] - selfTileX), Math.abs(scratchTile[1] - selfTileZ)) > INTERACT_RANGE_TILES) {
+					reject = "RANGE";
 					continue;
 				}
 				targetKey = MiniMenu.keys[i];
-				targetX = tx;
-				targetZ = tz;
+				targetX = scratchTile[0];
+				targetZ = scratchTile[1];
 				break;
 			}
 		}
 		if (targetKey == Long.MIN_VALUE) {
 			lastTargetKey = Long.MIN_VALUE;
+			// Round #7 P2/P8: NPC_PICK diagnostics (fields refreshed every
+			// frame for DebugOverlay; console print throttled to ~1 Hz and
+			// only while F12 is visible).
+			refreshNpcPickDiagnostics(selfTileX, selfTileZ, reject);
+			if (DebugOverlay.isVisible() && client.loop % 50 == 0) {
+				System.out.println("NPC_PICK: npcUnderCrosshair=" + diagNpcUnderCrosshair
+						+ " scenePickTagSeen=" + (diagNpcPickTagSeen ? "Y" : "N")
+						+ " npcMiniMenuEntries=" + diagNpcMenuEntries
+						+ " firstNpcAction=" + diagFirstNpcAction
+						+ " overlayAccepted=N"
+						+ " rejectReason=" + (diagRejectReason.isEmpty() ? "NO_WORLD_ENTRY" : diagRejectReason));
+			}
 			return;
 		}
 
-		// Collect up to MAX_DISPLAYED_ACTIONS ops for that target.
+		// Collect up to MAX_DISPLAYED_ACTIONS ops for that target. KEY match
+		// only — NPC/player intArgs are 0 while targetX/Z hold the resolved
+		// live tiles.
 		JagString targetName = null;
 		for (int i = MiniMenu.size - 1; i >= 1 && snapshotCount < MAX_DISPLAYED_ACTIONS; i--) {
-			if (!isWorldAction(MiniMenu.actions[i]) || MiniMenu.keys[i] != targetKey
-					|| MiniMenu.intArgs1[i] != targetX || MiniMenu.intArgs2[i] != targetZ) {
+			if (!isWorldAction(MiniMenu.actions[i]) || MiniMenu.keys[i] != targetKey) {
 				continue;
 			}
 			snapshotKeys[snapshotCount] = MiniMenu.keys[i];
@@ -190,6 +493,73 @@ public final class ModernActionOverlay {
 		lastTargetZ = targetZ;
 		snapshotTargetName = toPlainString(targetName);
 		snapshotValid = snapshotCount > 0;
+		refreshNpcPickDiagnostics(selfTileX, selfTileZ, reject);
+	}
+
+	/**
+	 * Round #7 P2/P8: refreshes the NPC_PICK diagnostic fields read by
+	 * {@link DebugOverlay}. Scans the scene pick tags ({@link Model#aLongArray11},
+	 * count {@link MiniMenu#anInt7}) for NPC picks and the live menu arrays
+	 * for NPC action entries. Called every frame while the overlay is active.
+	 */
+	private static void refreshNpcPickDiagnostics(int selfTileX, int selfTileZ, String reject) {
+		diagNpcPickTagSeen = false;
+		diagNpcMenuEntries = 0;
+		diagFirstNpcAction = "";
+		diagNpcUnderCrosshair = "none";
+		diagOverlayAccepted = false;
+		diagRejectReason = reject;
+		diagNpcIndex = -1;
+		diagNpcExists = false;
+		diagNpcLiveX = -1;
+		diagNpcLiveZ = -1;
+
+		// Scene pick pass: NPC tags have type bits == 1 (key >> 29 & 0x3).
+		int pickCount = Math.min(MiniMenu.anInt7, Model.aLongArray11.length);
+		for (int i = 0; i < pickCount; i++) {
+			long tag = Model.aLongArray11[i];
+			if (((int) tag >> 29 & 0x3) != 1) {
+				continue;
+			}
+			diagNpcPickTagSeen = true;
+			int index = (int) (tag >>> 32);
+			diagNpcIndex = index;
+			if (index >= 0 && index < NpcList.npcs.length) {
+				Npc npc = NpcList.npcs[index];
+				if (npc != null) {
+					diagNpcExists = true;
+					diagNpcLiveX = npc.xFine >> 7;
+					diagNpcLiveZ = npc.zFine >> 7;
+					if (npc.type != null && npc.type.name != null) {
+						diagNpcUnderCrosshair = toPlainString(npc.type.name);
+					}
+				}
+			}
+			break;
+		}
+
+		// Menu pass: count NPC action entries + first op text.
+		for (int i = MiniMenu.size - 1; i >= 1; i--) {
+			if (!isNpcActionCode(MiniMenu.actions[i])) {
+				continue;
+			}
+			diagNpcMenuEntries++;
+			if (diagFirstNpcAction.isEmpty()) {
+				diagFirstNpcAction = toPlainString(MiniMenu.ops[i]);
+			}
+		}
+		diagOverlayAccepted = snapshotValid;
+	}
+
+	/** Whether the action code (−2000 sort flag stripped) is an NPC op. */
+	private static boolean isNpcActionCode(short action) {
+		int code = action;
+		if (code >= 2000) {
+			code -= 2000;
+		}
+		return code == MiniMenu.NPC_ACTION_1 || code == MiniMenu.NPC_ACTION_2
+				|| code == MiniMenu.NPC_ACTION_3 || code == MiniMenu.NPC_ACTION_4
+				|| code == MiniMenu.NPC_ACTION_5 || code == MiniMenu.NPC_EXAMINE;
 	}
 
 	/**
@@ -336,20 +706,41 @@ public final class ModernActionOverlay {
 	}
 
 	/**
-	 * Whether the given (entity key, tile) target still has at least one
-	 * whitelisted, in-range entry in the current menu.
+	 * Round #7 P2: resolves the world tile for a MiniMenu entry. NPC/player
+	 * pick keys carry the entity index in the high 32 bits and NO tile bits,
+	 * so their intArgs tiles are 0 — resolve from the LIVE entity position
+	 * instead. Loc/objstack entries keep their intArgs tiles.
 	 */
-	private static boolean targetExists(long key, int tx, int tz, int selfTileX, int selfTileZ) {
-		if (Math.max(Math.abs(tx - selfTileX), Math.abs(tz - selfTileZ)) > INTERACT_RANGE_TILES) {
-			return false;
-		}
-		for (int i = 1; i < MiniMenu.size; i++) {
-			if (MiniMenu.keys[i] == key && MiniMenu.intArgs1[i] == tx && MiniMenu.intArgs2[i] == tz
-					&& isWorldAction(MiniMenu.actions[i])) {
-				return true;
+	private static boolean resolveEntryTile(long key, int fallbackX, int fallbackZ, int[] out) {
+		int type = (int) key >> 29 & 0x3;
+		int index = (int) (key >>> 32);
+		if (type == 1) { // NPC
+			if (index < 0 || index >= NpcList.npcs.length) {
+				return false;
 			}
+			Npc npc = NpcList.npcs[index];
+			if (npc == null) {
+				return false;
+			}
+			out[0] = npc.xFine >> 7;
+			out[1] = npc.zFine >> 7;
+			return true;
 		}
-		return false;
+		if (type == 0) { // Player
+			if (index < 0 || index >= PlayerList.players.length) {
+				return false;
+			}
+			Player player = PlayerList.players[index];
+			if (player == null) {
+				return false;
+			}
+			out[0] = player.xFine >> 7;
+			out[1] = player.zFine >> 7;
+			return true;
+		}
+		out[0] = fallbackX;
+		out[1] = fallbackZ;
+		return true;
 	}
 
 	private static boolean isWorldAction(short action) {
@@ -363,6 +754,15 @@ public final class ModernActionOverlay {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Public accessor for {@link #toPlainString(JagString)} so that
+	 * {@link FPContextMenuController} can reuse the same markup-stripping
+	 * logic without duplicating it.
+	 */
+	public static String toPlainStringPublic(JagString js) {
+		return toPlainString(js);
 	}
 
 	/**

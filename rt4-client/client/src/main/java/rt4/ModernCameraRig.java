@@ -241,6 +241,21 @@ public final class ModernCameraRig {
 		return safeDistance;
 	}
 
+	/** Returns the render-timed visual boom distance (Phase 3C round #6A, P5). */
+	public static int getVisualDistance() {
+		return (int) visDistanceD;
+	}
+
+	/** Returns whether the visual boom is currently obstruction-limited. */
+	public static boolean isObstructionLimited() {
+		return safeDistance < desiredDistance;
+	}
+
+	/** Returns the chase camera target yaw (camera convention). For diagnostics. */
+	public static int getChaseYawTarget() {
+		return chaseYawTarget;
+	}
+
 	/** Returns the FP body yaw (for movement controller in FP rig state). */
 	public static int getBodyYaw() {
 		return bodyYaw;
@@ -280,6 +295,43 @@ public final class ModernCameraRig {
 	 */
 	public static boolean isFirstPersonRigState() {
 		return active && rigState == RigState.FIRST_PERSON;
+	}
+
+	/**
+	 * Round #7D P3: what the camera VISUALLY is right now, independent of the
+	 * semantic rig state. The Round #6A semantic rig authority keeps an
+	 * obstruction-compressed CHASE boom at CHASE even though it visually sits
+	 * at the eye position, so visual mode and rig state CAN differ by design.
+	 * Exposed on F12 (visualMode) next to rigState/overlayFpGate to prove
+	 * whether the FP overlay gate disagrees with a visually-first-person frame.
+	 */
+	public static String getVisualMode() {
+		if (!active) {
+			return "INACTIVE";
+		}
+		if (FirstPersonCamera.isActive()) {
+			return "FIRST_PERSON";
+		}
+		return rigState.name();
+	}
+
+	/**
+	 * Returns whether the rig is in CHASE state.
+	 * Round #7 P1: keyboard-ownership source of truth (CHASE keeps the
+	 * MODERN gameplay keyboard).
+	 */
+	public static boolean isChaseRigState() {
+		return active && rigState == RigState.CHASE;
+	}
+
+	/**
+	 * Returns whether the rig is in FREE state.
+	 * Round #7 P1: keyboard-ownership source of truth — FREE restores FULL
+	 * VANILLA keyboard/chat behaviour (vanilla locomotion + vanilla keys)
+	 * while retaining the MODERN expanded/free camera.
+	 */
+	public static boolean isFreeRigState() {
+		return active && rigState == RigState.FREE;
 	}
 
 	/**
@@ -440,6 +492,8 @@ public final class ModernCameraRig {
 			System.out.println("[CAMERA-RIG-DEBUG] state=" + rigState
 					+ " desired=" + desiredDistance + " actual=" + actualDistance
 					+ " safe=" + safeDistance
+					+ " vis=" + ((int) visDistanceD)
+					+ " obstructed=" + (safeDistance < desiredDistance)
 					+ " cameraType=" + Camera.cameraType
 					+ " renderX=" + Camera.renderX + " renderZ=" + Camera.renderZ
 					+ " anInt40=" + Camera.anInt40
@@ -511,6 +565,11 @@ public final class ModernCameraRig {
 	private static void processWheelInput() {
 		if (MouseWheel.wheelRotation == 0) return;
 
+		// Round #8 P3/P7: FP context menu owns the wheel when open — suppress
+		// camera zoom so the menu can scroll its selection. This prevents the
+		// FP->CHASE zoom transition while the menu is open.
+		if (FPContextMenuController.wasWheelConsumed()) return;
+
 		// Wheel ownership: if the mouse is over a scrollable UI component
 		// (not the viewport), skip camera zoom so the UI can scroll.
 		// Uses the viewport component (clientCode 1337) reference from the
@@ -558,21 +617,25 @@ public final class ModernCameraRig {
 	private static void updateStateTransitions() {
 		RigState previous = rigState;
 
-		// Phase 3C round #5 (P2): the CHASE<->FP boundary is driven by the
-		// RENDERED visual boom (visDistanceD), not by desiredDistance. The
-		// user perceives ONE coherent transition: FP behavior activates at
-		// exactly the moment the camera visually reaches the eye position
-		// (and exits only once the visual boom has expanded past the
-		// hysteresis threshold). Occlusion-compressed cameras therefore
-		// enter FP at the eye position and self-correct on exit.
+		// Phase 3C round #6A (P0/P1): SEMANTIC RIG AUTHORITY. Obstruction may
+		// shorten the chase boom, but it must NEVER change the camera rig.
+		// CHASE -> FP requires BOTH:
+		//   A. explicit USER zoom intent inside the FP entry range
+		//      (desiredDistance <= FP_ENTER_DISTANCE), AND
+		//   B. the rendered chase camera has actually converged to the eye
+		//      position (visDistanceD <= FP_ENTER_DISTANCE).
+		// FP -> CHASE is driven by outward USER INTENT (desiredDistance >=
+		// FP_EXIT_DISTANCE) — immediate, with the visual chase camera seeded
+		// from the live FP eye camera (seedVisualFromCamera). No frame may
+		// keep FP hard-owning the camera while desired says "leave FP".
 		switch (rigState) {
 			case FIRST_PERSON:
-				// Exit FP only once the visual boom has begun expanding past
-				// the hysteresis threshold. Escape hatch: if the user has
-				// scrolled all the way out (desired ≥ FREE_ENTER), force exit
-				// even if obstruction is still compressing the visual boom.
-				if (visDistanceD >= FP_EXIT_DISTANCE
-						|| desiredDistance >= FREE_ENTER_DISTANCE) {
+				// Exit FP as soon as the user scrolls outward past the hysteresis
+				// threshold. Escape hatch: full scroll-out (desired >= FREE_ENTER)
+				// also exits. The render-timed seed below starts the CHASE visual
+				// camera exactly at the live FP eye camera (boom = 0) and lets the
+				// boom grow outward smoothly — no hidden visDistanceD wait.
+				if (desiredDistance >= FP_EXIT_DISTANCE) {
 					rigState = RigState.CHASE;
 					// Initialize chase yaw from current body/camera direction
 					chaseYaw = bodyYaw;
@@ -587,9 +650,12 @@ public final class ModernCameraRig {
 				break;
 
 			case CHASE:
-				// Enter FP exactly when the visual camera reaches the eye
-				// position (P2: semantic and visual thresholds coincide).
-				if (visDistanceD <= FP_ENTER_DISTANCE) {
+				// Enter FP ONLY with explicit user zoom intent AND a converged
+				// visual camera (round #6A, P0). Obstruction alone (small
+				// safeDistance / visDistanceD) must never flip the rig to FP:
+				// rig=CHASE desired=600 safe=20 stays CHASE.
+				if (desiredDistance <= FP_ENTER_DISTANCE
+						&& visDistanceD <= FP_ENTER_DISTANCE) {
 					rigState = RigState.FIRST_PERSON;
 					// FP camera takes over; bodyYaw preserved for smooth handoff.
 					// Clear any stale one-shot seed (P3 lifecycle hygiene).
@@ -602,6 +668,11 @@ public final class ModernCameraRig {
 					freePitch = clamp((int) visPitchD, 383);
 					if (freePitch < 128) freePitch = 128;
 					seedVisualFromCamera = false;
+					// Round #6B/C P9: CHASE → FREE movement handoff. Modern Q16
+					// locomotion relinquishes ownership; vanilla click-to-walk
+					// (movement queue + method2247) becomes the single movement
+					// owner. Camera stays MODERN FREE with expanded zoom.
+					ModernMovementController.onEnterFreeMode();
 				}
 				break;
 
@@ -614,6 +685,11 @@ public final class ModernCameraRig {
 					chaseYawTarget = (PlayerList.self != null)
 							? bodyYawToCameraYaw(PlayerList.self.anInt3400) : chaseYaw;
 					chasePitch = CHASE_PITCH;
+					// Round #6B/C P10: FREE → CHASE movement handoff. Vanilla
+					// auto-path ownership ends; modern Q16 prediction is seeded
+					// from the live player state and WASD becomes the movement
+					// owner again. No F11 involved, no tile snap.
+					ModernMovementController.onExitFreeMode();
 				}
 				break;
 		}
@@ -636,8 +712,11 @@ public final class ModernCameraRig {
 				Camera.cameraType = 0; // Rig still owns camera in CHASE/FREE
 			}
 
+			DebugOverlay.rigTransitionCount++;
 			System.out.println("[CAMERA-RIG] State: " + previous + " → " + rigState
-					+ " desired=" + desiredDistance + " actual=" + actualDistance);
+					+ " desired=" + desiredDistance + " actual=" + actualDistance
+					+ " safe=" + safeDistance + " vis=" + ((int) visDistanceD)
+					+ " obstructed=" + (safeDistance < desiredDistance));
 		}
 		prevRigState = rigState;
 	}

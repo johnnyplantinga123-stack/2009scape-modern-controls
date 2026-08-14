@@ -975,7 +975,13 @@ public final class GlModel extends Model {
 		}
 		@Pc(165) boolean roofVisibilityLocPick = API.IsRoofVisibilityLocPickable(arg8);
 		@Pc(168) boolean miniMenuPick = arg8 > 0L;
+		// Round #7D P2: NPC pick-chain boundary diagnostics (key type bits == 1).
+		// Read by the ModernActionOverlay F12 snapshot; zero behavioural change.
+		boolean npcKeyDiag = (arg8 >>> 29 & 0x3L) == 1L;
 		if ((miniMenuPick || roofVisibilityLocPick) && RawModel.allowInput && local70 > 0) {
+			if (npcKeyDiag) {
+				ModernActionOverlay.diagNpcPickAttempts++;
+			}
 			@Pc(187) int local187;
 			@Pc(191) int local191;
 			if (local84 > 0) {
@@ -995,6 +1001,12 @@ public final class GlModel extends Model {
 				local210 = local132 / local53;
 			}
 			if (anInt3582 >= local187 && anInt3582 <= local191 && RawModel.anInt1053 >= local206 && RawModel.anInt1053 <= local210) {
+				if (npcKeyDiag) {
+					ModernActionOverlay.diagNpcBoundsHits++;
+					ModernActionOverlay.diagNpcCandidateIndex = (int) (arg8 >>> 32);
+					ModernActionOverlay.diagNpcLastPickable = this.pickable;
+					ModernActionOverlay.diagNpcLastMiniMenuPick = miniMenuPick;
+				}
 				local187 = 999999;
 				local191 = -999999;
 				local206 = 999999;
@@ -1051,6 +1063,9 @@ public final class GlModel extends Model {
 					if (this.pickable) {
 						if (miniMenuPick) {
 							Model.aLongArray11[MiniMenu.anInt7++] = arg8;
+							if (npcKeyDiag) {
+								ModernActionOverlay.diagNpcTagsWritten++;
+							}
 						}
 						if (roofVisibilityLocPick) {
 							API.ReportRoofVisibilityLoc(arg8, arg9);
@@ -1080,6 +1095,9 @@ public final class GlModel extends Model {
 										if (this.method4118(anInt3582, RawModel.anInt1053, anIntArray467[local698], anIntArray467[local703], anIntArray467[local708], anIntArray468[local698], anIntArray468[local703], anIntArray468[local708])) {
 											if (miniMenuPick) {
 												Model.aLongArray11[MiniMenu.anInt7++] = arg8;
+												if (npcKeyDiag) {
+													ModernActionOverlay.diagNpcTagsWritten++;
+												}
 											}
 											if (roofVisibilityLocPick) {
 												API.ReportRoofVisibilityLoc(arg8, arg9);

@@ -29,10 +29,13 @@ public class NpcList {
 			lerpToForceMoveStart(arg1);
 		} else if (arg1.forceMoveCyclesToDest >= client.loop) {
 			lerpToForceMoveDest(arg1);
-		} else if (arg1 == PlayerList.self && CameraMode.isModern()) {
+		} else if (arg1 == PlayerList.self && ModernMovementController.isModernQ16Owner()) {
 			// Phase 3B: Modern controller owns self position and animation.
 			// Skip method2247 (legacy position interpolation) ONLY.
 			// method949 (orientation) and method879 (animation frame advance) still run below.
+			// Round #6B/C P7: in MODERN FREE the rig hands locomotion back to
+			// vanilla — isModernQ16Owner() is false there, so method2247 runs
+			// and click-to-walk works exactly like ORIGINAL.
 		} else {
 			method2247(arg1);
 		}
