@@ -3169,3 +3169,96 @@ Files modified: `ModernCameraRig.java` (+103 lines)
 | Minimap coherence in CHASE/FREE | **RUNTIME UNVERIFIED** |
 | Middle mouse orbit feel/speed | **RUNTIME UNVERIFIED** |
 | FREE max zoom visual boundary | **RUNTIME UNVERIFIED** |
+
+---
+
+## Section 27 — Milestone H: Crosshair / Target Acquisition Foundation
+
+### 27.1 TODO 071 — Center-Screen Reticle
+
+**Implementation:** `ModernCrosshair.java` — draws a small white cross reticle
+at viewport center. Gated to MODERN FP/CHASE only. Hidden during modal UI.
+Uses dual-rasterizer pattern (GlRaster/SoftwareRaster).
+
+**Integration:** Called in `client.mainRedraw()` after `LoginManager.method1841()`.
+Additive presentation layer — no effect on ORIGINAL or gameplay.
+
+**Status:** COMPILE VERIFIED, RUNTIME UNVERIFIED.
+
+### 27.2 TODO 072 — MiniMenu / Scene Picking Trace
+
+**Complete menu building flow:**
+
+1. **ScriptRunner scene render** calls `MiniMenu.addEntries(viewportH, viewportW, viewportX, viewportY, mouseY, mouseX)` at line 350 when mouse is within viewport bounds.
+
+2. **Entity data source:** `Model.aLongArray11[0..anInt7-1]` — populated during scene rendering by `GlModel` and `SoftwareModel` when `MiniMenu.aBoolean187` (picking mode) is active. Triangle hit test via `SceneGraph.method583()`.
+
+3. **Packed long format:**
+   - bits 0-6: x tile
+   - bits 7-13: z tile
+   - bits 29-30: entity type (0=Player, 1=NPC, 2=Loc, 3=ObjStack)
+   - bits 32+: entity ID/index
+
+4. **Entity type dispatch in `addEntries()`:**
+   - Type 2 (Loc): `LocTypeList.get(id).ops[]` → action codes 42/50/49/46/1001 + examine 1004
+   - Type 1 (NPC): `addNpcEntries()` → `NpcType.ops[]` → action codes 17/16/4/19/2 + examine 1007
+   - Type 0 (Player): `addPlayerEntries()` → `Player.options[]` → action codes 30/31/29/37/34/57
+   - Type 3 (ObjStack): `ObjType.ops[]` → action codes 18/20
+
+5. **`MiniMenu.add()` stores:** ops[500], opBases[500], actions[500], cursors[500], keys[500], intArgs1[500], intArgs2[500]. Size reset to 0 each frame in `LoginManager.method1841()`.
+
+6. **`doAction()` executes:** reads intArgs/keys/actions → switch on actionCode → PathFinder.findPath() to walk near target → send specific server packet.
+
+7. **Plugin API:** `MiniMenuEntry.getType()` detects type by color code in subject string: 00ffff=LOC, ffff00=NPC, ffffff=PLAYER, ff9040=OBJ.
+
+**Key insight for targeting:** The existing menu system already iterates all entity types and builds action entries. For center-screen targeting, we cannot reuse mouse-based picking directly. Instead, we iterate entity lists independently and project to screen coordinates.
+
+**Status:** SOURCE VERIFIED.
+
+### 27.3 TODO 073 — ModernTarget Model
+
+**Implementation:** `ModernTarget.java` — data class representing a targeting candidate.
+
+**Fields:** TargetType (NPC/PLAYER/OBJECT/GROUND_ITEM), entityId (stable ID), tileX/tileZ, plane, xFine/zFine, yOffset, screenX/screenY, score, entityRef (frame-local only), worldDistance.
+
+**Design decision:** Store stable identifiers (entity ID, tile coords) rather than raw object references. Entity references are cached for current frame only and must not be held across scene rebuilds.
+
+**Status:** COMPILE VERIFIED, RUNTIME UNVERIFIED.
+
+### 27.4 TODO 074 — Candidate Projection/Scoring
+
+**Implementation:** `ModernTargetingController.java` — per-frame target acquisition.
+
+**Gathering:** Iterates NpcList (visible NPCs), PlayerList (visible players, excluding self), SceneGraph.objStacks (ground items within MAX_ACQUISITION_DISTANCE=20 tiles). Locations deferred to later iteration.
+
+**Projection:** Uses same world→screen transform as RT4 scene rendering:
+1. `elevation = SceneGraph.getTileHeight(plane, xFine, zFine) - yOffset`
+2. Camera-relative: `relX = xFine - SceneGraph.cameraX` (fine coords)
+3. Yaw rotation: `MathUtils.sin/cos[Camera.cameraYaw]`
+4. Pitch rotation: `MathUtils.sin/cos[Camera.cameraPitch]`
+5. Perspective: `screenX = 256 + (relX << 9) / relZ` (fixed mode)
+
+**Key source verification:** `SceneGraph.cameraX/Y/Z` are in FINE coordinates (confirmed by `method2954` bounds check `arg0 >= width * 128` and tile conversion `anInt4069 = arg0 / 128`). Set from `Camera.renderX/anInt40/renderZ` during scene render setup.
+
+**Scoring:** 70% screen-center distance (normalized by viewport half-diagonal) + 30% world distance. Hysteresis margin (5.0) prevents target flickering.
+
+**Integration:** Called in `client.mainRedraw()` after `LoginManager.method1841()` and before `ModernCrosshair.draw()`.
+
+**Status:** COMPILE VERIFIED, STATICALLY REVIEWED, RUNTIME UNVERIFIED.
+
+### 27.5 Verification Status
+
+| Item | Status |
+|------|--------|
+| Crosshair reticle rendering | **COMPILE VERIFIED** |
+| MiniMenu/scene picking architecture | **SOURCE VERIFIED** |
+| ModernTarget data model | **COMPILE VERIFIED** |
+| Target projection math | **SOURCE VERIFIED** |
+| Target scoring/selection | **STATICALLY REVIEWED** |
+| Targeting controller integration | **COMPILE VERIFIED** |
+| Crosshair visibility in-game | **RUNTIME UNVERIFIED** |
+| Target acquisition accuracy | **RUNTIME UNVERIFIED** |
+| Projection correctness (fixed mode) | **RUNTIME UNVERIFIED** |
+| Projection correctness (resizable/HD) | **RUNTIME UNVERIFIED** |
+| Hysteresis behavior | **RUNTIME UNVERIFIED** |
+| Location/scenery targeting | **PENDING** (deferred) |

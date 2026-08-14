@@ -886,6 +886,9 @@ public final class client extends GameShell {
 			}
 		} else if (gameState == 30) {
 			LoginManager.method1841();
+			// Modern controls: target acquisition (FP/CHASE only).
+			// Runs after scene render so SceneGraph camera is set up.
+			ModernTargetingController.update(loop);
 			// Modern controls: center-screen reticle (FP/CHASE only).
 			// Additive presentation layer — no effect on ORIGINAL or gameplay.
 			ModernCrosshair.draw();
