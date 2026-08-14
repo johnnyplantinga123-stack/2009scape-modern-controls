@@ -185,6 +185,15 @@ public final class ModernMovementController {
 	 * Stores authoritative tile, consumes matching pending entries, reconciles.
 	 */
 	public static void onServerStep(int localTileX, int localTileZ) {
+		// Phase 3B fix #3: diagnostic logging for server sync analysis
+		int predTileX = (int) (predictedSubX >> 16) >> 7;
+		int predTileZ = (int) (predictedSubZ >> 16) >> 7;
+		System.out.println("[MODERN-MOVE] SERVER_STEP: localTile=" + localTileX + "," + localTileZ
+				+ " predictedTile=" + predTileX + "," + predTileZ
+				+ " prevServerTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ
+				+ " divergence=" + Math.max(Math.abs(predTileX - localTileX), Math.abs(predTileZ - localTileZ))
+				+ " pending=" + (pendingTail - pendingHead));
+
 		lastServerReportedTileX = localTileX;
 		lastServerReportedTileZ = localTileZ;
 		lastServerReportTick = client.loop;
@@ -277,12 +286,21 @@ public final class ModernMovementController {
 		intent.normalize();
 
 		// ---- Compute camera-relative velocity ----
-		// Camera looks NORTH (+Z) at yaw 0, confirmed by rendering pipeline.
-		// Forward basis: (sin[yaw], cos[yaw])
-		// Right basis:   (cos[yaw], -sin[yaw])
-		// Phase 3B fix #2: read the LIVE camera yaw, not the stale Camera.cameraYaw.
-		// In FIRST_PERSON, this is FirstPersonCamera.fpCamYaw (the actual mouse-look yaw).
-		int yaw = CameraMode.getModernMovementYaw();
+		// RT4 camera yaw convention (verified from Camera.method3849 line 324:
+		//   cameraYaw = atan2(deltaX, deltaZ) * -325.949 & 0x7FF):
+		//   yaw 0    = NORTH (+Z)
+		//   yaw 512  = WEST  (-X)
+		//   yaw 1024 = SOUTH (-Z)
+		//   yaw 1536 = EAST  (+X)
+		//
+		// Correct orthonormal basis for this convention:
+		//   Forward = (-sin[yaw], +cos[yaw])
+		//   Right   = (+cos[yaw], +sin[yaw])
+		//
+		// Phase 3B fix #3: FIRST_PERSON uses live FP camera yaw.
+		// THIRD_PERSON uses player body heading (temporary, Phase 14 will replace).
+		int camYaw = CameraMode.getCameraRelativeYaw();
+		int yaw = (camYaw >= 0) ? camYaw : self.anInt3400;
 		boolean running = intent.runRequested;
 		int speed = running ? RUN_SPEED : WALK_SPEED;
 
@@ -290,10 +308,10 @@ public final class ModernMovementController {
 		float fwdMul = intent.forward * speed;
 		float strMul = intent.right * speed;
 
-		velocityXQ16 = (int) (fwdMul * MathUtils.sin[yaw & 2047]
+		velocityXQ16 = (int) (fwdMul * (-MathUtils.sin[yaw & 2047])
 				+ strMul * MathUtils.cos[yaw & 2047]);
 		velocityZQ16 = (int) (fwdMul * MathUtils.cos[yaw & 2047]
-				+ strMul * (-MathUtils.sin[yaw & 2047]));
+				+ strMul * MathUtils.sin[yaw & 2047]);
 
 		// ---- Apply Q16 prediction ----
 		predictedSubX += velocityXQ16;
@@ -305,12 +323,13 @@ public final class ModernMovementController {
 		performDDACheck();
 
 		// ---- Orientation ----
-		// Face movement direction: atan2(velX, velZ) maps to RS angle convention
-		// where 0=north(+Z), 512=west(-X), 1024=south(-Z), 1536=east(+X).
+		// Face movement direction. The RT4 angle convention uses a NEGATIVE
+		// multiplier (same as Camera.method3849): angle = atan2(velX, velZ) * -325.949
+		// This maps: north=0, west=512, south=1024, east=1536.
 		if (velocityXQ16 != 0 || velocityZQ16 != 0) {
 			targetOrientationAngle = (int) (Math.atan2(
 					(double) velocityXQ16,
-					(double) velocityZQ16) * 325.949D) & 0x7FF;
+					(double) velocityZQ16) * -325.949D) & 0x7FF;
 			self.anInt3400 = targetOrientationAngle;
 		}
 
@@ -435,6 +454,14 @@ public final class ModernMovementController {
 
 		ClientProt.sendModernWalkPacket(worldX, worldZ, intent.runRequested);
 
+		// Phase 3B fix #3: diagnostic logging for server sync analysis
+		System.out.println("[MODERN-MOVE] PACKET: localTile=" + targetLocalTileX + "," + targetLocalTileZ
+				+ " worldTile=" + worldX + "," + worldZ
+				+ " run=" + intent.runRequested
+				+ " predictedTile=" + ((int)(predictedSubX >> 16) >> 7) + "," + ((int)(predictedSubZ >> 16) >> 7)
+				+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ
+				+ " pending=" + (pendingTail - pendingHead));
+
 		// Record in pending ring buffer (LOCAL coords)
 		pendingAdd(targetLocalTileX, targetLocalTileZ);
 	}
@@ -518,9 +545,16 @@ public final class ModernMovementController {
 
 		if (divergence > MAX_DIVERGENCE_TILES) {
 			// Large divergence — always rebase regardless of timeout
+			System.out.println("[MODERN-MOVE] REBASE: large divergence=" + divergence
+					+ " predictedTile=" + predictedTileX + "," + predictedTileZ
+					+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ
+					+ " pending=" + (pendingTail - pendingHead));
 			rebaseFromServerTile();
 		} else if (timeoutExpired && divergence > 0 && pendingEmpty()) {
 			// Timeout + actual divergence + no pending = genuine desync
+			System.out.println("[MODERN-MOVE] REBASE: timeout divergence=" + divergence
+					+ " predictedTile=" + predictedTileX + "," + predictedTileZ
+					+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ);
 			rebaseFromServerTile();
 		}
 		// Timeout alone with divergence==0 → do nothing (server just hasn't updated)

@@ -61,19 +61,22 @@ public final class CameraMode {
 	}
 
 	/**
-	 * Returns the authoritative yaw for modern locomotion in the current camera mode.
+	 * Returns the camera-relative yaw for FIRST_PERSON locomotion,
+	 * or {@code -1} if the current mode does not use camera-relative steering.
 	 *
 	 * <ul>
-	 *   <li>FIRST_PERSON: reads FirstPersonCamera's internal yaw (the live mouse-look direction).</li>
-	 *   <li>THIRD_PERSON: falls back to Camera.cameraYaw (Phase 14 will supply its own camera).</li>
-	 *   <li>ORIGINAL: Camera.cameraYaw (not used for locomotion — original mode skips modern controller).</li>
+	 *   <li>FIRST_PERSON: returns FirstPersonCamera's live yaw (the mouse-look direction).</li>
+	 *   <li>THIRD_PERSON: returns -1 (no camera-relative steering yet; Phase 14 will
+	 *       supply a third-person camera). ModernMovementController falls back to
+	 *       the player body heading when this returns -1.</li>
+	 *   <li>ORIGINAL: returns -1 (modern controller is inactive).</li>
 	 * </ul>
 	 */
-	public static int getModernMovementYaw() {
+	public static int getCameraRelativeYaw() {
 		if (current == Mode.FIRST_PERSON) {
 			return FirstPersonCamera.getYaw();
 		}
-		return Camera.cameraYaw;
+		return -1;
 	}
 
 	/**

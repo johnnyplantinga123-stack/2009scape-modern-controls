@@ -1337,3 +1337,196 @@ ORIGINAL:
 - [ ] Click-to-move works
 - [ ] Legacy animations unchanged
 - [ ] No modern WASD leaks
+
+---
+
+## 15. Phase 3B Runtime Fix #3 — Camera Handedness, Mode Isolation, Authority Diagnostics
+
+**Date:** 14-08-2026
+**Commit:** (pending)
+**Baseline:** 73a0b56 (Phase 3B stabilization - live camera steering and idle animation)
+
+### 15.1 Runtime bugs found
+
+1. **E/W movement mirrored in FIRST_PERSON** — camera facing EAST → W moves WEST; camera facing WEST → W moves EAST. N/S correct.
+2. **THIRD_PERSON could inherit FP camera yaw** — `getModernMovementYaw()` returned `Camera.cameraYaw` for TP, which could be contaminated by FP state.
+3. **Wall snapback** — walking through walls causes multi-tile backward rebase. Diagnosis required.
+
+### 15.2 Root cause: RT4 camera yaw handedness
+
+**The previous session documented the WRONG cardinal mapping.**
+
+The previous session (section 13.2) stated:
+- yaw 512 = EAST (+X)
+- yaw 1536 = WEST (-X)
+
+**This was WRONG.** The actual RT4 convention is the OPPOSITE for E/W.
+
+**Proof from Camera.java line 324 (method3849):**
+```java
+cameraYaw = (int) (Math.atan2(local54, local59) * -325.949D) & 0x7FF;
+```
+where `local54 = targetX - cameraX` (delta X) and `local59 = targetZ - cameraZ` (delta Z).
+
+The **NEGATIVE multiplier** (`-325.949`) inverts the X axis:
+- Looking EAST (+X): atan2(+D, 0) = π/2 → -512 → **1536**
+- Looking WEST (-X): atan2(-D, 0) = -π/2 → +512 → **512**
+
+**Correct RT4 cardinal yaw mapping:**
+| Yaw  | Direction | Axis |
+|------|-----------|------|
+| 0    | NORTH     | +Z   |
+| 512  | WEST      | -X   |
+| 1024 | SOUTH     | -Z   |
+| 1536 | EAST      | +X   |
+
+**The MathUtils.sin/cos tables follow standard math conventions** (counterclockwise from +X):
+- sin[512] = +65536 (positive, which in standard math = +X = EAST)
+- sin[1536] = -65536 (negative, which in standard math = -X = WEST)
+
+But the RS camera convention is **clockwise** (because of the negative multiplier), so:
+- RS yaw 512 = WEST (even though sin[512] is positive)
+- RS yaw 1536 = EAST (even though sin[1536] is negative)
+
+### 15.3 Previous basis error
+
+The previous basis was:
+```java
+Forward = (+sin[yaw], +cos[yaw])
+Right   = (+cos[yaw], -sin[yaw])
+```
+
+At yaw 1536 (EAST):
+- Forward = (sin[1536], cos[1536]) = (-1, 0) = WEST ← WRONG! Camera faces EAST but forward points WEST.
+
+### 15.4 Corrected basis
+
+```java
+Forward = (-sin[yaw], +cos[yaw])
+Right   = (+cos[yaw], +sin[yaw])
+```
+
+Verification at all four cardinals:
+
+| Camera yaw | Camera direction | Forward vector | Movement | Correct? |
+|------------|------------------|----------------|----------|----------|
+| 0          | NORTH            | (0, +1) = +Z   | NORTH    | YES |
+| 1536       | EAST             | (+1, 0) = +X   | EAST     | YES |
+| 1024       | SOUTH            | (0, -1) = -Z   | SOUTH    | YES |
+| 512        | WEST             | (-1, 0) = -X   | WEST     | YES |
+
+Right vector verification (D key):
+
+| Camera yaw | Camera direction | Right vector  | Strafe | Correct? |
+|------------|------------------|---------------|--------|----------|
+| 0          | NORTH            | (+1, 0) = +X  | EAST   | YES |
+| 1536       | EAST             | (0, -1) = -Z  | SOUTH  | YES |
+| 1024       | SOUTH            | (-1, 0) = -X  | WEST   | YES |
+| 512        | WEST             | (0, +1) = +Z  | NORTH  | YES |
+
+### 15.5 Orientation formula correction
+
+The orientation formula also had the wrong sign. The RT4 convention uses a NEGATIVE multiplier (same as the camera atan2):
+
+**Old (WRONG):** `atan2(velX, velZ) * +325.949`
+**New (CORRECT):** `atan2(velX, velZ) * -325.949`
+
+Verification:
+- Moving EAST (velX=+4, velZ=0): atan2(+4, 0) = π/2 → -512 → 1536 = EAST ✓
+- Moving NORTH (velX=0, velZ=+4): atan2(0, +4) = 0 → 0 = NORTH ✓
+- Moving SOUTH (velX=0, velZ=-4): atan2(0, -4) = π → -1024 → 1024 = SOUTH ✓
+- Moving WEST (velX=-4, velZ=0): atan2(-4, 0) = -π/2 → +512 = WEST ✓
+
+### 15.6 Mode isolation — THIRD_PERSON yaw source
+
+**Previous:** `CameraMode.getModernMovementYaw()` returned `Camera.cameraYaw` for THIRD_PERSON.
+
+**Problem:** THIRD_PERSON should NOT use camera-relative steering. The legacy camera yaw could change due to mouse/keyboard input, silently redefining WASD semantics.
+
+**Fix:** Replaced with `CameraMode.getCameraRelativeYaw()`:
+- FIRST_PERSON → returns `FirstPersonCamera.getYaw()` (live FP yaw)
+- THIRD_PERSON → returns `-1` (no camera-relative steering)
+- ORIGINAL → returns `-1` (modern controller inactive)
+
+In ModernMovementController, when `getCameraRelativeYaw()` returns -1, the controller falls back to `self.anInt3400` (player body heading / target orientation).
+
+**THIRD_PERSON temporary locomotion heading:** `self.anInt3400` (the player's target orientation angle). This means:
+- W = move in the direction the player body is currently facing
+- A/D = strafe relative to body facing
+- Movement heading is independent from any camera yaw
+
+**Proof that TP does NOT use FP yaw:**
+- `CameraMode.getCameraRelativeYaw()` returns -1 for THIRD_PERSON
+- ModernMovementController uses `self.anInt3400` when camYaw < 0
+- `FirstPersonCamera.getYaw()` is never called while THIRD_PERSON is active
+
+### 15.7 Server snapback diagnosis
+
+**Diagnostic logging added** at:
+- Each walk packet sent (local tile, world tile, run flag, predicted tile, server tile, pending count)
+- Each server step received (server tile, predicted tile, divergence, pending count)
+- Each reconciliation rebase (reason, predicted tile, server tile, pending count)
+
+**Snapback classification:** EXPECTED SERVER COLLISION CORRECTION (Case 1).
+
+**Rationale:**
+- Modern local prediction has NO collision detection (Phase 4 will add it)
+- Client predicts through walls/objects freely
+- Server refuses invalid tiles (collision authority)
+- `lastServerReportedTile` remains at valid pre-wall position
+- Client prediction diverges from server → `divergence > MAX_DIVERGENCE_TILES` → rebase to server tile center
+- This is correct server-authoritative behavior, NOT a packet/reconciliation bug
+
+**No reconciliation code was changed.** The existing reconciliation logic correctly handles the divergence.
+
+**Phase 4 local collision is confirmed as the required fix** to prevent the client from predicting through blocked geometry in the first place.
+
+### 15.8 Files changed
+
+| File | Change |
+|------|--------|
+| `ModernMovementController.java` | Corrected forward/right basis (-sin/cos, cos/sin); corrected orientation formula (* -325.949); yaw source from `getCameraRelativeYaw()` with TP fallback to body heading; diagnostic logging for packets/server steps/rebases |
+| `CameraMode.java` | Replaced `getModernMovementYaw()` with `getCameraRelativeYaw()` — returns FP yaw for FIRST_PERSON, -1 for others |
+| `MODERN_CONTROLS_PROGRESS.md` | Section 15 documentation |
+
+### 15.9 Force-move preservation
+
+No changes to force-move suspension logic. Unchanged.
+
+### 15.10 Idle animation status
+
+No changes to idle animation logic from 73a0b56. The every-tick idle re-assert and orientation snap remain in place.
+
+### 15.11 ORIGINAL mode unchanged
+
+ORIGINAL mode: no changes. method2247, PathFinder, legacy camera, legacy keyboard — all untouched. Modern changes remain gated by `CameraMode.isModern()`.
+
+### 15.12 Build verification
+
+```
+gradlew.bat :client:compileJava → BUILD SUCCESSFUL
+```
+
+### 15.13 Runtime acceptance checklist
+
+FIRST_PERSON:
+- [ ] Camera NORTH → W moves NORTH
+- [ ] Camera EAST → W moves EAST (was WEST before fix)
+- [ ] Camera SOUTH → W moves SOUTH
+- [ ] Camera WEST → W moves EAST (was EAST before fix)
+- [ ] D at NORTH → strafe EAST
+- [ ] D at EAST → strafe SOUTH
+- [ ] A at NORTH → strafe WEST
+- [ ] Hold W + rotate camera 360° → smooth curved path following camera
+- [ ] Release W → idle animation
+- [ ] Idle 5 seconds → normal idle persists
+
+THIRD_PERSON:
+- [ ] W moves in body facing direction
+- [ ] Camera rotation does NOT change WASD semantics
+- [ ] Same idle/walk/run transitions
+
+ORIGINAL:
+- [ ] Click-to-move works
+- [ ] Legacy animations unchanged
+- [ ] No modern WASD leaks
