@@ -271,6 +271,16 @@ public final class SoftwareModel extends Model {
 	public SoftwareModel() {
 	}
 
+	@Override
+	public int getVertexCount() {
+		return this.vertexCount;
+	}
+
+	@Override
+	public int getTriangleCount() {
+		return this.triangleCount;
+	}
+
 	@OriginalMember(owner = "client!w", name = "<init>", descriptor = "(Lclient!gb;IIIII)V")
 	public SoftwareModel(@OriginalArg(0) RawModel model, @OriginalArg(1) int arg1, @OriginalArg(2) int arg2, @OriginalArg(3) int arg3, @OriginalArg(4) int arg4, @OriginalArg(5) int arg5) {
 		model.calculateNormals();

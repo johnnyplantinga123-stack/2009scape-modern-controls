@@ -406,12 +406,32 @@ public final class Player extends PathingEntity {
 	@OriginalMember(owner = "client!e", name = "a", descriptor = "(IIIIIIIIJILclient!ga;)V")
 	@Override
 	public final void render(@OriginalArg(0) int arg0, @OriginalArg(1) int arg1, @OriginalArg(2) int arg2, @OriginalArg(3) int arg3, @OriginalArg(4) int arg4, @OriginalArg(5) int arg5, @OriginalArg(6) int arg6, @OriginalArg(7) int arg7, @OriginalArg(8) long arg8, @OriginalArg(9) int arg9, @OriginalArg(10) ParticleSystem arg10) {
+		boolean firstPersonActive = FirstPersonViewModel.isActive(this);
+		FirstPersonViewModel.begin(this, firstPersonActive, this.appearance != null);
 		if (this.appearance == null) {
+			FirstPersonViewModel.diagnose(this, null, -1, true);
 			return;
 		}
 		@Pc(25) SeqType local25 = this.seqId != -1 && this.anInt3420 == 0 ? SeqTypeList.get(this.seqId) : null;
 		@Pc(54) SeqType local54 = this.movementSeqId == -1 || this.aBoolean98 || this.movementSeqId == this.getBasType().idleAnimationId && local25 != null ? null : SeqTypeList.get(this.movementSeqId);
-		@Pc(76) Model local76 = this.appearance.method1954(this.aClass147Array3, this.anInt3373, local54, local25, this.anInt3396, this.anInt3388, this.anInt3360, this.anInt3425, this.anInt3407);
+		// FIRST_PERSON places the camera at the eye anchor.  Keep the real local
+		// body/equipment model and its server-driven animations, but remove only
+		// the local head slots so the player's own head/helm/hair cannot sit in
+		// front of the camera.  Other players, NPCs, CHASE, FREE and ORIGINAL
+		// continue through the untouched vanilla appearance path.
+		boolean hideFirstPersonHead = firstPersonActive;
+		@Pc(76) Model local76 = this.appearance.method1954(this.aClass147Array3, this.anInt3373, local54, local25, this.anInt3396, this.anInt3388, this.anInt3360, this.anInt3425, this.anInt3407, hideFirstPersonHead);
+		Model firstPersonArms = hideFirstPersonHead
+				? this.appearance.method1954(this.aClass147Array3, this.anInt3373, local54, local25, this.anInt3396, this.anInt3388, this.anInt3360, this.anInt3425, this.anInt3407, true, PlayerAppearance.FIRST_PERSON_ARMS_MASK)
+				: null;
+		Model firstPersonWeapon = hideFirstPersonHead
+				? this.appearance.method1954(this.aClass147Array3, this.anInt3373, local54, local25, this.anInt3396, this.anInt3388, this.anInt3360, this.anInt3425, this.anInt3407, true, PlayerAppearance.FIRST_PERSON_WEAPON_MASK)
+				: null;
+		Model firstPersonShield = hideFirstPersonHead
+				? this.appearance.method1954(this.aClass147Array3, this.anInt3373, local54, local25, this.anInt3396, this.anInt3388, this.anInt3360, this.anInt3425, this.anInt3407, true, PlayerAppearance.FIRST_PERSON_SHIELD_MASK)
+				: null;
+		FirstPersonViewModel.recordModel("full", local76);
+		FirstPersonViewModel.recordViewModels(firstPersonArms, firstPersonWeapon, firstPersonShield);
 		@Pc(79) int local79 = PlayerAppearance.getModelCacheSize();
 		if (GlRenderer.enabled && GameShell.maxMemory < 96 && local79 > 50) {
 			method501();
@@ -428,12 +448,14 @@ public final class Player extends PathingEntity {
 				aByteArrayArray8[anInt2863] = null;
 			}
 		}
-		if (local76 == null) {
+		if (local76 == null && firstPersonArms == null && firstPersonWeapon == null && firstPersonShield == null) {
+			FirstPersonViewModel.diagnose(this, null, this.seqId != -1 ? this.seqId : this.movementSeqId, true);
 			return;
 		}
-		this.minY = local76.getMinY();
+		Model modelForBounds = local76 != null ? local76 : firstPersonArms != null ? firstPersonArms : firstPersonWeapon != null ? firstPersonWeapon : firstPersonShield;
+		this.minY = modelForBounds.getMinY();
 		@Pc(184) Model local184;
-		if (Preferences.characterShadowsOn && (this.appearance.npcId == -1 || NpcTypeList.get(this.appearance.npcId).hasshadow)) {
+		if (local76 != null && Preferences.characterShadowsOn && (this.appearance.npcId == -1 || NpcTypeList.get(this.appearance.npcId).hasshadow)) {
 			local184 = ShadowModelList.method1043(160, this.aBoolean171, local54 == null ? local25 : local54, this.xFine, 0, this.zFine, 0, 1, local76, arg0, local54 == null ? this.anInt3425 : this.anInt3407, this.anInt3424, 240);
 			if (GlRenderer.enabled) {
 				@Pc(188) float local188 = GlRenderer.method4179();
@@ -447,7 +469,7 @@ public final class Player extends PathingEntity {
 				local184.render(0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, -1L, arg9, null);
 			}
 		}
-		if (PlayerList.self == this) {
+		if (PlayerList.self == this && local76 != null) {
 			for (local102 = MiniMap.hintMapMarkers.length - 1; local102 >= 0; local102--) {
 				@Pc(245) MapMarker local245 = MiniMap.hintMapMarkers[local102];
 				if (local245 != null && local245.playerModelId != -1) {
@@ -477,8 +499,10 @@ public final class Player extends PathingEntity {
 				}
 			}
 		}
-		this.method2687(local76);
-		this.method2685(local76, arg0);
+		if (local76 != null) {
+			this.method2687(local76);
+			this.method2685(local76, arg0);
+		}
 		local184 = null;
 		if (!this.aBoolean98 && this.spotAnimId != -1 && this.anInt3399 != -1) {
 			@Pc(471) SpotAnimType local471 = SpotAnimTypeList.get(this.spotAnimId);
@@ -519,7 +543,17 @@ public final class Player extends PathingEntity {
 				}
 			}
 		}
-		if (GlRenderer.enabled) {
+		if (hideFirstPersonHead) {
+			// The full headless model remains available for the local shadow and
+			// follows the existing SceneGraph camera-relative placement.  The
+			// additional viewmodel is rendered on top of that established layer.
+			int animationId = this.seqId != -1 ? this.seqId : this.movementSeqId;
+			// The local world model is intentionally suppressed in FIRST_PERSON.
+			// Only the dedicated camera-relative component models are submitted.
+			FirstPersonViewModel.recordWorldModel(null, arg5, arg6, arg7);
+			FirstPersonViewModel.render(this, firstPersonArms, firstPersonWeapon, firstPersonShield, arg1, arg2, arg3, arg4, arg9, this.particleSystem);
+			FirstPersonViewModel.diagnose(this, firstPersonArms, animationId, DebugOverlay.isVisible());
+		} else if (GlRenderer.enabled) {
 			local76.pickable = true;
 			local76.render(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, this.particleSystem);
 			if (local184 != null) {

@@ -14,6 +14,15 @@ public abstract class Model extends Entity {
 	@OriginalMember(owner = "client!ak", name = "s", descriptor = "Z")
 	public boolean pickable = false;
 
+	/** Lightweight geometry introspection used only by scoped render diagnostics. */
+	public int getVertexCount() {
+		return -1;
+	}
+
+	public int getTriangleCount() {
+		return -1;
+	}
+
 	@OriginalMember(owner = "client!ak", name = "a", descriptor = "([[III)I")
 	public static int method4556(@OriginalArg(0) int[][] arg0, @OriginalArg(1) int arg1, @OriginalArg(2) int arg2) {
 		@Pc(3) int local3 = arg1 >> 7;

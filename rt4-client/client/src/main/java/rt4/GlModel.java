@@ -205,6 +205,16 @@ public final class GlModel extends Model {
 	public GlModel() {
 	}
 
+	@Override
+	public int getVertexCount() {
+		return this.vertexCount;
+	}
+
+	@Override
+	public int getTriangleCount() {
+		return this.triangleCount;
+	}
+
 	@OriginalMember(owner = "client!td", name = "<init>", descriptor = "(Lclient!gb;IIZ)V")
 	public GlModel(@OriginalArg(0) RawModel model, @OriginalArg(1) int arg1, @OriginalArg(2) int arg2, @OriginalArg(3) boolean arg3) {
 		@Pc(23) int[] local23 = new int[model.triangleCount];

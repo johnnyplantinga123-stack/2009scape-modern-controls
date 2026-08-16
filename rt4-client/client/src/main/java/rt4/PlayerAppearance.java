@@ -35,6 +35,12 @@ public final class PlayerAppearance {
 	@OriginalMember(owner = "client!wd", name = "d", descriptor = "[I")
 	public static final int[] BASE_PART_MAP = new int[]{8, 11, 4, 6, 9, 7, 10, 0};
 
+	/** Existing appearance slots retained by the dedicated FP presentation. */
+	public static final int FIRST_PERSON_ARMS_MASK = (1 << 4) | (1 << 6) | (1 << 9);
+	public static final int FIRST_PERSON_WEAPON_MASK = 1 << 5;
+	public static final int FIRST_PERSON_SHIELD_MASK = 1 << 3;
+	public static final int FIRST_PERSON_FULL_MASK = FIRST_PERSON_ARMS_MASK | FIRST_PERSON_WEAPON_MASK | FIRST_PERSON_SHIELD_MASK;
+
 	@OriginalMember(owner = "client!r", name = "b", descriptor = "[Lclient!tk;")
 	public static final SeqType[] aClass144Array2 = new SeqType[14];
 
@@ -245,16 +251,80 @@ public final class PlayerAppearance {
 
 	@OriginalMember(owner = "client!hh", name = "a", descriptor = "([Lclient!ub;ILclient!tk;Lclient!tk;IIIIZII)Lclient!ak;")
 	public final Model method1954(@OriginalArg(0) PathingEntity_Class147[] arg0, @OriginalArg(1) int arg1, @OriginalArg(2) SeqType arg2, @OriginalArg(3) SeqType arg3, @OriginalArg(4) int arg4, @OriginalArg(5) int arg5, @OriginalArg(7) int arg6, @OriginalArg(9) int arg7, @OriginalArg(10) int arg8) {
+		return method1954(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, false, false);
+	}
+
+	/**
+	 * Builds the normal player body model, with an optional local FIRST_PERSON
+	 * presentation mask.  The mask is deliberately applied before the cached
+	 * body model is built, so head meshes cannot remain in the combined model
+	 * and clip into the eye camera.
+	 *
+	 * <p>The appearance slot mapping is the same one used by the vanilla
+	 * player decoder: slot 0 is head equipment, slot 8 is hair and slot 11 is
+	 * beard/facial hair.  Body, arms, hands, legs, feet, cape, amulet and
+	 * weapon/off-hand slots remain untouched.  This is a presentation-only
+	 * variant; the authoritative appearance and all equipment identifiers stay
+	 * unchanged.</p>
+	 */
+	public final Model method1954(@OriginalArg(0) PathingEntity_Class147[] arg0, @OriginalArg(1) int arg1, @OriginalArg(2) SeqType arg2, @OriginalArg(3) SeqType arg3, @OriginalArg(4) int arg4, @OriginalArg(5) int arg5, @OriginalArg(7) int arg6, @OriginalArg(9) int arg7, @OriginalArg(10) int arg8, boolean hideHead) {
+		return method1954(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, hideHead, false);
+	}
+
+	/**
+	 * Builds a FIRST_PERSON-only presentation model from the same appearance
+	 * source as the normal player model.  It retains torso/sleeves, arms,
+	 * hands/gloves and the weapon/off-hand slots, while omitting the head,
+	 * cape, legs and feet that are not part of the close camera presentation.
+	 * Animation arguments and item wear transforms still flow through the
+	 * normal method below; this method does not decode or invent new assets.
+	 */
+	public final Model method1954(@OriginalArg(0) PathingEntity_Class147[] arg0, @OriginalArg(1) int arg1, @OriginalArg(2) SeqType arg2, @OriginalArg(3) SeqType arg3, @OriginalArg(4) int arg4, @OriginalArg(5) int arg5, @OriginalArg(7) int arg6, @OriginalArg(9) int arg7, @OriginalArg(10) int arg8, boolean hideHead, boolean firstPersonParts) {
+		return method1954(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, hideHead, firstPersonParts ? FIRST_PERSON_FULL_MASK : 0);
+	}
+
+	/** Builds a FIRST_PERSON model containing only the requested real appearance slots. */
+	public final Model method1954(@OriginalArg(0) PathingEntity_Class147[] arg0, @OriginalArg(1) int arg1, @OriginalArg(2) SeqType arg2, @OriginalArg(3) SeqType arg3, @OriginalArg(4) int arg4, @OriginalArg(5) int arg5, @OriginalArg(7) int arg6, @OriginalArg(9) int arg7, @OriginalArg(10) int arg8, boolean hideHead, int componentMask) {
 		if (this.npcId != -1) {
 			return NpcTypeList.get(this.npcId).getBodyModel(arg0, arg5, arg8, arg1, arg6, arg7, arg2, arg4, arg3);
 		}
 		@Pc(38) int[] local38 = this.identikit;
 		@Pc(41) long local41 = this.checksum;
-		if (arg3 != null && (arg3.mainhand >= 0 || arg3.offhand >= 0)) {
+		if (hideHead) {
+			// Keep the normal cache entries isolated from the FP headless entry.
+			// The marker is only a cache-domain discriminator; appearance data is
+			// never sent to the server or mutated here.
 			local38 = new int[12];
-			for (@Pc(61) int local61 = 0; local61 < 12; local61++) {
-				local38[local61] = this.identikit[local61];
+			for (int i = 0; i < local38.length; i++) {
+				local38[i] = this.identikit[i];
 			}
+			local38[0] = 0;   // helmet/head equipment
+			local38[8] = 0;   // hair
+			local38[11] = 0;  // beard/facial hair
+			local41 ^= 0x4F50454E48454144L; // "OPENHEAD" cache domain marker
+		}
+		if (componentMask != 0) {
+			if (local38 == this.identikit) {
+				local38 = new int[12];
+				for (int i = 0; i < local38.length; i++) {
+					local38[i] = this.identikit[i];
+				}
+			}
+			// Keep the actual body/equipment attachment slots used by RT4:
+			// torso=4, off-hand=3, weapon=5, arms=6, hands/gloves=9.
+			for (int i = 0; i < local38.length; i++) {
+				if ((componentMask & (1 << i)) == 0) {
+					local38[i] = 0;
+				}
+			}
+			local41 ^= 0x4650564945574D4DL ^ (long) componentMask * 0x9E3779B9L; // FP cache domain + slot mask
+		}
+		if (arg3 != null && (arg3.mainhand >= 0 || arg3.offhand >= 0)) {
+			int[] animatedAppearance = new int[12];
+			for (@Pc(61) int local61 = 0; local61 < 12; local61++) {
+				animatedAppearance[local61] = local38[local61];
+			}
+			local38 = animatedAppearance;
 			if (arg3.mainhand >= 0) {
 				if (arg3.mainhand == 65535) {
 					local41 ^= 0xFFFFFFFF00000000L;
@@ -271,6 +341,16 @@ public final class PlayerAppearance {
 				} else {
 					local38[3] = arg3.offhand | 0x40000000;
 					local41 ^= local38[3];
+				}
+			}
+		}
+		if (componentMask != 0) {
+			// Sequence mainhand/offhand overrides above are allowed only for the
+			// component model that owns that slot; never leak another component
+			// back into the dedicated arms/weapon/shield pass.
+			for (int i = 0; i < local38.length; i++) {
+				if ((componentMask & (1 << i)) == 0) {
+					local38[i] = 0;
 				}
 			}
 		}
@@ -532,6 +612,23 @@ public final class PlayerAppearance {
 			aClass144Array2[local481] = null;
 		}
 		return local1284;
+	}
+
+	/** Returns the live item ID in an equipment appearance slot, or -1. */
+	public int getEquippedObjectId(int slot) {
+		if (identikit == null || slot < 0 || slot >= identikit.length) {
+			return -1;
+		}
+		int value = identikit[slot];
+		return (value & 0x40000000) != 0 ? value & 0x3FFFFFFF : -1;
+	}
+
+	/** Returns the raw selected body/equipment component value for diagnostics. */
+	public int getSelectedComponentValue(int slot) {
+		if (identikit == null || slot < 0 || slot >= identikit.length) {
+			return 0;
+		}
+		return identikit[slot];
 	}
 
 	@OriginalMember(owner = "client!hh", name = "a", descriptor = "(IBLclient!tk;II)Lclient!ak;")
