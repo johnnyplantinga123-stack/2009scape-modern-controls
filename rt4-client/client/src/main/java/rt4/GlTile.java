@@ -370,6 +370,34 @@ public final class GlTile extends Node {
 		GlRenderer.enableDepthMask();
 	}
 
+	/**
+	 * Counts the exact indexed triangle fans this batch would submit for one
+	 * visible scene tile. This is diagnostic-only: it intentionally reads the
+	 * same tile visibility latch and index groups as {@link #method1944}.
+	 */
+	public final int getVisibleTriangleCountForTile(Tile[][][] sceneTiles, int plane, int x, int z) {
+		if (sceneTiles == null || plane < 0 || plane >= sceneTiles.length
+				|| sceneTiles[plane] == null || x < 0 || x >= sceneTiles[plane].length
+				|| sceneTiles[plane][x] == null || z < 0 || z >= sceneTiles[plane][x].length) {
+			return 0;
+		}
+		Tile tile = sceneTiles[plane][x][z];
+		if (tile == null || !tile.aBoolean45) {
+			return 0;
+		}
+		int triangles = 0;
+		for (int group = 0; group < this.anInt2489; group++) {
+			if (this.anIntArray231[group] == plane && this.anIntArray228[group] == x
+					&& this.anIntArray227[group] == z) {
+				int[] fan = this.anIntArrayArray17[group];
+				if (fan != null && fan.length >= 3) {
+					triangles += fan.length - 2;
+				}
+			}
+		}
+		return triangles;
+	}
+
 	@OriginalMember(owner = "client!hg", name = "a", descriptor = "(III[I[IZ)I")
 	public final int method1945(@OriginalArg(0) int arg0, @OriginalArg(1) int arg1, @OriginalArg(2) int arg2, @OriginalArg(3) int[] arg3, @OriginalArg(4) int[] arg4, @OriginalArg(5) boolean arg5) {
 		if (this.blend) {

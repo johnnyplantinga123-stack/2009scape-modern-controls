@@ -3404,6 +3404,9 @@ public final class GlModel extends Model {
 			gl.glBindBuffer(GL2.GL_ELEMENT_ARRAY_BUFFER, 0);
 		}
 		@Pc(417) int local417 = this.anIntArray463.length - 1;
+		// When SceneGraph reissues a live roof entity for the first-person
+		// underside, record the exact same complete index/material-group loop.
+		ModernCeiling.noteLiveRoofModelDraw(local417, this.triangleCount);
 		for (@Pc(419) int local419 = 0; local419 < local417; local419++) {
 			@Pc(427) int local427 = this.anIntArray463[local419];
 			@Pc(434) int local434 = this.anIntArray463[local419 + 1];

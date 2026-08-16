@@ -6,6 +6,8 @@ import org.openrs2.deob.annotation.OriginalMember;
 import org.openrs2.deob.annotation.Pc;
 import plugin.api.API;
 
+import java.util.IdentityHashMap;
+
 public class SceneGraph {
 
 	@OriginalMember(owner = "client!bb", name = "g", descriptor = "[[[B")
@@ -2092,7 +2094,9 @@ public class SceneGraph {
 												}
 												@Pc(1697) Scenery local1697 = aClass31Array2[local115];
 												local1697.anInt1707 = anInt437;
-												if (!method1599(local27, local1697.xMin, local1697.xMax, local1697.zMin, local1697.zMax, local1697.entity.getMinY())) {
+													boolean sceneryOccluded = method1599(local27, local1697.xMin, local1697.xMax, local1697.zMin, local1697.zMax, local1697.entity.getMinY());
+													ModernCeiling.noteRoofRenderDecision(local1697, sceneryOccluded);
+													if (!sceneryOccluded) {
 													if (GlRenderer.enabled) {
 														if ((local1697.key & 0xFC000L) == 147456L) {
 															LightingManager.method2393(cameraX, cameraY, cameraZ, local24, local18, local21);
@@ -2114,9 +2118,14 @@ public class SceneGraph {
 															LightingManager.method2391(cameraX, cameraY, cameraZ, local24, local1697.xMin, local1697.zMin, local1697.xMax, local1697.zMax);
 														}
 													}
-													local1697.entity.render(local1697.anInt1714, anInt2886, anInt3038, anInt5205, anInt2222, local1697.anInt1699 - cameraX, local1697.anInt1706 - cameraY, local1697.anInt1703 - cameraZ, local1697.key, local24, null);
-													renderLiveRoofUnderside(local1697, local24);
-												}
+															boolean traceRoofSubmission = ModernCeiling.beginLiveRoofModelSubmission(local1697, false);
+															try {
+																local1697.entity.render(local1697.anInt1714, anInt2886, anInt3038, anInt5205, anInt2222, local1697.anInt1699 - cameraX, local1697.anInt1706 - cameraY, local1697.anInt1703 - cameraZ, local1697.key, local24, null);
+															} finally {
+																ModernCeiling.endLiveRoofModelSubmission(traceRoofSubmission);
+															}
+														ModernCeiling.noteRoofNormalRendered(local1697);
+													}
 												for (local894 = local1697.xMin; local894 <= local1697.xMax; local894++) {
 													for (local899 = local1697.zMin; local899 <= local1697.zMax; local899++) {
 														@Pc(1863) Tile local1863 = local31[local894][local899];
@@ -2262,30 +2271,76 @@ public class SceneGraph {
 	}
 
 	/**
-	 * Reissues the exact Scenery LOC model vanilla just rendered, with only face
-	 * selection changed. The roof's geometry, material, world coordinates and
-	 * active scene camera transform are untouched; this exposes its real lower
-	 * face instead of manufacturing a flat ceiling.
+	 * Reissues the exact Scenery LOC model vanilla just rendered. The roof's
+	 * geometry, material, world coordinates and active scene camera transform
+	 * are untouched. Roof LOCs can contain index groups with opposite winding,
+	 * so the temporary first-person underside submission is double-sided rather
+	 * than culling one winding and leaving view-dependent holes.
 	 */
 	private static void renderLiveRoofUnderside(Scenery scenery, int level) {
 		if (!ModernCeiling.rendersLiveRoofMeshForScenery(scenery)) {
 			return;
 		}
+		ModernCeiling.noteRoofUndersideHookReached(scenery);
 		GL2 gl = GlRenderer.gl;
-		boolean cullWasEnabled = gl.glIsEnabled(GL2.GL_CULL_FACE);
 		gl.glPushAttrib(GL2.GL_ENABLE_BIT | GL2.GL_POLYGON_BIT | GL2.GL_DEPTH_BUFFER_BIT);
-		if (!cullWasEnabled) {
-			gl.glEnable(GL2.GL_CULL_FACE);
-		}
-		gl.glCullFace(GL2.GL_FRONT);
-		scenery.entity.render(scenery.anInt1714, anInt2886, anInt3038, anInt5205, anInt2222,
-				scenery.anInt1699 - cameraX, scenery.anInt1706 - cameraY,
-				scenery.anInt1703 - cameraZ, scenery.key, level, null);
-		gl.glPopAttrib();
-		if (!cullWasEnabled) {
-			gl.glDisable(GL2.GL_CULL_FACE);
+		gl.glDisable(GL2.GL_CULL_FACE);
+		boolean traceSubmission = ModernCeiling.beginLiveRoofModelSubmission(scenery, true);
+		try {
+			scenery.entity.render(scenery.anInt1714, anInt2886, anInt3038, anInt5205, anInt2222,
+					scenery.anInt1699 - cameraX, scenery.anInt1706 - cameraY,
+					scenery.anInt1703 - cameraZ, scenery.key, level, null);
+		} finally {
+			ModernCeiling.endLiveRoofModelSubmission(traceSubmission);
+			gl.glPopAttrib();
 		}
 		ModernCeiling.noteLiveRoofMesh(scenery);
+	}
+
+	/**
+	 * Reuses live roof LOCs from the structural cluster around a first-person
+	 * player. Roof flags identify interior tiles, while the corresponding mesh
+	 * may be stored on a neighbouring origin tile or a multi-tile footprint.
+	 */
+	private static void renderLiveRoofUndersideCoverage() {
+		if (!ModernCeiling.isEnabled() || !GlRenderer.enabled || tileHeights == underwaterTileHeights) {
+			return;
+		}
+		Player self = PlayerList.self;
+		if (self == null || tiles == null) {
+			return;
+		}
+		int radius = ModernCeiling.getDirectRoofSearchRadius();
+		int playerX = self.xFine >> 7;
+		int playerZ = self.zFine >> 7;
+		// Entries are shared by every tile in their footprint. Claim the object
+		// identity rather than its origin: a large roof can cover this window
+		// even when its origin is outside it.
+		IdentityHashMap<Scenery, Boolean> submitted = new IdentityHashMap<Scenery, Boolean>();
+		for (int level = Player.plane; level <= Player.plane + 1 && level < tiles.length; level++) {
+			Tile[][] planeTiles = tiles[level];
+			if (planeTiles == null) continue;
+			int x0 = Math.max(0, playerX - radius);
+			int x1 = Math.min(planeTiles.length - 1, playerX + radius);
+			for (int x = x0; x <= x1; x++) {
+				Tile[] row = planeTiles[x];
+				if (row == null) continue;
+				int z0 = Math.max(0, playerZ - radius);
+				int z1 = Math.min(row.length - 1, playerZ + radius);
+				for (int z = z0; z <= z1; z++) {
+					Tile tile = row[z];
+					if (tile == null) continue;
+					for (int i = 0; i < tile.sceneryLen; i++) {
+						Scenery scenery = tile.scenery[i];
+						if (scenery == null || submitted.put(scenery, Boolean.TRUE) != null) continue;
+						if (!ModernCeiling.rendersLiveRoofMeshForScenery(scenery)) continue;
+						LightingManager.method2391(cameraX, cameraY, cameraZ, level,
+								scenery.xMin, scenery.zMin, scenery.xMax, scenery.zMax);
+						renderLiveRoofUnderside(scenery, level);
+					}
+				}
+			}
+		}
 	}
 
 	@OriginalMember(owner = "client!wh", name = "a", descriptor = "(IIII)Z")
@@ -2937,10 +2992,11 @@ public class SceneGraph {
 		anInt3038 = MathUtils.cos[arg3];
 		anInt5205 = MathUtils.sin[arg4];
 		anInt2222 = MathUtils.cos[arg4];
-		cameraX = arg0;
-		cameraY = arg1;
-		cameraZ = arg2;
-		anInt4069 = arg0 / 128;
+			cameraX = arg0;
+			cameraY = arg1;
+			cameraZ = arg2;
+			ModernCeiling.beginDirectRenderFrame();
+			anInt4069 = arg0 / 128;
 		anInt4539 = arg2 / 128;
 		LightingManager.anInt987 = anInt4069 - visibility;
 		if (LightingManager.anInt987 < 0) {
@@ -3106,8 +3162,12 @@ public class SceneGraph {
 						if (local336.texture != -1 && Rasteriser.textureProvider.getMaterialType(local336.texture) == MaterialManager.WATER && Preferences.highWaterDetail) {
 							WaterMaterialRenderer.method619(local336.underwaterColor);
 						}
-						local336.method1944(tiles, local350, false);
-						if (ModernCeiling.rendersLiveGlMeshForPlane(local32)) {
+							boolean directFloorMesh = ModernCeiling.rendersLiveGlMeshForPlane(local32);
+							if (directFloorMesh) {
+								ModernCeiling.noteDirectFloorMeshBatch(local336, tiles, local32, false);
+							}
+							local336.method1944(tiles, local350, false);
+							if (directFloorMesh) {
 							// Reissue the exact same GlTile vertex/index/material payload
 							// while the normal scene camera transform is still active.
 							// Culling front faces exposes only the true underside; no
@@ -3119,7 +3179,7 @@ public class SceneGraph {
 							local336.method1944(tiles, local350, false);
 							gl.glPopAttrib();
 							if (!cullWasEnabled) gl.glDisable(GL2.GL_CULL_FACE);
-							ModernCeiling.noteLiveGlMeshBatch(local32);
+								ModernCeiling.noteDirectFloorMeshBatch(local336, tiles, local32, true);
 						}
 					}
 					if (local32 == 0 && Preferences.sceneryShadowsType > 0) {
@@ -3129,9 +3189,10 @@ public class SceneGraph {
 					local32++;
 				}
 			}
-			gl.glPopMatrix();
-		}
-		@Pc(434) int local434;
+				gl.glPopMatrix();
+			}
+			renderLiveRoofUndersideCoverage();
+			@Pc(434) int local434;
 		@Pc(438) int local438;
 		@Pc(450) Tile local450;
 		@Pc(399) int local399;

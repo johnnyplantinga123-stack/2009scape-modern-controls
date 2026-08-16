@@ -118,6 +118,12 @@ public final class ModernMovementController {
 	private static String lastDoorParityStage = "";
 	/** Classification carried from the first authoritative divergence to rebase logging. */
 	private static String lastReconcileSource = "reconcile";
+	/** Tile-only coherence diagnostics; ordinary server steps remain silent. */
+	private static final int TILE_COHERENCE_WINDOW_TICKS = 5;
+	private static int tileCoherenceMismatchSince = -1;
+	private static int lastTileCoherenceLogTick = -100;
+	private static int lastAcknowledgedTileX = -1;
+	private static int lastAcknowledgedTileZ = -1;
 
 	// ==== PENDING REQUEST RING BUFFER (LOCAL tile coords) ====
 	private static final int[] pendingTileX = new int[PENDING_CAPACITY];
@@ -580,15 +586,6 @@ public final class ModernMovementController {
 	 * Stores authoritative tile, consumes matching pending entries, reconciles.
 	 */
 	public static void onServerStep(int localTileX, int localTileZ) {
-		// Phase 3B fix #3: diagnostic logging for server sync analysis
-		int predTileX = (int) (predictedSubX >> 16) >> 7;
-		int predTileZ = (int) (predictedSubZ >> 16) >> 7;
-		System.out.println("[MODERN-MOVE] SERVER_STEP: localTile=" + localTileX + "," + localTileZ
-				+ " predictedTile=" + predTileX + "," + predTileZ
-				+ " prevServerTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ
-				+ " divergence=" + Math.max(Math.abs(predTileX - localTileX), Math.abs(predTileZ - localTileZ))
-				+ " pending=" + (pendingTail - pendingHead));
-
 		lastServerReportedTileX = localTileX;
 		lastServerReportedTileZ = localTileZ;
 		// A regular player-update step identifies a tile only. Any older exact
@@ -600,8 +597,26 @@ public final class ModernMovementController {
 		lastServerReportTick = client.loop;
 		boolean hadPending = !pendingEmpty();
 		boolean matchedPending = consumePendingExact(localTileX, localTileZ);
+		lastAcknowledgedTileX = localTileX;
+		lastAcknowledgedTileZ = localTileZ;
 		lastReconcileSource = hadPending && !matchedPending ? "stale_movement_route" : "server_movement";
-		reconcile();
+		boolean queueMatchesServer = PlayerList.self != null
+				&& PlayerList.self.movementQueueX[0] == localTileX
+				&& PlayerList.self.movementQueueZ[0] == localTileZ;
+		int predictedTileX = (int) (predictedSubX >> 16) >> 7;
+		int predictedTileZ = (int) (predictedSubZ >> 16) >> 7;
+		boolean acknowledgedTileNeedsConvergence = pendingEmpty() && queueMatchesServer
+				&& (predictedTileX != localTileX || predictedTileZ != localTileZ);
+		if (acknowledgedTileNeedsConvergence) {
+			// A tile/direction update has no authoritative fine point, but once its
+			// complete pending chain is acknowledged, prediction cannot remain in a
+			// different gameplay tile. Rebase preserves the existing in-tile offset.
+			lastReconcileSource = "acknowledged_tile_convergence";
+			rebaseFromServerTile();
+		} else {
+			reconcile();
+		}
+		noteTileCoherence(hadPending && !matchedPending ? "ack_not_pending" : "server_ack");
 	}
 
 	/**
@@ -679,6 +694,8 @@ public final class ModernMovementController {
 			predictedSubZ = ((long) self.zFine) << 16;
 			lastServerReportedTileX = self.xFine >> 7;
 			lastServerReportedTileZ = self.zFine >> 7;
+			movementAnchorTileX = lastServerReportedTileX;
+			movementAnchorTileZ = lastServerReportedTileZ;
 			lastServerReportTick = client.loop;
 			clearPending();
 			suspended = false;
@@ -689,6 +706,7 @@ public final class ModernMovementController {
 		// point (or a nearby valid tile), never to an arbitrary world location.
 		int currentFineX = (int) (predictedSubX >> 16);
 		int currentFineZ = (int) (predictedSubZ >> 16);
+		noteTileCoherence("tick");
 		if (!isFinePositionOccupancyValid(currentFineX, currentFineZ, self.getSize())) {
 			int[] recovered = findRecentValidFine(currentFineX, currentFineZ, self.getSize());
 			if (recovered == null && lastValidInitialized
@@ -1159,11 +1177,13 @@ public final class ModernMovementController {
 	}
 
 	/**
-	 * Validates the actual fine footprint, not only the tile containing its
-	 * centre. A wall flag on an edge is blocking before the centre reaches the
-	 * tile boundary, and a scenery/object flag must reject the whole occupied
-	 * footprint. All flags here come from the client-owned CollisionMap, which
-	 * is populated from the same rotated scene data used by vanilla PathFinder.
+	 * Validates a fine position against the live CollisionMap. For the normal
+	 * one-tile player, fine coordinates are visual interpolation within a tile:
+	 * CollisionMap wall flags have no sub-tile aperture/extent information.
+	 * Expanding every flagged edge by {@link #FINE_FOOTPRINT_INSET} therefore
+	 * invented collision inside an otherwise legal tile, notably at doorways
+	 * and corners. Occupancy remains mandatory and the authoritative vanilla
+	 * boundary check remains in {@link #canMoveFine} for every tile crossing.
 	 */
 	private static boolean isFinePositionValid(CollisionMap map, int fineX, int fineZ, int size) {
 		if (map == null) return false;
@@ -1171,7 +1191,7 @@ public final class ModernMovementController {
 		int tileZ = fineToCollisionTile(fineZ, size);
 		if (tileX < 0 || tileZ < 0 || tileX + size > 104 || tileZ + size > 104
 				|| !canOccupy(map, tileX, tileZ, size)) return false;
-		return hasFineEdgeClearance(map, fineX, fineZ, tileX, tileZ, size);
+		return size == 1 || hasFineEdgeClearance(map, fineX, fineZ, tileX, tileZ, size);
 	}
 
 	private static boolean isFinePositionOccupancyValid(int fineX, int fineZ, int size) {
@@ -1217,7 +1237,7 @@ public final class ModernMovementController {
 		if (!canOccupy(map, tileX, tileZ, size)) {
 			return "occupancy_flags=0x" + Integer.toHexString(sampleFlags(map, tileX, tileZ));
 		}
-		if (!hasFineEdgeClearance(map, fineX, fineZ, tileX, tileZ, size)) {
+		if (size != 1 && !hasFineEdgeClearance(map, fineX, fineZ, tileX, tileZ, size)) {
 			return "edge_clearance inset=" + FINE_FOOTPRINT_INSET
 					+ " flags=0x" + Integer.toHexString(sampleFlags(map, tileX, tileZ));
 		}
@@ -1724,6 +1744,72 @@ public final class ModernMovementController {
 		return pendingHead >= pendingTail;
 	}
 
+	/**
+	 * Tile-only audit of the authority chain. A one-tile lead with an in-flight
+	 * request is expected, so it is deliberately silent until it persists past
+	 * the normal acknowledgement window.
+	 */
+	private static void noteTileCoherence(String trigger) {
+		Player self = PlayerList.self;
+		if (self == null || lastServerReportedTileX < 0 || lastServerReportedTileZ < 0) {
+			return;
+		}
+		int predictedX = (int) (predictedSubX >> 16) >> 7;
+		int predictedZ = (int) (predictedSubZ >> 16) >> 7;
+		int pathX = self.movementQueueX[0];
+		int pathZ = self.movementQueueZ[0];
+		int deltaX = predictedX - lastServerReportedTileX;
+		int deltaZ = predictedZ - lastServerReportedTileZ;
+		int distance = Math.max(Math.abs(deltaX),
+				Math.abs(predictedZ - lastServerReportedTileZ));
+		boolean anchorMismatch = movementAnchorTileX != lastServerReportedTileX
+				|| movementAnchorTileZ != lastServerReportedTileZ;
+		boolean pathMismatch = self.movementQueueSize > 0
+				&& (pathX != lastServerReportedTileX || pathZ != lastServerReportedTileZ);
+		boolean acknowledgedStillPending = lastAcknowledgedTileX >= 0
+				&& pendingContains(lastAcknowledgedTileX, lastAcknowledgedTileZ);
+		String predictionRelation = predictionRelation(deltaX, deltaZ);
+		boolean unexpectedDivergence = distance > 1 || (distance == 1 && pendingEmpty());
+		String reason = anchorMismatch ? "anchor_server_mismatch"
+				: pathMismatch ? "path_server_mismatch"
+				: acknowledgedStillPending ? "acknowledged_pending"
+				: unexpectedDivergence ? predictionRelation
+				: null;
+		if (reason == null) {
+			tileCoherenceMismatchSince = -1;
+			return;
+		}
+		if (tileCoherenceMismatchSince == -1) {
+			tileCoherenceMismatchSince = client.loop;
+			return;
+		}
+		if (client.loop - tileCoherenceMismatchSince < TILE_COHERENCE_WINDOW_TICKS
+				|| client.loop - lastTileCoherenceLogTick < 50) {
+			return;
+		}
+		lastTileCoherenceLogTick = client.loop;
+		System.out.println("[MODERN-TILE-COHERENCE] server=" + lastServerReportedTileX + ',' + lastServerReportedTileZ
+				+ " predicted=" + predictedX + ',' + predictedZ
+				+ " anchor=" + movementAnchorTileX + ',' + movementAnchorTileZ
+				+ " path=" + pathX + ',' + pathZ
+				+ " pending=" + pendingTilesSummary()
+				+ " predictionRelation=" + predictionRelation
+				+ " predictionDistance=" + distance
+				+ " lastAck=" + lastAcknowledgedTileX + ',' + lastAcknowledgedTileZ
+				+ " trigger=" + trigger + " reason=" + reason);
+	}
+
+	/** Classifies a mismatch relative to the active local movement direction. */
+	private static String predictionRelation(int deltaX, int deltaZ) {
+		if (deltaX != 0 && deltaZ != 0) return "divergent/diagonal";
+		int directionX = Integer.compare(velocityXQ16, 0);
+		int directionZ = Integer.compare(velocityZQ16, 0);
+		int directedDistance = deltaX * directionX + deltaZ * directionZ;
+		if (directedDistance > 0) return "predictionAhead";
+		if (directedDistance < 0) return "predictionBehind";
+		return "divergent";
+	}
+
 	// =====================================================================
 	// RECONCILIATION
 	// =====================================================================
@@ -1800,15 +1886,16 @@ public final class ModernMovementController {
 		int currentFineZ = (int) (predictedSubZ >> 16);
 		int serverFineX = (lastServerReportedTileX << 7) + 64;
 		int serverFineZ = (lastServerReportedTileZ << 7) + 64;
-		// Preserve the fractional offset from server tile centre
-		// but clamp it to within the tile to prevent runaway prediction
+		// Preserve the fractional offset when already in the same tile. A tile
+		// acknowledgement contains no exact fine point, but a correction must end
+		// inside that acknowledged gameplay tile, never in an adjacent one.
 		int offsetX = currentFineX - serverFineX;
 		int offsetZ = currentFineZ - serverFineZ;
-		// Clamp offset to ±128 (one tile radius) to prevent excessive divergence
-		if (offsetX > 128) offsetX = 128;
-		if (offsetX < -128) offsetX = -128;
-		if (offsetZ > 128) offsetZ = 128;
-		if (offsetZ < -128) offsetZ = -128;
+		// [-64, 63] around the centre maps exactly to [tileBase, tileBase + 127].
+		if (offsetX > 63) offsetX = 63;
+		if (offsetX < -64) offsetX = -64;
+		if (offsetZ > 63) offsetZ = 63;
+		if (offsetZ < -64) offsetZ = -64;
 		int targetFineX = serverFineX + offsetX;
 		int targetFineZ = serverFineZ + offsetZ;
 		if (Math.max(Math.abs((currentFineX >> 7) - (targetFineX >> 7)),

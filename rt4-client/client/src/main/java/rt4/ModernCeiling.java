@@ -60,6 +60,8 @@ public final class ModernCeiling {
 	public static final boolean DEBUG_TILE_TRACE = false;
 	/** Per-triangle console output is reserved for invalid geometry only. */
 	public static final boolean DEBUG_UPCLIP = false;
+	/** Search the live roof LOC cluster around the structurally roofed player. */
+	private static final int DIRECT_ROOF_SEARCH_RADIUS = 4;
 
 	// ---- Round #7 diagnostics (read by DebugOverlay) ----
 	/** Whether the player's tile has a real floor tile on the plane above. */
@@ -120,8 +122,32 @@ public final class ModernCeiling {
 	private static int summaryOffscreenTriangles;
 	private static int directMeshSummaryStartLoop = -1;
 	private static int directMeshSummaryBatches;
+	private static int directFloorTraceStartLoop = -1;
+	private static int directFloorTracePlainTriangles;
+	private static int directFloorTraceShapedTriangles;
+	private static int directFloorTraceNormalSubmitted;
+	private static int directFloorTraceUndersideSubmitted;
+	private static int directFloorTracePlane = -1;
+	private static int directFloorTraceTileX = -1;
+	private static int directFloorTraceTileZ = -1;
+	private static String directFloorTraceSourceBatch = "none";
 	private static int directRoofMeshSummaryStartLoop = -1;
 	private static int directRoofMeshSummaryBatches;
+	private static int directRoofTraceStartLoop = -1;
+	private static boolean directRoofTraceCandidateFound;
+	private static boolean directRoofTraceNormalRendered;
+	private static boolean directRoofTraceRemovedByVanilla;
+	private static boolean directRoofTraceHookReached;
+	private static boolean directRoofTraceSubmitted;
+	/** Model draw groups observed inside the normal and underside entity calls. */
+	private static int directRoofTraceNormalIndexGroups;
+	private static int directRoofTraceNormalTriangles;
+	private static int directRoofTraceUndersideIndexGroups;
+	private static int directRoofTraceUndersideTriangles;
+	/** 0 outside a traced entity call, 1 normal roof, 2 direct underside. */
+	private static int directRoofModelSubmissionMode;
+	private static String directRoofTraceSourceType = "none";
+	private static String directRoofTraceReason = "no_candidate";
 
 	private ModernCeiling() {
 	}
@@ -174,22 +200,216 @@ public final class ModernCeiling {
 			return false;
 		}
 		Player self = PlayerList.self;
-		if (self == null || scenery.level != Player.plane) {
+		if (self == null || scenery.level < Player.plane || scenery.level > Player.plane + 1) {
 			return false;
 		}
-		int playerX = self.xFine >> 7;
-		int playerZ = self.zFine >> 7;
-		if (playerX < scenery.xMin || playerX > scenery.xMax
-				|| playerZ < scenery.zMin || playerZ > scenery.zMax) {
-			return false;
+		return isLiveRoofSearchCandidate(scenery);
+	}
+
+	/** Called once for the surface render before live floor/roof submissions. */
+	static void beginDirectRenderFrame() {
+		if (RENDER_ENABLED && isEnabled() && isPlayerUnderRoofWithoutFloor()) {
+			scanLiveRoofCandidates();
+			emitDirectRoofTraceIfDue();
 		}
+	}
+
+	static int getDirectRoofSearchRadius() {
+		return DIRECT_ROOF_SEARCH_RADIUS;
+	}
+
+	/**
+	 * Compact proof for the player tile's contribution to the exact GlTile path.
+	 * The count comes from the same indexed fan groups that method1944 submits;
+	 * it distinguishes a missing source batch from face/depth results.
+	 */
+	static void noteDirectFloorMeshBatch(GlTile batch, Tile[][][] sceneTiles, int floorPlane, boolean underside) {
+		Player self = PlayerList.self;
+		if (batch == null || self == null) return;
+		int x = self.xFine >> 7;
+		int z = self.zFine >> 7;
+		int triangles = batch.getVisibleTriangleCountForTile(sceneTiles, floorPlane, x, z);
+		if (triangles == 0) return;
+		Tile tile = sceneTiles[floorPlane][x][z];
+		directFloorTracePlane = floorPlane;
+		directFloorTraceTileX = x;
+		directFloorTraceTileZ = z;
+		directFloorTraceSourceBatch = "texture=" + batch.texture + ",blend=" + batch.blend;
+		if (tile.shapedTile != null) directFloorTraceShapedTriangles += triangles;
+		else directFloorTracePlainTriangles += triangles;
+		if (underside) directFloorTraceUndersideSubmitted += triangles;
+		else directFloorTraceNormalSubmitted += triangles;
+		if (directFloorTraceStartLoop == -1) {
+			directFloorTraceStartLoop = client.loop;
+			return;
+		}
+		if (client.loop - directFloorTraceStartLoop < 50) return;
+		System.out.println("[DIRECT-FLOOR-MESH] tile=" + directFloorTraceTileX + ',' + directFloorTraceTileZ
+				+ " plane=" + directFloorTracePlane
+				+ " plainTriangles=" + directFloorTracePlainTriangles
+				+ " shapedTriangles=" + directFloorTraceShapedTriangles
+				+ " normalSubmitted=" + directFloorTraceNormalSubmitted
+				+ " undersideSubmitted=" + directFloorTraceUndersideSubmitted
+				+ " sourceBatch=" + directFloorTraceSourceBatch);
+		directFloorTraceStartLoop = client.loop;
+		directFloorTracePlainTriangles = 0;
+		directFloorTraceShapedTriangles = 0;
+		directFloorTraceNormalSubmitted = 0;
+		directFloorTraceUndersideSubmitted = 0;
+	}
+
+	/** Records the real SceneGraph renderer decision for a roof LOC. */
+	static void noteRoofRenderDecision(Scenery scenery, boolean removedByVanilla) {
+		if (!isRoofTraceCandidate(scenery)) return;
+		directRoofTraceCandidateFound = true;
+		directRoofTraceSourceType = roofSourceDescription(scenery);
+		directRoofTraceRemovedByVanilla |= removedByVanilla;
+		if (removedByVanilla) directRoofTraceReason = "scene_occlusion";
+	}
+
+	static void noteRoofNormalRendered(Scenery scenery) {
+		if (!isRoofTraceCandidate(scenery)) return;
+		directRoofTraceCandidateFound = true;
+		directRoofTraceNormalRendered = true;
+		directRoofTraceSourceType = roofSourceDescription(scenery);
+	}
+
+	/**
+	 * Marks an exact live roof entity call so {@link GlModel} can report every
+	 * indexed material group it submits. This observes the existing renderer;
+	 * it never rebuilds or filters model geometry.
+	 */
+	static boolean beginLiveRoofModelSubmission(Scenery scenery, boolean underside) {
+		if (!isRoofTraceCandidate(scenery)) return false;
+		directRoofModelSubmissionMode = underside ? 2 : 1;
+		return true;
+	}
+
+	static void endLiveRoofModelSubmission(boolean active) {
+		if (active) directRoofModelSubmissionMode = 0;
+	}
+
+	/** Called only by GlModel at its normal material/index-group draw loop. */
+	static void noteLiveRoofModelDraw(int indexGroups, int triangles) {
+		if (directRoofModelSubmissionMode == 1) {
+			directRoofTraceNormalIndexGroups += indexGroups;
+			directRoofTraceNormalTriangles += triangles;
+		} else if (directRoofModelSubmissionMode == 2) {
+			directRoofTraceUndersideIndexGroups += indexGroups;
+			directRoofTraceUndersideTriangles += triangles;
+		}
+	}
+
+	static void noteRoofUndersideHookReached(Scenery scenery) {
+		directRoofTraceHookReached = true;
+		directRoofTraceCandidateFound = true;
+		directRoofTraceSourceType = roofSourceDescription(scenery);
+		directRoofTraceReason = "live_scenery";
+	}
+
+	private static boolean isRoofTraceCandidate(Scenery scenery) {
+		if (!RENDER_ENABLED || !isEnabled() || scenery == null || scenery.entity == null
+				|| !isPlayerUnderRoofWithoutFloor()) return false;
+		return isLiveRoofSearchCandidate(scenery);
+	}
+
+	private static boolean isLiveRoofSearchCandidate(Scenery scenery) {
+		Player self = PlayerList.self;
+		if (self == null || scenery.level < Player.plane || scenery.level > Player.plane + 1) return false;
+		int x = self.xFine >> 7;
+		int z = self.zFine >> 7;
+		int distanceX = x < scenery.xMin ? scenery.xMin - x : x > scenery.xMax ? x - scenery.xMax : 0;
+		int distanceZ = z < scenery.zMin ? scenery.zMin - z : z > scenery.zMax ? z - scenery.zMax : 0;
+		if (Math.max(distanceX, distanceZ) > DIRECT_ROOF_SEARCH_RADIUS) return false;
 		int shape = (int) (scenery.key >>> 14 & 0x3FL);
 		return shape >= LocType.ROOF_STRAIGHT && shape <= LocType.ROOFEDGE_SQUARECORNER;
+	}
+
+	/**
+	 * Roof LOCs are stored on their origin/footprint tiles, not necessarily on
+	 * the player tile that carries TILE_FLAG_UNDER_ROOF. Inspect that bounded
+	 * cluster before rendering so the trace proves the live source selection.
+	 */
+	private static void scanLiveRoofCandidates() {
+		Player self = PlayerList.self;
+		if (self == null || SceneGraph.tiles == null) return;
+		int playerX = self.xFine >> 7;
+		int playerZ = self.zFine >> 7;
+		for (int plane = Player.plane; plane <= Player.plane + 1 && plane < SceneGraph.tiles.length; plane++) {
+			Tile[][] level = SceneGraph.tiles[plane];
+			if (level == null) continue;
+			for (int x = Math.max(0, playerX - DIRECT_ROOF_SEARCH_RADIUS); x <= Math.min(level.length - 1, playerX + DIRECT_ROOF_SEARCH_RADIUS); x++) {
+				Tile[] row = level[x];
+				if (row == null) continue;
+				for (int z = Math.max(0, playerZ - DIRECT_ROOF_SEARCH_RADIUS); z <= Math.min(row.length - 1, playerZ + DIRECT_ROOF_SEARCH_RADIUS); z++) {
+					Tile tile = row[z];
+					if (tile == null) continue;
+					for (int i = 0; i < tile.sceneryLen; i++) {
+						Scenery scenery = tile.scenery[i];
+						// A multi-tile roof is indexed on each covered tile. Its origin
+						// may be outside this local window, so never require origin == x,z.
+						if (scenery != null && isRoofTraceCandidate(scenery)) {
+							directRoofTraceCandidateFound = true;
+							directRoofTraceSourceType = roofSourceDescription(scenery);
+							directRoofTraceReason = "live_scenery_cluster";
+						}
+					}
+				}
+			}
+		}
+	}
+
+	private static String roofSourceDescription(Scenery scenery) {
+		return "Scenery@p" + scenery.level + ':' + scenery.xMin + ',' + scenery.zMin
+				+ "-" + scenery.xMax + ',' + scenery.zMax;
+	}
+
+	private static void emitDirectRoofTraceIfDue() {
+		if (directRoofTraceStartLoop == -1) {
+			directRoofTraceStartLoop = client.loop;
+			return;
+		}
+		if (client.loop - directRoofTraceStartLoop < 50) return;
+		Player self = PlayerList.self;
+		int x = self == null ? -1 : self.xFine >> 7;
+		int z = self == null ? -1 : self.zFine >> 7;
+		boolean roofFlag = Player.plane >= 0 && Player.plane < SceneGraph.renderFlags.length
+				&& x >= 0 && z >= 0 && x < SceneGraph.renderFlags[Player.plane].length
+				&& z < SceneGraph.renderFlags[Player.plane][x].length
+				&& (SceneGraph.renderFlags[Player.plane][x][z] & plugin.api.API.TILE_FLAG_UNDER_ROOF) != 0;
+		System.out.println("[DIRECT-ROOF-TRACE] playerTile=" + x + ',' + z
+				+ " plane=" + Player.plane + " roofFlag=" + roofFlag
+				+ " floorAbove=" + hasLiveFloorAbovePlayer()
+				+ " roofCandidateFound=" + directRoofTraceCandidateFound
+				+ " roofSourceType=" + directRoofTraceSourceType
+				+ " normalRoofRendered=" + directRoofTraceNormalRendered
+				+ " roofRemovedByVanilla=" + directRoofTraceRemovedByVanilla
+				+ " undersideHookReached=" + directRoofTraceHookReached
+				+ " undersideSubmitted=" + directRoofTraceSubmitted
+				+ " normalIndexGroups=" + directRoofTraceNormalIndexGroups
+				+ " normalTriangles=" + directRoofTraceNormalTriangles
+				+ " undersideIndexGroups=" + directRoofTraceUndersideIndexGroups
+				+ " undersideTriangles=" + directRoofTraceUndersideTriangles
+				+ " undersideCull=disabled"
+				+ " reason=" + directRoofTraceReason);
+		directRoofTraceStartLoop = client.loop;
+		directRoofTraceCandidateFound = false;
+		directRoofTraceNormalRendered = false;
+		directRoofTraceRemovedByVanilla = false;
+		directRoofTraceHookReached = false;
+		directRoofTraceSubmitted = false;
+		directRoofTraceNormalIndexGroups = 0;
+		directRoofTraceNormalTriangles = 0;
+		directRoofTraceUndersideIndexGroups = 0;
+		directRoofTraceUndersideTriangles = 0;
+		directRoofTraceSourceType = "none";
+		directRoofTraceReason = "no_candidate";
 	}
 
 	/** One throttled proof that vanilla's exact roof LOC payload was reissued. */
 	static void noteLiveRoofMesh(Scenery scenery) {
 		diagSourceMode = "LIVE_GL_ROOF_MESH";
+		directRoofTraceSubmitted = true;
 		directRoofMeshSummaryBatches++;
 		if (directRoofMeshSummaryStartLoop == -1) {
 			directRoofMeshSummaryStartLoop = client.loop;
