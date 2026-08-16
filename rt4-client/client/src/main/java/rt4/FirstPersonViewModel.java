@@ -43,6 +43,12 @@ public final class FirstPersonViewModel {
 	private static int componentSlot9;
 	private static int vertexCount = -1;
 	private static int triangleCount = -1;
+	private static int armsVertices;
+	private static int armsTriangles;
+	private static int weaponVertices;
+	private static int weaponTriangles;
+	private static int shieldVertices;
+	private static int shieldTriangles;
 	private static int animationId = -1;
 	private static int cameraX;
 	private static int cameraY;
@@ -103,8 +109,14 @@ public final class FirstPersonViewModel {
 			return;
 		}
 		modelBuilt = arms != null || weapon != null || shield != null;
-		vertexCount = countVertices(arms) + countVertices(weapon) + countVertices(shield);
-		triangleCount = countTriangles(arms) + countTriangles(weapon) + countTriangles(shield);
+		armsVertices = countVertices(arms);
+		armsTriangles = countTriangles(arms);
+		weaponVertices = countVertices(weapon);
+		weaponTriangles = countTriangles(weapon);
+		shieldVertices = countVertices(shield);
+		shieldTriangles = countTriangles(shield);
+		vertexCount = armsVertices + weaponVertices + shieldVertices;
+		triangleCount = armsTriangles + weaponTriangles + shieldTriangles;
 		modelSource = (arms == null ? "" : "arms")
 				+ (weapon == null ? "" : "+weapon")
 				+ (shield == null ? "" : "+shield");
@@ -130,7 +142,10 @@ public final class FirstPersonViewModel {
 		}
 		updateCameraState();
 		resetCameraSpaceBounds();
-		int modelYaw = FirstPersonCamera.getYaw();
+		// Model.render expects BODY-convention yaw.  FP camera yaw is a different
+		// convention; use the existing involution instead of pointing the real
+		// equipment away from the camera and losing it to backface culling.
+		int modelYaw = ModernCameraRig.cameraYawToBodyYaw(FirstPersonCamera.getYaw());
 		if (arms != null) {
 			int[] offset = cameraLocalToWorld(ARM_SCREEN_X, ARM_SCREEN_Y, ARM_DEPTH,
 					sinPitch, cosPitch, sinYaw, cosYaw);
@@ -203,6 +218,9 @@ public final class FirstPersonViewModel {
 				+ " modelSource=" + modelSource
 				+ " vertexCount=" + vertexCount
 				+ " triangleCount=" + triangleCount
+				+ " componentGeometry=arms:" + armsVertices + "/" + armsTriangles
+				+ ",weapon:" + weaponVertices + "/" + weaponTriangles
+				+ ",shield:" + shieldVertices + "/" + shieldTriangles
 				+ " animationId=" + animationId
 				+ " cameraX=" + cameraX
 				+ " cameraY=" + cameraY
@@ -239,8 +257,11 @@ public final class FirstPersonViewModel {
 			int sinPitch, int cosPitch, int sinYaw, int cosYaw) {
 		int rotatedZ = depth * cosPitch - screenY * sinPitch >> 16;
 		int worldY = screenY * cosPitch + depth * sinPitch >> 16;
-		int worldX = cosYaw * rotatedZ - sinYaw * screenX >> 16;
-		int worldZ = sinYaw * rotatedZ + cosYaw * screenX >> 16;
+		// Invert SceneGraph's horizontal transform:
+		// screenX = z*sinYaw + x*cosYaw
+		// forward = z*cosYaw - x*sinYaw
+		int worldX = cosYaw * screenX - sinYaw * rotatedZ >> 16;
+		int worldZ = sinYaw * screenX + cosYaw * rotatedZ >> 16;
 		return new int[]{worldX, worldY, worldZ};
 	}
 
@@ -262,6 +283,12 @@ public final class FirstPersonViewModel {
 		componentSlot9 = 0;
 		vertexCount = -1;
 		triangleCount = -1;
+		armsVertices = 0;
+		armsTriangles = 0;
+		weaponVertices = 0;
+		weaponTriangles = 0;
+		shieldVertices = 0;
+		shieldTriangles = 0;
 		animationId = -1;
 		modelX = 0;
 		modelY = 0;
