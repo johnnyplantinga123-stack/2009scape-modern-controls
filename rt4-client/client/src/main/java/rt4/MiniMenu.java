@@ -667,9 +667,14 @@ public class MiniMenu {
 			anInt5444 = local15;
 		}
 		if (actionCode == WALK_HERE) {
+			if (ModernMovementController.isModernQ16Owner()) {
+				System.out.println("[MODERN-MOVE] VANILLA_MOVEMENT_SUPPRESSED owner=MODERN_Q16"
+						+ " action=WALK_HERE reason=competing_click_to_move_route");
+				return;
+			}
 			if (local36 == 0) {
 				System.out.println("[MODERN-MOVE] === CLICK-TO-MOVE (WALK_HERE, local36=0) ===");
-				System.out.println("[MODERN-MOVE] localTile=" + local15 + "," + local19
+				System.out.println("[MODERN-MOVE] projectedSceneTile=" + local15 + "," + local19
 					+ " plane=" + Player.plane);
 				System.out.println("[MODERN-MOVE] self.movementQueueX[0]=" + PlayerList.self.movementQueueX[0]
 					+ " self.movementQueueZ[0]=" + PlayerList.self.movementQueueZ[0]);
@@ -679,8 +684,12 @@ public class MiniMenu {
 				method3556(Player.plane, local15, local19);
 			} else if (local36 == 1) {
 				System.out.println("[MODERN-MOVE] === CLICK-TO-MOVE (WALK_HERE, local36=1) ===");
-				System.out.println("[MODERN-MOVE] localTile=" + local15 + "," + local19
+				System.out.println("[MODERN-MOVE] projectedSceneTile=" + local15 + "," + local19
 					+ " plane=" + Player.plane);
+				if (local15 < 0 || local15 >= 104 || local19 < 0 || local19 >= 104) {
+					System.out.println("[MODERN-MOVE] rejected projected scene tile outside 104x104 scene");
+					return;
+				}
 				System.out.println("[MODERN-MOVE] self.movementQueueX[0]=" + PlayerList.self.movementQueueX[0]
 					+ " self.movementQueueZ[0]=" + PlayerList.self.movementQueueZ[0]);
 				if (LoginManager.staffModLevel > 0 && Keyboard.pressedKeys[Keyboard.KEY_CTRL] && Keyboard.pressedKeys[Keyboard.KEY_SHIFT]) {

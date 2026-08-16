@@ -108,6 +108,16 @@ public class ClientProt {
 
 	@OriginalMember(owner = "client!pi", name = "c", descriptor = "(III)V")
 	public static void method3502(@OriginalArg(1) int arg0, @OriginalArg(2) int arg1) {
+		// PathFinder is shared by vanilla click/action interactions and can
+		// otherwise emit MOVE_GAMECLICK, MOVE_MINIMAPCLICK, or opcode 77 while
+		// MODERN_Q16 owns locomotion.  That would create a second server route
+		// beside the Q16 authority chain.  Interaction callers must be handled
+		// by an explicit future handoff, never by silently mixing owners.
+		if (ModernMovementController.isModernQ16Owner()) {
+			System.out.println("[MODERN-MOVE] VANILLA_MOVEMENT_SUPPRESSED owner=MODERN_Q16"
+					+ " packetMode=" + arg1 + " reason=competing_pathfinder_route");
+			return;
+		}
 		@Pc(13) int local13 = arg0;
 		if (arg0 > 25) {
 			local13 = 25;

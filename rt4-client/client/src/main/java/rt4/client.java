@@ -1731,6 +1731,9 @@ public final class client extends GameShell {
 		MidiPlayer.loop();
 		audioLoop();
 		Keyboard.loop();
+		// F11 arrives on AWT, but its player/queue/camera handoff must run on
+		// this game thread before movement updates and packet decoding.
+		CameraMode.processPendingCycle();
 		Mouse.loop();
 		if (GlRenderer.enabled) {
 			GlCleaner.process();

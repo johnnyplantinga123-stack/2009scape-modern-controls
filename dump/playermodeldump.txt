@@ -1,0 +1,1584 @@
+	case 0:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{230};
+		cache[j].headModelIds = new int[]{39799, -1, -1, -1, -1};
+	break;
+	case 1:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{210};
+		cache[j].headModelIds = new int[]{39905, -1, -1, -1, -1};
+	break;
+	case 2:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{214};
+		cache[j].headModelIds = new int[]{39949, -1, -1, -1, -1};
+	break;
+	case 3:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{217};
+		cache[j].headModelIds = new int[]{39877, -1, -1, -1, -1};
+	break;
+	case 4:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{223};
+		cache[j].headModelIds = new int[]{39943, -1, -1, -1, -1};
+	break;
+	case 5:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{215};
+		cache[j].headModelIds = new int[]{39836, -1, -1, -1, -1};
+	break;
+	case 6:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{235};
+		cache[j].headModelIds = new int[]{39723, -1, -1, -1, -1};
+	break;
+	case 7:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{206};
+		cache[j].headModelIds = new int[]{39989, -1, -1, -1, -1};
+	break;
+	case 8:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{203};
+		cache[j].headModelIds = new int[]{39883, -1, -1, -1, -1};
+	break;
+	case 9:
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 10:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{249};
+		cache[j].headModelIds = new int[]{39254, -1, -1, -1, -1};
+	break;
+	case 11:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{250};
+		cache[j].headModelIds = new int[]{38642, -1, -1, -1, -1};
+	break;
+	case 12:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{251};
+		cache[j].headModelIds = new int[]{38096, -1, -1, -1, -1};
+	break;
+	case 13:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{247};
+		cache[j].headModelIds = new int[]{39256, -1, -1, -1, -1};
+	break;
+	case 14:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{246};
+		cache[j].headModelIds = new int[]{39223, -1, -1, -1, -1};
+	break;
+	case 15:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{248};
+		cache[j].headModelIds = new int[]{39275, -1, -1, -1, -1};
+	break;
+	case 16:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{253};
+		cache[j].headModelIds = new int[]{39227, -1, -1, -1, -1};
+	break;
+	case 17:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{252};
+		cache[j].headModelIds = new int[]{39213, -1, -1, -1, -1};
+	break;
+	case 18:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{292};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 19:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{292, 322};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 20:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{292, 326};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 21:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{292, 320};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 22:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{292, 327};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 23:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{292, 324};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 24:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{310};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 25:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{40202};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 26:
+		cache[j].bodyPartId = 3;
+		cache[j].bodyModelIds = new int[]{151};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 27:
+		cache[j].bodyPartId = 3;
+		cache[j].bodyModelIds = new int[]{167};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 28:
+		cache[j].bodyPartId = 3;
+		cache[j].bodyModelIds = new int[]{170};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 29:
+		cache[j].bodyPartId = 3;
+		cache[j].bodyModelIds = new int[]{162};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 30:
+		cache[j].bodyPartId = 3;
+		cache[j].bodyModelIds = new int[]{163};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 31:
+		cache[j].bodyPartId = 3;
+		cache[j].bodyModelIds = new int[]{158};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 32:
+		cache[j].bodyPartId = 3;
+		cache[j].notSelectable = true;
+		cache[j].bodyModelIds = new int[]{158};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 33:
+		cache[j].bodyPartId = 4;
+		cache[j].bodyModelIds = new int[]{176};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 34:
+		cache[j].bodyPartId = 4;
+		cache[j].bodyModelIds = new int[]{176};
+		cache[j].aShortArray1234 = new int[]{-22464};
+		cache[j].aShortArray1248 = new int[]{4550};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 35:
+		cache[j].bodyPartId = 4;
+		cache[j].notSelectable = true;
+		cache[j].bodyModelIds = new int[]{176};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 36:
+		cache[j].bodyPartId = 5;
+		cache[j].bodyModelIds = new int[]{40250};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 37:
+		cache[j].bodyPartId = 5;
+		cache[j].bodyModelIds = new int[]{40252};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 38:
+		cache[j].bodyPartId = 5;
+		cache[j].bodyModelIds = new int[]{40265};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 39:
+		cache[j].bodyPartId = 5;
+		cache[j].bodyModelIds = new int[]{40257};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 40:
+		cache[j].bodyPartId = 5;
+		cache[j].bodyModelIds = new int[]{275};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 41:
+		cache[j].bodyPartId = 5;
+		cache[j].notSelectable = true;
+		cache[j].bodyModelIds = new int[]{275};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 42:
+		cache[j].bodyPartId = 6;
+		cache[j].bodyModelIds = new int[]{181};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 43:
+		cache[j].bodyPartId = 6;
+		cache[j].bodyModelIds = new int[]{183};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 44:
+		cache[j].bodyPartId = 6;
+		cache[j].notSelectable = true;
+		cache[j].bodyModelIds = new int[]{183};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 45:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{403};
+		cache[j].headModelIds = new int[]{39170, -1, -1, -1, -1};
+	break;
+	case 46:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{378};
+		cache[j].headModelIds = new int[]{39046, -1, -1, -1, -1};
+	break;
+	case 47:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{387};
+		cache[j].headModelIds = new int[]{38904, -1, -1, -1, -1};
+	break;
+	case 48:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{390};
+		cache[j].headModelIds = new int[]{38920, -1, -1, -1, -1};
+	break;
+	case 49:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{393};
+		cache[j].headModelIds = new int[]{39154, -1, -1, -1, -1};
+	break;
+	case 50:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{399};
+		cache[j].headModelIds = new int[]{39089, -1, -1, -1, -1};
+	break;
+	case 51:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{391};
+		cache[j].headModelIds = new int[]{39014, -1, -1, -1, -1};
+	break;
+	case 52:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{408};
+		cache[j].headModelIds = new int[]{38913, -1, -1, -1, -1};
+	break;
+	case 53:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{382};
+		cache[j].headModelIds = new int[]{38971, -1, -1, -1, -1};
+	break;
+	case 54:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{379};
+		cache[j].headModelIds = new int[]{39002, -1, -1, -1, -1};
+	break;
+	case 55:
+		cache[j].bodyPartId = 7;
+		cache[j].notSelectable = true;
+		cache[j].bodyModelIds = new int[]{379};
+		cache[j].headModelIds = new int[]{39002, -1, -1, -1, -1};
+	break;
+	case 56:
+		cache[j].bodyPartId = 9;
+		cache[j].bodyModelIds = new int[]{456};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 57:
+		cache[j].bodyPartId = 9;
+		cache[j].bodyModelIds = new int[]{469};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 58:
+		cache[j].bodyPartId = 9;
+		cache[j].bodyModelIds = new int[]{470};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 59:
+		cache[j].bodyPartId = 9;
+		cache[j].bodyModelIds = new int[]{471};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 60:
+		cache[j].bodyPartId = 9;
+		cache[j].bodyModelIds = new int[]{40419};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 61:
+		cache[j].bodyPartId = 10;
+		cache[j].bodyModelIds = new int[]{332};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 62:
+		cache[j].bodyPartId = 10;
+		cache[j].bodyModelIds = new int[]{351};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 63:
+		cache[j].bodyPartId = 10;
+		cache[j].bodyModelIds = new int[]{346};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 64:
+		cache[j].bodyPartId = 10;
+		cache[j].bodyModelIds = new int[]{348};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 65:
+		cache[j].bodyPartId = 10;
+		cache[j].bodyModelIds = new int[]{343};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 66:
+		cache[j].bodyPartId = 10;
+		cache[j].notSelectable = true;
+		cache[j].bodyModelIds = new int[]{343};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 67:
+		cache[j].bodyPartId = 11;
+		cache[j].bodyModelIds = new int[]{353};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 68:
+		cache[j].bodyPartId = 11;
+		cache[j].bodyModelIds = new int[]{353};
+		cache[j].aShortArray1234 = new int[]{-22464};
+		cache[j].aShortArray1248 = new int[]{4550};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 69:
+		cache[j].bodyPartId = 11;
+		cache[j].notSelectable = true;
+		cache[j].bodyModelIds = new int[]{353};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 70:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{40489};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 71:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{433};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 72:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{40488};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 73:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{428};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 74:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{421};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 75:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{438};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 76:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{40478};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 77:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{429};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 78:
+		cache[j].bodyPartId = 12;
+		cache[j].notSelectable = true;
+		cache[j].bodyModelIds = new int[]{429};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 79:
+		cache[j].bodyPartId = 13;
+		cache[j].bodyModelIds = new int[]{358};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 80:
+		cache[j].bodyPartId = 13;
+		cache[j].bodyModelIds = new int[]{360};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 81:
+		cache[j].bodyPartId = 13;
+		cache[j].notSelectable = true;
+		cache[j].bodyModelIds = new int[]{360};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 82:
+		cache[j].bodyPartId = 6;
+		cache[j].notSelectable = true;
+		cache[j].bodyModelIds = new int[]{7117};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 83:
+		cache[j].bodyPartId = 13;
+		cache[j].notSelectable = true;
+		cache[j].bodyModelIds = new int[]{7118};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 84:
+		cache[j].bodyPartId = 4;
+		cache[j].bodyModelIds = new int[]{176};
+		cache[j].aShortArray1234 = new int[]{-22464};
+		cache[j].aShortArray1248 = new int[]{6575};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 85:
+		cache[j].bodyPartId = 5;
+		cache[j].bodyModelIds = new int[]{40251};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 86:
+		cache[j].bodyPartId = 5;
+		cache[j].bodyModelIds = new int[]{27623};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 87:
+		cache[j].bodyPartId = 5;
+		cache[j].bodyModelIds = new int[]{40263};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 88:
+		cache[j].bodyPartId = 5;
+		cache[j].bodyModelIds = new int[]{40266};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 89:
+		cache[j].bodyPartId = 5;
+		cache[j].bodyModelIds = new int[]{27622};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 90:
+		cache[j].bodyPartId = 5;
+		cache[j].bodyModelIds = new int[]{27625};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 91:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{27633};
+		cache[j].headModelIds = new int[]{39668, -1, -1, -1, -1};
+	break;
+	case 92:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{27627};
+		cache[j].headModelIds = new int[]{40030, -1, -1, -1, -1};
+	break;
+	case 93:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{27630};
+		cache[j].headModelIds = new int[]{39817, -1, -1, -1, -1};
+	break;
+	case 94:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{27628};
+		cache[j].headModelIds = new int[]{39909, -1, -1, -1, -1};
+	break;
+	case 95:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{27631};
+		cache[j].headModelIds = new int[]{39777, -1, -1, -1, -1};
+	break;
+	case 96:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{27629};
+		cache[j].headModelIds = new int[]{39638, -1, -1, -1, -1};
+	break;
+	case 97:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{27632};
+		cache[j].headModelIds = new int[]{39679, -1, -1, -1, -1};
+	break;
+	case 98:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{27645};
+		cache[j].headModelIds = new int[]{39271, -1, -1, -1, -1};
+	break;
+	case 99:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{27644};
+		cache[j].headModelIds = new int[]{39191, -1, -1, -1, -1};
+	break;
+	case 100:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{27646};
+		cache[j].headModelIds = new int[]{39220, -1, -1, -1, -1};
+	break;
+	case 101:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{27642};
+		cache[j].headModelIds = new int[]{39264, -1, -1, -1, -1};
+	break;
+	case 102:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{27640};
+		cache[j].headModelIds = new int[]{39225, -1, -1, -1, -1};
+	break;
+	case 103:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{27643};
+		cache[j].headModelIds = new int[]{39221, -1, -1, -1, -1};
+	break;
+	case 104:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{27641};
+		cache[j].headModelIds = new int[]{39277, -1, -1, -1, -1};
+	break;
+	case 105:
+		cache[j].bodyPartId = 3;
+		cache[j].bodyModelIds = new int[]{27634};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 106:
+		cache[j].bodyPartId = 3;
+		cache[j].bodyModelIds = new int[]{27635};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 107:
+		cache[j].bodyPartId = 3;
+		cache[j].bodyModelIds = new int[]{27638};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 108:
+		cache[j].bodyPartId = 3;
+		cache[j].bodyModelIds = new int[]{27639};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 109:
+		cache[j].bodyPartId = 3;
+		cache[j].bodyModelIds = new int[]{27636};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 110:
+		cache[j].bodyPartId = 3;
+		cache[j].bodyModelIds = new int[]{27637};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 111:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{27648};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 112:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{27563};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 113:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{27647};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 114:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{25864};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 115:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{27650};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 116:
+		cache[j].bodyPartId = 2;
+		cache[j].bodyModelIds = new int[]{27649};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 117:
+		cache[j].bodyPartId = 4;
+		cache[j].bodyModelIds = new int[]{24553};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 118:
+		cache[j].bodyPartId = 4;
+		cache[j].bodyModelIds = new int[]{24553};
+		cache[j].aShortArray1234 = new int[]{-22464};
+		cache[j].aShortArray1248 = new int[]{6575};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 119:
+		cache[j].bodyPartId = 4;
+		cache[j].bodyModelIds = new int[]{24554};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 120:
+		cache[j].bodyPartId = 4;
+		cache[j].bodyModelIds = new int[]{24554};
+		cache[j].aShortArray1234 = new int[]{-22464};
+		cache[j].aShortArray1248 = new int[]{6575};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 121:
+		cache[j].bodyPartId = 4;
+		cache[j].bodyModelIds = new int[]{24555};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 122:
+		cache[j].bodyPartId = 4;
+		cache[j].bodyModelIds = new int[]{24555};
+		cache[j].aShortArray1234 = new int[]{-22464};
+		cache[j].aShortArray1248 = new int[]{6575};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 123:
+		cache[j].bodyPartId = 4;
+		cache[j].bodyModelIds = new int[]{24556};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 124:
+		cache[j].bodyPartId = 4;
+		cache[j].bodyModelIds = new int[]{24556};
+		cache[j].aShortArray1234 = new int[]{-22462};
+		cache[j].aShortArray1248 = new int[]{6575};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 125:
+		cache[j].bodyPartId = 4;
+		cache[j].bodyModelIds = new int[]{24557};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 126:
+		cache[j].bodyPartId = 4;
+		cache[j].bodyModelIds = new int[]{24557};
+		cache[j].aShortArray1234 = new int[]{-22464};
+		cache[j].aShortArray1248 = new int[]{6575};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 127:
+		cache[j].bodyPartId = 11;
+		cache[j].bodyModelIds = new int[]{353};
+		cache[j].aShortArray1234 = new int[]{-22464};
+		cache[j].aShortArray1248 = new int[]{6575};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 128:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{40487};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 129:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{40475};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 130:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{40484};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 131:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{27653};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 132:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{40481};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 133:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{27651};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 134:
+		cache[j].bodyPartId = 12;
+		cache[j].bodyModelIds = new int[]{27652};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 135:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{16458};
+		cache[j].headModelIds = new int[]{39049, -1, -1, -1, -1};
+	break;
+	case 136:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{16453};
+		cache[j].headModelIds = new int[]{38909, -1, -1, -1, -1};
+	break;
+	case 137:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{16460};
+		cache[j].headModelIds = new int[]{38918, -1, -1, -1, -1};
+	break;
+	case 138:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{16457};
+		cache[j].headModelIds = new int[]{39158, -1, -1, -1, -1};
+	break;
+	case 139:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{27664};
+		cache[j].headModelIds = new int[]{39161, -1, -1, -1, -1};
+	break;
+	case 140:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{27660};
+		cache[j].headModelIds = new int[]{39072, -1, -1, -1, -1};
+	break;
+	case 141:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{27662};
+		cache[j].headModelIds = new int[]{38935, -1, -1, -1, -1};
+	break;
+	case 142:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{16454};
+		cache[j].headModelIds = new int[]{39056, -1, -1, -1, -1};
+	break;
+	case 143:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{27663};
+		cache[j].headModelIds = new int[]{38949, -1, -1, -1, -1};
+	break;
+	case 144:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{27661};
+		cache[j].headModelIds = new int[]{39071, -1, -1, -1, -1};
+	break;
+	case 145:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{27658};
+		cache[j].headModelIds = new int[]{39030, -1, -1, -1, -1};
+	break;
+	case 146:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{27659};
+		cache[j].headModelIds = new int[]{39062, -1, -1, -1, -1};
+	break;
+	case 147:
+		cache[j].bodyPartId = 10;
+		cache[j].bodyModelIds = new int[]{27670};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 148:
+		cache[j].bodyPartId = 10;
+		cache[j].bodyModelIds = new int[]{27666};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 149:
+		cache[j].bodyPartId = 10;
+		cache[j].bodyModelIds = new int[]{27665};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 150:
+		cache[j].bodyPartId = 10;
+		cache[j].bodyModelIds = new int[]{27668};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 151:
+		cache[j].bodyPartId = 10;
+		cache[j].bodyModelIds = new int[]{27669};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 152:
+		cache[j].bodyPartId = 10;
+		cache[j].bodyModelIds = new int[]{27667};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 153:
+		cache[j].bodyPartId = 9;
+		cache[j].bodyModelIds = new int[]{27673};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 154:
+		cache[j].bodyPartId = 9;
+		cache[j].bodyModelIds = new int[]{27675};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 155:
+		cache[j].bodyPartId = 9;
+		cache[j].bodyModelIds = new int[]{27672};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 156:
+		cache[j].bodyPartId = 9;
+		cache[j].bodyModelIds = new int[]{27674};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 157:
+		cache[j].bodyPartId = 9;
+		cache[j].bodyModelIds = new int[]{27671};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 158:
+		cache[j].bodyPartId = 9;
+		cache[j].bodyModelIds = new int[]{27676};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 159:
+		cache[j].bodyPartId = 11;
+		cache[j].bodyModelIds = new int[]{24559};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 160:
+		cache[j].bodyPartId = 11;
+		cache[j].bodyModelIds = new int[]{24559};
+		cache[j].aShortArray1234 = new int[]{-22464};
+		cache[j].aShortArray1248 = new int[]{6575};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 161:
+		cache[j].bodyPartId = 11;
+		cache[j].bodyModelIds = new int[]{24560};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 162:
+		cache[j].bodyPartId = 11;
+		cache[j].bodyModelIds = new int[]{24560};
+		cache[j].aShortArray1234 = new int[]{-22464};
+		cache[j].aShortArray1248 = new int[]{6575};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 163:
+		cache[j].bodyPartId = 11;
+		cache[j].bodyModelIds = new int[]{24561};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 164:
+		cache[j].bodyPartId = 11;
+		cache[j].bodyModelIds = new int[]{24561};
+		cache[j].aShortArray1234 = new int[]{-22464};
+		cache[j].aShortArray1248 = new int[]{6575};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 165:
+		cache[j].bodyPartId = 11;
+		cache[j].bodyModelIds = new int[]{24562};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 166:
+		cache[j].bodyPartId = 11;
+		cache[j].bodyModelIds = new int[]{24562};
+		cache[j].aShortArray1234 = new int[]{-22464};
+		cache[j].aShortArray1248 = new int[]{6575};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 167:
+		cache[j].bodyPartId = 11;
+		cache[j].bodyModelIds = new int[]{24563};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 168:
+		cache[j].bodyPartId = 11;
+		cache[j].bodyModelIds = new int[]{24563};
+		cache[j].aShortArray1234 = new int[]{-22464};
+		cache[j].aShortArray1248 = new int[]{6575};
+		cache[j].headModelIds = new int[]{-1, -1, -1, -1, -1};
+	break;
+	case 169:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40240};
+		cache[j].headModelIds = new int[]{40032, -1, -1, -1, -1};
+	break;
+	case 170:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40235};
+		cache[j].headModelIds = new int[]{40036, -1, -1, -1, -1};
+	break;
+	case 171:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{214};
+		cache[j].headModelIds = new int[]{39669, -1, -1, -1, -1};
+	break;
+	case 172:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{214};
+		cache[j].headModelIds = new int[]{39652, -1, -1, -1, -1};
+	break;
+	case 173:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{217};
+		cache[j].headModelIds = new int[]{39576, -1, -1, -1, -1};
+	break;
+	case 174:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{217};
+		cache[j].headModelIds = new int[]{39908, -1, -1, -1, -1};
+	break;
+	case 175:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{223};
+		cache[j].headModelIds = new int[]{40010, -1, -1, -1, -1};
+	break;
+	case 176:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{223};
+		cache[j].headModelIds = new int[]{39681, -1, -1, -1, -1};
+	break;
+	case 177:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{215};
+		cache[j].headModelIds = new int[]{39836, -1, -1, -1, -1};
+	break;
+	case 178:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{215};
+		cache[j].headModelIds = new int[]{39822, -1, -1, -1, -1};
+	break;
+	case 179:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{235};
+		cache[j].headModelIds = new int[]{39694, -1, -1, -1, -1};
+	break;
+	case 180:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{235};
+		cache[j].headModelIds = new int[]{39672, -1, -1, -1, -1};
+	break;
+	case 181:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40230};
+		cache[j].headModelIds = new int[]{40039, -1, -1, -1, -1};
+	break;
+	case 182:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40227};
+		cache[j].headModelIds = new int[]{39711, -1, -1, -1, -1};
+	break;
+	case 183:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40230};
+		cache[j].headModelIds = new int[]{39959, -1, -1, -1, -1};
+	break;
+	case 184:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40231};
+		cache[j].headModelIds = new int[]{40028, -1, -1, -1, -1};
+	break;
+	case 185:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40221};
+		cache[j].headModelIds = new int[]{39950, -1, -1, -1, -1};
+	break;
+	case 186:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40232};
+		cache[j].headModelIds = new int[]{39625, -1, -1, -1, -1};
+	break;
+	case 187:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40233};
+		cache[j].headModelIds = new int[]{39709, -1, -1, -1, -1};
+	break;
+	case 188:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40223};
+		cache[j].headModelIds = new int[]{39860, -1, -1, -1, -1};
+	break;
+	case 189:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40222};
+		cache[j].headModelIds = new int[]{40050, -1, -1, -1, -1};
+	break;
+	case 190:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40239};
+		cache[j].headModelIds = new int[]{40027, -1, -1, -1, -1};
+	break;
+	case 191:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{43525};
+		cache[j].headModelIds = new int[]{40021, -1, -1, -1, -1};
+	break;
+	case 192:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{27628};
+		cache[j].headModelIds = new int[]{39968, -1, -1, -1, -1};
+	break;
+	case 193:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40243};
+		cache[j].headModelIds = new int[]{40054, -1, -1, -1, -1};
+	break;
+	case 194:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40229};
+		cache[j].headModelIds = new int[]{39882, -1, -1, -1, -1};
+	break;
+	case 195:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40242};
+		cache[j].headModelIds = new int[]{39963, -1, -1, -1, -1};
+	break;
+	case 196:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40220};
+		cache[j].headModelIds = new int[]{39936, -1, -1, -1, -1};
+	break;
+	case 197:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40238};
+		cache[j].headModelIds = new int[]{39912, -1, -1, -1, -1};
+	break;
+	case 198:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{40234};
+		cache[j].headModelIds = new int[]{39788, -1, -1, -1, -1};
+	break;
+	case 199:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40461};
+		cache[j].headModelIds = new int[]{38998, -1, -1, -1, -1};
+	break;
+	case 200:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40471};
+		cache[j].headModelIds = new int[]{39059, -1, -1, -1, -1};
+	break;
+	case 201:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40440};
+		cache[j].headModelIds = new int[]{39120, -1, -1, -1, -1};
+	break;
+	case 202:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{393};
+		cache[j].headModelIds = new int[]{39004, -1, -1, -1, -1};
+	break;
+	case 203:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40451};
+		cache[j].headModelIds = new int[]{39129, -1, -1, -1, -1};
+	break;
+	case 204:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{391};
+		cache[j].headModelIds = new int[]{39101, -1, -1, -1, -1};
+	break;
+	case 205:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{408};
+		cache[j].headModelIds = new int[]{38973, -1, -1, -1, -1};
+	break;
+	case 206:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40437};
+		cache[j].headModelIds = new int[]{39081, -1, -1, -1, -1};
+	break;
+	case 207:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40463};
+		cache[j].headModelIds = new int[]{38898, -1, -1, -1, -1};
+	break;
+	case 208:
+		cache[j].bodyPartId = 7;
+		cache[j].notSelectable = true;
+		cache[j].bodyModelIds = new int[]{40463};
+		cache[j].headModelIds = new int[]{38898, -1, -1, -1, -1};
+	break;
+	case 209:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40444};
+		cache[j].headModelIds = new int[]{39153, -1, -1, -1, -1};
+	break;
+	case 210:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40468};
+		cache[j].headModelIds = new int[]{38965, -1, -1, -1, -1};
+	break;
+	case 211:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40457};
+		cache[j].headModelIds = new int[]{38897, -1, -1, -1, -1};
+	break;
+	case 212:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40466};
+		cache[j].headModelIds = new int[]{39097, -1, -1, -1, -1};
+	break;
+	case 213:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40449};
+		cache[j].headModelIds = new int[]{39121, -1, -1, -1, -1};
+	break;
+	case 214:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40459};
+		cache[j].headModelIds = new int[]{38943, -1, -1, -1, -1};
+	break;
+	case 215:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40465};
+		cache[j].headModelIds = new int[]{39113, -1, -1, -1, -1};
+	break;
+	case 216:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{16454};
+		cache[j].headModelIds = new int[]{38924, -1, -1, -1, -1};
+	break;
+	case 217:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40467};
+		cache[j].headModelIds = new int[]{38993, -1, -1, -1, -1};
+	break;
+	case 218:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40452};
+		cache[j].headModelIds = new int[]{38990, -1, -1, -1, -1};
+	break;
+	case 219:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40455};
+		cache[j].headModelIds = new int[]{39132, -1, -1, -1, -1};
+	break;
+	case 220:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40438};
+		cache[j].headModelIds = new int[]{39119, -1, -1, -1, -1};
+	break;
+	case 221:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{378};
+		cache[j].headModelIds = new int[]{39079, -1, -1, -1, -1};
+	break;
+	case 222:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40450};
+		cache[j].headModelIds = new int[]{38901, -1, -1, -1, -1};
+	break;
+	case 223:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40447};
+		cache[j].headModelIds = new int[]{39012, -1, -1, -1, -1};
+	break;
+	case 224:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{393};
+		cache[j].headModelIds = new int[]{39003, -1, -1, -1, -1};
+	break;
+	case 225:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40453};
+		cache[j].headModelIds = new int[]{39096, -1, -1, -1, -1};
+	break;
+	case 226:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{391};
+		cache[j].headModelIds = new int[]{39160, -1, -1, -1, -1};
+	break;
+	case 227:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{408};
+		cache[j].headModelIds = new int[]{39070, -1, -1, -1, -1};
+	break;
+	case 228:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40448};
+		cache[j].headModelIds = new int[]{39064, -1, -1, -1, -1};
+	break;
+	case 229:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40442};
+		cache[j].headModelIds = new int[]{38947, -1, -1, -1, -1};
+	break;
+	case 230:
+		cache[j].bodyPartId = 7;
+		cache[j].notSelectable = true;
+		cache[j].bodyModelIds = new int[]{40442};
+		cache[j].headModelIds = new int[]{38947, -1, -1, -1, -1};
+	break;
+	case 231:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40446};
+		cache[j].headModelIds = new int[]{38914, -1, -1, -1, -1};
+	break;
+	case 232:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{16453};
+		cache[j].headModelIds = new int[]{38989, -1, -1, -1, -1};
+	break;
+	case 233:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40470};
+		cache[j].headModelIds = new int[]{38972, -1, -1, -1, -1};
+	break;
+	case 234:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40458};
+		cache[j].headModelIds = new int[]{39038, -1, -1, -1, -1};
+	break;
+	case 235:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{27664};
+		cache[j].headModelIds = new int[]{38933, -1, -1, -1, -1};
+	break;
+	case 236:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40460};
+		cache[j].headModelIds = new int[]{39104, -1, -1, -1, -1};
+	break;
+	case 237:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40445};
+		cache[j].headModelIds = new int[]{39171, -1, -1, -1, -1};
+	break;
+	case 238:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40441};
+		cache[j].headModelIds = new int[]{39140, -1, -1, -1, -1};
+	break;
+	case 239:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40469};
+		cache[j].headModelIds = new int[]{38984, -1, -1, -1, -1};
+	break;
+	case 240:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40443};
+		cache[j].headModelIds = new int[]{38919, -1, -1, -1, -1};
+	break;
+	case 241:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{40472};
+		cache[j].headModelIds = new int[]{38903, -1, -1, -1, -1};
+	break;
+	case 242:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{27659};
+		cache[j].headModelIds = new int[]{38952, -1, -1, -1, -1};
+	break;
+	case 243:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{403};
+		cache[j].headModelIds = new int[]{39170, -1, -1, -1, -1};
+	break;
+	case 244:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{403};
+		cache[j].headModelIds = new int[]{39170, -1, -1, -1, -1};
+	break;
+	case 245:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{215};
+		cache[j].headModelIds = new int[]{39836, -1, -1, -1, -1};
+	break;
+	case 246:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44908};
+		cache[j].headModelIds = new int[]{45006, -1, -1, -1, -1};
+	break;
+	case 247:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44926};
+		cache[j].headModelIds = new int[]{45021, -1, -1, -1, -1};
+	break;
+	case 248:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44917};
+		cache[j].headModelIds = new int[]{39836, -1, -1, -1, -1};
+	break;
+	case 249:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44918};
+		cache[j].headModelIds = new int[]{45016, -1, -1, -1, -1};
+	break;
+	case 250:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44913};
+		cache[j].headModelIds = new int[]{45020, -1, -1, -1, -1};
+	break;
+	case 251:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44915};
+		cache[j].headModelIds = new int[]{45007, -1, -1, -1, -1};
+	break;
+	case 252:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44921};
+		cache[j].headModelIds = new int[]{45013, -1, -1, -1, -1};
+	break;
+	case 253:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44923};
+		cache[j].headModelIds = new int[]{45022, -1, -1, -1, -1};
+	break;
+	case 254:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44906};
+		cache[j].headModelIds = new int[]{45019, -1, -1, -1, -1};
+	break;
+	case 255:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44923};
+		cache[j].headModelIds = new int[]{45011, -1, -1, -1, -1};
+	break;
+	case 256:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44916};
+		cache[j].headModelIds = new int[]{45014, -1, -1, -1, -1};
+	break;
+	case 257:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44910};
+		cache[j].headModelIds = new int[]{45009, -1, -1, -1, -1};
+	break;
+	case 258:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44909};
+		cache[j].headModelIds = new int[]{45004, -1, -1, -1, -1};
+	break;
+	case 259:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44912};
+		cache[j].headModelIds = new int[]{45005, -1, -1, -1, -1};
+	break;
+	case 260:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44924};
+		cache[j].headModelIds = new int[]{45008, -1, -1, -1, -1};
+	break;
+	case 261:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44914};
+		cache[j].headModelIds = new int[]{45015, -1, -1, -1, -1};
+	break;
+	case 262:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44911};
+		cache[j].headModelIds = new int[]{45018, -1, -1, -1, -1};
+	break;
+	case 263:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44919};
+		cache[j].headModelIds = new int[]{45002, -1, -1, -1, -1};
+	break;
+	case 264:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44920};
+		cache[j].headModelIds = new int[]{45028, -1, -1, -1, -1};
+	break;
+	case 265:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44922};
+		cache[j].headModelIds = new int[]{45003, -1, -1, -1, -1};
+	break;
+	case 266:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44907};
+		cache[j].headModelIds = new int[]{45012, -1, -1, -1, -1};
+	break;
+	case 267:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44925};
+		cache[j].headModelIds = new int[]{45023, -1, -1, -1, -1};
+	break;
+	case 268:
+		cache[j].bodyPartId = 0;
+		cache[j].bodyModelIds = new int[]{44927};
+		cache[j].headModelIds = new int[]{45010, -1, -1, -1, -1};
+	break;
+	case 269:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44958};
+		cache[j].headModelIds = new int[]{44979, -1, -1, -1, -1};
+	break;
+	case 270:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44946};
+		cache[j].headModelIds = new int[]{44966, -1, -1, -1, -1};
+	break;
+	case 271:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44953};
+		cache[j].headModelIds = new int[]{44987, -1, -1, -1, -1};
+	break;
+	case 272:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44950};
+		cache[j].headModelIds = new int[]{44972, -1, -1, -1, -1};
+	break;
+	case 273:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44930};
+		cache[j].headModelIds = new int[]{44981, -1, -1, -1, -1};
+	break;
+	case 274:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44959};
+		cache[j].headModelIds = new int[]{44992, -1, -1, -1, -1};
+	break;
+	case 275:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44937};
+		cache[j].headModelIds = new int[]{44990, -1, -1, -1, -1};
+	break;
+	case 276:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44940};
+		cache[j].headModelIds = new int[]{44988, -1, -1, -1, -1};
+	break;
+	case 277:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44949};
+		cache[j].headModelIds = new int[]{44991, -1, -1, -1, -1};
+	break;
+	case 278:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44952};
+		cache[j].headModelIds = new int[]{44998, -1, -1, -1, -1};
+	break;
+	case 279:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44964};
+		cache[j].headModelIds = new int[]{44976, -1, -1, -1, -1};
+	break;
+	case 280:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44963};
+		cache[j].headModelIds = new int[]{44983, -1, -1, -1, -1};
+	break;
+	case 281:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44935};
+		cache[j].headModelIds = new int[]{44973, -1, -1, -1, -1};
+	break;
+	case 282:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44942};
+		cache[j].headModelIds = new int[]{44984, -1, -1, -1, -1};
+	break;
+	case 283:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44961};
+		cache[j].headModelIds = new int[]{44989, -1, -1, -1, -1};
+	break;
+	case 284:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44947};
+		cache[j].headModelIds = new int[]{45000, -1, -1, -1, -1};
+	break;
+	case 285:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44951};
+		cache[j].headModelIds = new int[]{44971, -1, -1, -1, -1};
+	break;
+	case 286:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44931};
+		cache[j].headModelIds = new int[]{44994, -1, -1, -1, -1};
+	break;
+	case 287:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44953};
+		cache[j].headModelIds = new int[]{44995, -1, -1, -1, -1};
+	break;
+	case 288:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44956};
+		cache[j].headModelIds = new int[]{44968, -1, -1, -1, -1};
+	break;
+	case 289:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44934};
+		cache[j].headModelIds = new int[]{44980, -1, -1, -1, -1};
+	break;
+	case 290:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44945};
+		cache[j].headModelIds = new int[]{44985, -1, -1, -1, -1};
+	break;
+	case 291:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44929};
+		cache[j].headModelIds = new int[]{44977, -1, -1, -1, -1};
+	break;
+	case 292:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44939};
+		cache[j].headModelIds = new int[]{44969, -1, -1, -1, -1};
+	break;
+	case 293:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44960};
+		cache[j].headModelIds = new int[]{44996, -1, -1, -1, -1};
+	break;
+	case 294:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44944};
+		cache[j].headModelIds = new int[]{44982, -1, -1, -1, -1};
+	break;
+	case 295:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44957};
+		cache[j].headModelIds = new int[]{44993, -1, -1, -1, -1};
+	break;
+	case 296:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44954};
+		cache[j].headModelIds = new int[]{45001, -1, -1, -1, -1};
+	break;
+	case 297:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44936};
+		cache[j].headModelIds = new int[]{44967, -1, -1, -1, -1};
+	break;
+	case 298:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44932};
+		cache[j].headModelIds = new int[]{44978, -1, -1, -1, -1};
+	break;
+	case 299:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44948};
+		cache[j].headModelIds = new int[]{44997, -1, -1, -1, -1};
+	break;
+	case 300:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44965};
+		cache[j].headModelIds = new int[]{44974, -1, -1, -1, -1};
+	break;
+	case 301:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44955};
+		cache[j].headModelIds = new int[]{44986, -1, -1, -1, -1};
+	break;
+	case 302:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44941};
+		cache[j].headModelIds = new int[]{44975, -1, -1, -1, -1};
+	break;
+	case 303:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44962};
+		cache[j].headModelIds = new int[]{44970, -1, -1, -1, -1};
+	break;
+	case 304:
+		cache[j].bodyPartId = 7;
+		cache[j].bodyModelIds = new int[]{44943};
+		cache[j].headModelIds = new int[]{44999, -1, -1, -1, -1};
+	break;
+	case 305:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{45032};
+		cache[j].headModelIds = new int[]{45024, -1, -1, -1, -1};
+	break;
+	case 306:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{45031};
+		cache[j].headModelIds = new int[]{45027, -1, -1, -1, -1};
+	break;
+	case 307:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{45029};
+		cache[j].headModelIds = new int[]{45025, -1, -1, -1, -1};
+	break;
+	case 308:
+		cache[j].bodyPartId = 1;
+		cache[j].bodyModelIds = new int[]{45030};
+		cache[j].headModelIds = new int[]{45026, -1, -1, -1, -1};
+	break;

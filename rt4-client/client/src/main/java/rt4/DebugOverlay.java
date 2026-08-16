@@ -55,6 +55,23 @@ public final class DebugOverlay {
 	public static int intentRightPct;
 	/** Last stable movement-space heading (camera convention). */
 	public static int movementHeading;
+	/** Last desired Q16 delta before collision resolution. */
+	public static int desiredDeltaX;
+	public static int desiredDeltaZ;
+	/** Last collision-resolved Q16 delta applied to the predicted position. */
+	public static int resolvedDeltaX;
+	public static int resolvedDeltaZ;
+	/** Whether collision blocked either movement axis on the last update. */
+	public static boolean movementBlockedX;
+	public static boolean movementBlockedZ;
+	/** Collision flags sampled at the predicted player tile. */
+	public static int movementCollisionFlags;
+	public static int lastValidFineX;
+	public static int lastValidFineZ;
+	public static boolean fullMoveValid;
+	public static boolean xOnlyMoveValid;
+	public static boolean zOnlyMoveValid;
+	public static boolean collisionRecovery;
 	/** Number of rig state flips this session (flicker detector). */
 	public static int rigTransitionCount;
 
@@ -83,8 +100,15 @@ public final class DebugOverlay {
 	public static int f11ExitPendingMoves;
 	/** Whether a vanilla collision/pathfinding refresh was invoked. */
 	public static boolean f11ExitCollisionRefresh;
-	/** Which vanilla refresh route ran (VANILLA_TELEPORT_RESET / VANILLA_FREE_NOOP / none). */
+	/** Which exit route ran (MAIN_THREAD_HANDOFF / VANILLA_FREE_NOOP / none). */
 	public static String f11ExitCollisionRefreshRoute = "none";
+
+	// ---- F11/region movement-boundary snapshots ----
+	/** Compact snapshots retained for the F12 overlay; full 3x3 flags go to stdout. */
+	public static String healthyOriginalSnapshot = "not captured";
+	public static String beforeF11ExitSnapshot = "not captured";
+	public static String afterF11ExitSnapshot = "not captured";
+	public static String afterRegionRebuildSnapshot = "not captured";
 
 	private DebugOverlay() {
 	}
@@ -107,6 +131,99 @@ public final class DebugOverlay {
 	}
 
 	/**
+	 * Captures the coordinate and collision state needed to compare healthy
+	 * ORIGINAL, the F11 boundary, and a completed region rebuild. Tile labels
+	 * are explicit about LOCAL/WORLD space. The overlay keeps a compact line;
+	 * stdout includes the 3x3 collision flags around the player.
+	 */
+	public static void captureMovementBoundary(String label) {
+		Player self = PlayerList.self;
+		if (self == null) {
+			return;
+		}
+		int playerLocalX = self.xFine >> 7;
+		int playerLocalZ = self.zFine >> 7;
+		int pathLocalX = self.movementQueueX[0];
+		int pathLocalZ = self.movementQueueZ[0];
+		// A mode handoff is not a server acknowledgement. Keep displaying the
+		// last tile that was actually supplied by a server step/teleport even
+		// after F11 returns to ORIGINAL; never relabel queue[0] as confirmed just
+		// because the vanilla renderer owns the client.
+		int trackedServerX = ModernMovementController.getLastServerTileX();
+		int trackedServerZ = ModernMovementController.getLastServerTileZ();
+		int serverLocalX = trackedServerX >= 0 ? trackedServerX : pathLocalX;
+		int serverLocalZ = trackedServerZ >= 0 ? trackedServerZ : pathLocalZ;
+		int baseX = Camera.originX;
+		int baseZ = Camera.originZ;
+		int playerWorldX = baseX + playerLocalX;
+		int playerWorldZ = baseZ + playerLocalZ;
+		int serverWorldX = serverLocalX < 0 ? -1 : baseX + serverLocalX;
+		int serverWorldZ = serverLocalZ < 0 ? -1 : baseZ + serverLocalZ;
+		int plane = Player.plane;
+		int collisionHash = collisionNeighborhoodHash(plane, playerLocalX, playerLocalZ);
+		int pathCollisionHash = collisionNeighborhoodHash(plane, pathLocalX, pathLocalZ);
+		String compact = "pL=" + playerLocalX + "," + playerLocalZ
+				+ " sL=" + serverLocalX + "," + serverLocalZ
+				+ " pathL=" + pathLocalX + "," + pathLocalZ
+				+ " base=" + baseX + "," + baseZ
+				+ " pW=" + playerWorldX + "," + playerWorldZ
+				+ " sW=" + serverWorldX + "," + serverWorldZ
+				+ " p=" + plane + " q=" + self.movementQueueSize
+				+ " cP=" + Integer.toHexString(collisionHash)
+				+ " cPath=" + Integer.toHexString(pathCollisionHash);
+		if ("HEALTHY_ORIGINAL".equals(label)) {
+			healthyOriginalSnapshot = compact;
+		} else if ("BEFORE_F11_EXIT".equals(label)) {
+			beforeF11ExitSnapshot = compact;
+		} else if ("AFTER_F11_EXIT".equals(label)) {
+			afterF11ExitSnapshot = compact;
+		} else if ("AFTER_REGION_REBUILD".equals(label)) {
+			afterRegionRebuildSnapshot = compact;
+		}
+		System.out.println("[MOVEMENT-BOUNDARY] " + label + " " + compact
+				+ " fineLocal=" + self.xFine + "," + self.zFine
+				+ " collisionPlane=" + plane
+				+ " playerCollision3x3=" + collisionNeighborhood(plane, playerLocalX, playerLocalZ)
+				+ " pathCollision3x3=" + collisionNeighborhood(plane, pathLocalX, pathLocalZ));
+	}
+
+	private static int collisionNeighborhoodHash(int plane, int centerX, int centerZ) {
+		if (plane < 0 || plane >= PathFinder.collisionMaps.length) {
+			return 0;
+		}
+		int hash = 1;
+		int[][] flags = PathFinder.collisionMaps[plane].flags;
+		for (int z = centerZ + 1; z >= centerZ - 1; z--) {
+			for (int x = centerX - 1; x <= centerX + 1; x++) {
+				hash = hash * 31 + collisionFlag(flags, x, z);
+			}
+		}
+		return hash;
+	}
+
+	private static String collisionNeighborhood(int plane, int centerX, int centerZ) {
+		if (plane < 0 || plane >= PathFinder.collisionMaps.length) {
+			return "invalid-plane";
+		}
+		StringBuilder value = new StringBuilder();
+		int[][] flags = PathFinder.collisionMaps[plane].flags;
+		for (int z = centerZ + 1; z >= centerZ - 1; z--) {
+			if (value.length() > 0) value.append('/');
+			for (int x = centerX - 1; x <= centerX + 1; x++) {
+				if (x > centerX - 1) value.append(',');
+				value.append(Integer.toHexString(collisionFlag(flags, x, z)));
+			}
+		}
+		return value.toString();
+	}
+
+	private static int collisionFlag(int[][] flags, int x, int z) {
+		return x >= 0 && x < flags.length && z >= 0 && z < flags[x].length
+				? flags[x][z]
+				: 0x7FFFFFFF;
+	}
+
+	/**
 	 * Draws the debug overlay INSIDE the RT4 render pipeline using the
 	 * dual-rasterizer + Fonts text system. Must be called from the in-game
 	 * render pass (gameState 30) BEFORE the framebuffer is presented, so the
@@ -126,6 +243,12 @@ public final class DebugOverlay {
 		int tileX = px >> 7;
 		int tileZ = pz >> 7;
 		int plane = Player.plane;
+		int serverTileX = self == null ? -1 : CameraMode.isModern()
+				? ModernMovementController.getLastServerTileX()
+				: self.movementQueueX[0];
+		int serverTileZ = self == null ? -1 : CameraMode.isModern()
+				? ModernMovementController.getLastServerTileZ()
+				: self.movementQueueZ[0];
 
 		// Round #7 P8: refresh player-tile ceiling diagnostics for the
 		// CEILING block below (cheap, only runs while the overlay is visible).
@@ -147,14 +270,20 @@ public final class DebugOverlay {
 				lbl("cameraOwner ", lastCameraWriter),
 				JagString.concatenate(new JagString[]{JagString.parse("ctrlUICursor "), bool(FirstPersonCamera.isUiCursorActive()), JagString.parse(" cursorLocked "), bool(FirstPersonCamera.isCursorLocked())}),
 				hdr("PLAYER"),
-				JagString.concatenate(new JagString[]{JagString.parse("tile x:"), JagString.parseInt(tileX), JagString.parse(" z:"), JagString.parseInt(tileZ), JagString.parse(" p:"), JagString.parseInt(plane)}),
-				JagString.concatenate(new JagString[]{JagString.parse("fine x:"), JagString.parseInt(px), JagString.parse(" z:"), JagString.parseInt(pz)}),
-				JagString.concatenate(new JagString[]{JagString.parse("serverTile x:"), JagString.parseInt(ModernMovementController.getLastServerTileX()), JagString.parse(" z:"), JagString.parseInt(ModernMovementController.getLastServerTileZ())}),
+				JagString.concatenate(new JagString[]{JagString.parse("Player Local Tile X/Z "), JagString.parseInt(tileX), JagString.parse(","), JagString.parseInt(tileZ)}),
+				JagString.concatenate(new JagString[]{JagString.parse("Server Local Tile X/Z "), JagString.parseInt(serverTileX), JagString.parse(","), JagString.parseInt(serverTileZ)}),
+				JagString.concatenate(new JagString[]{JagString.parse("Scene Base X/Z "), JagString.parseInt(Camera.originX), JagString.parse(","), JagString.parseInt(Camera.originZ)}),
+				JagString.concatenate(new JagString[]{JagString.parse("Player World Tile X/Z "), JagString.parseInt(Camera.originX + tileX), JagString.parse(","), JagString.parseInt(Camera.originZ + tileZ)}),
+				JagString.concatenate(new JagString[]{JagString.parse("Server World Tile X/Z "), JagString.parseInt(serverTileX < 0 ? -1 : Camera.originX + serverTileX), JagString.parse(","), JagString.parseInt(serverTileZ < 0 ? -1 : Camera.originZ + serverTileZ)}),
+				JagString.concatenate(new JagString[]{JagString.parse("Plane "), JagString.parseInt(plane), JagString.parse(" Fine Local X/Z "), JagString.parseInt(px), JagString.parse(","), JagString.parseInt(pz)}),
 				lbl("pending ", ModernMovementController.getPendingCount()),
 				lbl("moveUpdates ", movementUpdateTickCount),
 				hdr("INPUT"),
 				JagString.concatenate(new JagString[]{JagString.parse("W"), bool(Keyboard.pressedKeys[33]), JagString.parse(" A"), bool(Keyboard.pressedKeys[48]), JagString.parse(" S"), bool(Keyboard.pressedKeys[49]), JagString.parse(" D"), bool(Keyboard.pressedKeys[50]), JagString.parse(" sh"), bool(Keyboard.pressedKeys[81])}),
 				JagString.concatenate(new JagString[]{JagString.parse("intentF "), JagString.parseInt(intentForwardPct), JagString.parse(" intentR "), JagString.parseInt(intentRightPct), JagString.parse(" heading "), JagString.parseInt(movementHeading)}),
+				JagString.concatenate(new JagString[]{JagString.parse("desired "), JagString.parseInt(desiredDeltaX), JagString.parse(","), JagString.parseInt(desiredDeltaZ), JagString.parse(" resolved "), JagString.parseInt(resolvedDeltaX), JagString.parse(","), JagString.parseInt(resolvedDeltaZ)}),
+				JagString.concatenate(new JagString[]{JagString.parse("blockedX "), bool(movementBlockedX), JagString.parse(" blockedZ "), bool(movementBlockedZ), JagString.parse(" flags 0x"), JagString.parse(Integer.toHexString(movementCollisionFlags)), JagString.parse(" plane "), JagString.parseInt(plane)}),
+				JagString.concatenate(new JagString[]{JagString.parse("full "), bool(fullMoveValid), JagString.parse(" xOnly "), bool(xOnlyMoveValid), JagString.parse(" zOnly "), bool(zOnlyMoveValid), JagString.parse(" lastValid "), JagString.parseInt(lastValidFineX), JagString.parse(","), JagString.parseInt(lastValidFineZ), JagString.parse(" recovery "), bool(collisionRecovery)}),
 				JagString.concatenate(new JagString[]{JagString.parse("chaseYawT "), JagString.parseInt(ModernCameraRig.getChaseYawTarget()), JagString.parse(" rigFlips "), JagString.parseInt(rigTransitionCount)}),
 				JagString.concatenate(new JagString[]{JagString.parse("chat "), bool(ModernControlController.isChatInputActive()), JagString.parse(" gameplay "), bool(ModernControlController.isGameplayInputAllowed())}),
 				// Round #7 P1/P8: keyboard ownership (MODERN_GAMEPLAY / VANILLA_FREE / ORIGINAL)
@@ -210,7 +339,7 @@ public final class DebugOverlay {
 				hdr("CEILING"),
 				// Round #7C P1: quarantine visibility — rendererEnabled must be N
 				// and trianglesSubmitted 0 while the pass is disabled.
-				JagString.concatenate(new JagString[]{JagString.parse("rendererEnabled "), bool(ModernCeiling.RENDER_ENABLED), JagString.parse(" trianglesSubmitted "), JagString.parseInt(ModernCeiling.getQuadsDrawn())}),
+				JagString.concatenate(new JagString[]{JagString.parse("rendererEnabled "), bool(ModernCeiling.RENDER_ENABLED), JagString.parse(" isolation "), JagString.parse(ModernCeiling.getIsolationModeName())}),
 				// Round #7 P6/P8: FP ceiling underside diagnostics
 				JagString.concatenate(new JagString[]{JagString.parse("sourceMode "), JagString.parse(ModernCeiling.diagSourceMode), JagString.parse(" overheadPlane "), JagString.parseInt(ModernCeiling.diagOverheadPlane), JagString.parse(" quadsDrawn "), JagString.parseInt(ModernCeiling.getQuadsDrawn())}),
 				JagString.concatenate(new JagString[]{JagString.parse("overheadTile "), bool(ModernCeiling.diagOverheadTilePresent), JagString.parse(" underRoofFlag "), bool(ModernCeiling.diagUnderRoofFlag), JagString.parse(" textureId "), JagString.parseInt(ModernCeiling.diagTextureId)}),
@@ -228,6 +357,11 @@ public final class DebugOverlay {
 				JagString.concatenate(new JagString[]{JagString.parse("queue0Before x:"), JagString.parseInt(f11ExitQueue0BeforeX), JagString.parse(" z:"), JagString.parseInt(f11ExitQueue0BeforeZ), JagString.parse(" after x:"), JagString.parseInt(f11ExitQueue0AfterX), JagString.parse(" z:"), JagString.parseInt(f11ExitQueue0AfterZ)}),
 				JagString.concatenate(new JagString[]{JagString.parse("lastSent x:"), JagString.parseInt(f11ExitLastSentTileX), JagString.parse(" z:"), JagString.parseInt(f11ExitLastSentTileZ), JagString.parse(" pendingMoves "), JagString.parseInt(f11ExitPendingMoves)}),
 				JagString.concatenate(new JagString[]{JagString.parse("collisionRefresh "), bool(f11ExitCollisionRefresh), JagString.parse(" route "), JagString.parse(f11ExitCollisionRefreshRoute)}),
+				hdr("MOVEMENT BOUNDARIES"),
+				lbl("healthyOriginal ", healthyOriginalSnapshot),
+				lbl("beforeF11Exit ", beforeF11ExitSnapshot),
+				lbl("afterF11Exit ", afterF11ExitSnapshot),
+				lbl("afterRegionRebuild ", afterRegionRebuildSnapshot),
 				hdr("CAMERA"),
 				JagString.concatenate(new JagString[]{JagString.parse("pos x:"), JagString.parseInt(Camera.renderX), JagString.parse(" y:"), JagString.parseInt(Camera.anInt40), JagString.parse(" z:"), JagString.parseInt(Camera.renderZ)}),
 				JagString.concatenate(new JagString[]{JagString.parse("yaw "), JagString.parseInt(Camera.cameraYaw), JagString.parse(" pitch "), JagString.parseInt(Camera.cameraPitch)}),

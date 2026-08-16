@@ -1,3 +1,12 @@
+LEGACY DOCUMENT — DO NOT USE AS CURRENT TASK AUTHORITY.
+
+Current project roadmap:
+CODEX_MASTER_TODO.md
+
+This file is retained for historical/source-trace context only.
+If this file conflicts with CODEX_MASTER_TODO.md or user runtime findings,
+the current master TODO and user runtime take precedence.
+
 # Modern Controls — Phase 0 Analysis & Implementation Plan
 
 **Status:** Phase 0 Analysis — COMPLETE · Phase 1 (Camera Mode Framework) — COMPLETE · Phase 2 (First Person Camera) — COMPLETE · **Phase 3 (WASD Movement Foundation) — COMPLETE** · Phase 3 Stabilization Pass 1 — COMPLETE · **Phase 3 Stabilization Pass 2 — COMPLETE** · **Phase 3 Movement Runtime Fix — COMPLETE** · **Phase 3 Stabilization Pass 3 (Scene Rebuild / Terrain Safety / Visibility) — COMPLETE** · **Phase 3 Stabilization Pass 4 — Camera Height Regression Fix — COMPLETE** · **Phase 3B (Continuous Modern Movement) — COMPLETE** · **Phase 3B Stabilization (Input, Animation, Self-Rendering) — COMPLETE** · **PHASE 3C (Modern Camera Rig) — IMPLEMENTATION COMPLETE / RUNTIME STABILIZATION IN PROGRESS** · PHASE 3C REVIEW #2 — COMPLETE · PHASE 3C ADDENDUM (Zoom Ranges) — COMPLETE · PHASE 3C RUNTIME STABILIZATION — SUPERSEDED BY RUNTIME RESULTS · **PHASE 3C RUNTIME FIX ROUND #4 — COMPILE VERIFIED / STATICALLY REVIEWED / RUNTIME UNVERIFIED (P0–P7 all addressed; see §30)**
@@ -5287,4 +5296,107 @@ No runtime success is claimed. Stopping after build/static review per brief.
 7. Quick overlay (E key) — must only show targets within 2 tiles (was 8).
 8. ORIGINAL-only session without F11 — behaviour unchanged.
 
+---
+
+## 41. CODEX ROUND 1 — F11 MODERN -> ORIGINAL MOVEMENT/CLIPPING ROOT CAUSE
+
+**Status:** SOURCE VERIFIED / COMPILE VERIFIED / STATICALLY REVIEWED / RUNTIME UNVERIFIED
+
+### 41.1 Root cause
+
+The F11 edge was handled inside `Keyboard.keyPressed`, which is an AWT event-
+dispatch callback. `CameraMode.cycle()` then performed the complete mode,
+camera, and movement handoff on that AWT thread. At the same time, the client
+game thread independently:
+
+- writes modern Q16 `self.xFine/zFine` prediction;
+- decodes relative self-movement steps in `Protocol.readSelfPlayerInfo()`;
+- updates `movementQueueX/Z` and the last server-confirmed tile;
+- runs vanilla PathFinder and scene/region rebases.
+
+There was no common lock or game-thread handoff around those player fields.
+F11 could therefore interleave a reset/ownership change with a Q16 write or a
+relative server step, leaving the fine position, queue/path origin, and server
+tile from different moments. That inconsistent local origin presents as wrong
+walkability/adjacency around otherwise correct collision flags.
+
+The earlier client-only `self.teleport(...)` workaround did not solve this
+boundary: it was itself executed from the AWT thread and could race the same
+game-thread writers. It also did not reset the authoritative server queue.
+
+### 41.2 Why a region transition repaired it
+
+The normal region path runs on the client game thread. `LoginManager.method2463`
+changes `Camera.originX/Z`, rebases every entity's fine position and movement
+queue together, and applies the server-provided local self position. The
+subsequent `rebuildMap()` clears and reconstructs all four collision maps and
+scene loc collision before returning to game state 30. This serial,
+game-thread-owned re-anchor removes the mixed-moment local origin, which is why
+walking far enough repaired the symptom.
+
+Source search found no MODERN collision-flag writer. The fix therefore does not
+rebuild, clear, weaken, or bypass collision.
+
+### 41.3 Smallest fix implemented
+
+- `Keyboard.keyPressed` still provides the physical F11 edge, but now only
+  records a volatile pending request.
+- `client.mainLoop()` consumes that request immediately after `Keyboard.loop()`
+  on the game thread, before `ModernControlController.update()` and
+  `Protocol.method1756()`.
+- `ModernMovementController.exitModernMode()` now stops Q16 ownership while
+  preserving the live vanilla queue, fine position, scene, and collision maps.
+- Removed the disproven F11 client `self.teleport(...)` reset. No post-exit
+  drain was added; ORIGINAL server steps use the normal vanilla `move()` path.
+
+### 41.4 Diagnostics
+
+F12 now labels these values unambiguously:
+
+- Player Local Tile X/Z
+- Server Local Tile X/Z
+- Scene Base X/Z
+- Player World Tile X/Z
+- Server World Tile X/Z
+- Plane and local fine coordinates
+
+Compact snapshots are retained for `HEALTHY_ORIGINAL`, `BEFORE_F11_EXIT`,
+`AFTER_F11_EXIT`, and `AFTER_REGION_REBUILD`. Console
+`[MOVEMENT-BOUNDARY]` lines additionally include queue/path origin, queue size,
+collision-map plane, and the exact 3x3 collision flags around both player and
+PathFinder origin. `[F11-TRANSITION]` reports the requesting and processing
+thread names.
+
+### 41.5 Files changed
+
+| File | Change |
+|------|--------|
+| `rt4-client/client/src/main/java/rt4/CameraMode.java` | Deferred F11 transition request and game-thread consumer; boundary snapshots |
+| `rt4-client/client/src/main/java/rt4/client.java` | Processes pending F11 transition at the start of the game tick |
+| `rt4-client/client/src/main/java/rt4/ModernMovementController.java` | Removed client teleport workaround; clean main-thread ownership handoff |
+| `rt4-client/client/src/main/java/rt4/Protocol.java` | Corrected server-step ownership documentation |
+| `rt4-client/client/src/main/java/rt4/LoginManager.java` | Captures post-region-rebuild diagnostic snapshot |
+| `rt4-client/client/src/main/java/rt4/DebugOverlay.java` | Explicit LOCAL/WORLD diagnostics and boundary collision snapshots |
+| `MODERN_CONTROLS_PROGRESS.md` | This truthful round status |
+
+### 41.6 Verification
+
+`gradlew.bat :client:compileJava`:
+
+**BUILD SUCCESSFUL (EXIT_CODE=0)**
+
+The repository's known Kotlin daemon cache/module warning occurred; Gradle used
+its fallback strategy and completed `:client:compileJava` successfully.
+
+Static review:
+
+- no time-based movement drain;
+- no ORIGINAL step swallowing;
+- no renderer/OpenGL restart;
+- no collision clearing, bypass, or weakened validation;
+- no server/protocol control-state packet;
+- no unrelated subsystem changes;
+- ORIGINAL-only sessions do not execute the F11 transition path.
+
+No user runtime success is claimed.
 

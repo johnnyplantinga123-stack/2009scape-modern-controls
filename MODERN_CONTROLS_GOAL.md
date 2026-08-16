@@ -1,3 +1,12 @@
+LEGACY DOCUMENT — DO NOT USE AS CURRENT TASK AUTHORITY.
+
+Current project roadmap:
+CODEX_MASTER_TODO.md
+
+This file is retained for historical/source-trace context only.
+If this file conflicts with CODEX_MASTER_TODO.md or user runtime findings,
+the current master TODO and user runtime take precedence.
+
 # 2009SCAPE MODERN CONTROLS — MASTER GOAL & ROADMAP
 
 Dit document is de architecturale source-of-truth voor het modern-controls

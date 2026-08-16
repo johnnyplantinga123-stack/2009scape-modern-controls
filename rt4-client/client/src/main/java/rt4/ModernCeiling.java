@@ -27,47 +27,39 @@ package rt4;
  *
  * <p>The ceiling is generated per tile: when the tile ABOVE
  * ({@code tiles[plane+1][x][z]}) has a real plain or shaped floor tile, its
- * underside is drawn with reversed winding, ~20% darker, reusing the upper
- * tile's texture/colour material. Triangles crossing the near plane are
+ * underside is drawn with reversed winding, reusing the upper tile's exact
+ * texture/colour material. Triangles crossing the near plane are
  * clipped (Sutherland–Hodgman) instead of rejecting the whole tile. This is
  * FIRST_PERSON only ({@link #isEnabled()}), never global: ORIGINAL/CHASE/FREE
  * rendering is untouched, global culling state is never changed permanently,
  * and no ceiling is generated where no structural upper floor tile exists
  * (no outdoor/courtyard fake ceilings, none on plane &gt;= 3).</p>
  *
- * <p>STATUS: SOURCE VERIFIED (P0 stacktrace + root cause), COMPILE VERIFIED
- * after build, <b>RUNTIME FAILED (Round #7B user runtime)</b>: no visible
- * ceiling indoors + a giant horizontal slab artifact at certain camera
- * angles.</p>
+	 * <p>STATUS: bounded tile-based underside pass restored for the current
+	 * ceiling round. Runtime remains unverified.</p>
  *
- * <h2>Round #7C — QUARANTINED</h2>
- * <p>{@link #RENDER_ENABLED} is {@code false}: the generated ceiling pass
- * submits ZERO geometry until a future round decides otherwise. The
- * implementation is preserved, not deleted. Flip the single flag to
- * re-enable. Diagnostics still report {@code rendererEnabled=N} and
- * {@code trianglesSubmitted=0} so the quarantine is visible on F12.</p>
+ * <h2>Current bounded ceiling round</h2>
+ * <p>The pass is explicitly gated by {@link #RENDER_ENABLED} and remains
+ * FIRST_PERSON-only; diagnostics expose the submitted tile/triangle counts.</p>
  */
 public final class ModernCeiling {
+	/** F10 toggles the temporary direct-live-mesh diagnostic. */
+	private static final int KEY_F10 = 10;
+	public static final int ISOLATION_DISABLED = 0;
+	public static final int ISOLATION_DIRECT_LIVE_MESH = 1;
+	/** Runtime-only diagnostic selection; defaults to the exact GL floor mesh. */
+	private static volatile int isolationMode = ISOLATION_DIRECT_LIVE_MESH;
 
 	/**
-	 * Round #7C P1 quarantine gate: the Round #7/#7B generated ceiling pass
-	 * is DISABLED (runtime failed: no ceiling + giant slab artifact). Single
-	 * explicit source gate — the pass submits zero geometry while false.
-	 * DO NOT re-enable without a fresh round decision.
+	 * Exact live-mesh underside pass. The legacy reconstructed tile pass is
+	 * disabled; GL reissues the normal plane-above GlTile draw payload with its
+	 * face orientation reversed.
 	 */
-	public static final boolean RENDER_ENABLED = false;
-
-	/**
-	 * Lightness multiplier scale (128 = 100%): 102 ≈ 80%, i.e. the ceiling
-	 * underside renders ~20% darker than the upper floor's top surface.
-	 */
-	static final int DARKEN_MULTIPLIER = 102;
-
-	/**
-	 * Vertical offset (world units) below the upper floor surface to avoid
-	 * z-fighting in the GL depth buffer.
-	 */
-	static final int GL_DEPTH_OFFSET = 2;
+	public static final boolean RENDER_ENABLED = true;
+	/** Enable exact upper-floor candidate tracing for a runtime ceiling audit. */
+	public static final boolean DEBUG_TILE_TRACE = false;
+	/** Per-triangle console output is reserved for invalid geometry only. */
+	public static final boolean DEBUG_UPCLIP = false;
 
 	// ---- Round #7 diagnostics (read by DebugOverlay) ----
 	/** Whether the player's tile has a real floor tile on the plane above. */
@@ -94,8 +86,16 @@ public final class ModernCeiling {
 	public static int diagPlainTiles;
 	/** Drawn shaped (stairs/slope) ceiling tiles this frame. */
 	public static int diagShapedTiles;
+	/** Tiles/triangles skipped by geometry safety validation this frame. */
+	public static int diagSkippedTiles;
+	/** Last bounded skip reason, useful in the F12 ceiling block/logs. */
+	public static String diagLastSkipReason = "NONE";
 	/** Total ceiling triangles submitted to a rasterizer this frame. */
 	public static int diagTrianglesDrawn;
+	/** Submitted triangles whose projected bounding box cannot touch the viewport. */
+	public static int diagOffscreenTriangles;
+	/** Projection failures that were rejected before rasterization. */
+	public static int diagInvalidProjection;
 
 	/** Per-frame latch so counters reset exactly once per client loop. */
 	private static int diagLoop = -1;
@@ -103,6 +103,25 @@ public final class ModernCeiling {
 	private static boolean pendingPlain;
 	/** Whether the CURRENT candidate tile already contributed a triangle. */
 	private static boolean currentTileDrawn;
+	/** Current candidate identity, retained solely for bounded runtime tracing. */
+	private static int currentTileX;
+	private static int currentTileZ;
+	private static int currentPlane;
+	private static boolean currentCandidateActive;
+	private static int summaryStartLoop = -1;
+	private static int summaryCandidateTiles;
+	private static int summarySubmittedTriangles;
+	private static int summaryNearRejected;
+	private static int summaryBackfaceRejected;
+	private static int summaryClipped3;
+	private static int summaryClipped4;
+	private static int summaryInvalidProjection;
+	private static int summaryMissingCoverageTiles;
+	private static int summaryOffscreenTriangles;
+	private static int directMeshSummaryStartLoop = -1;
+	private static int directMeshSummaryBatches;
+	private static int directRoofMeshSummaryStartLoop = -1;
+	private static int directRoofMeshSummaryBatches;
 
 	private ModernCeiling() {
 	}
@@ -112,7 +131,132 @@ public final class ModernCeiling {
 	 * CHASE/FREE/ORIGINAL keep untouched vanilla rendering (P7).
 	 */
 	public static boolean isEnabled() {
-		return CameraMode.isModern() && ModernCameraRig.isFirstPersonRigState();
+		return isolationMode != ISOLATION_DISABLED
+				&& CameraMode.isModern() && ModernCameraRig.isFirstPersonRigState();
+	}
+
+	/** Called from the AWT key boundary. F10 changes only the temporary test mode. */
+	public static void onKeyPressed(int keyCode) {
+		if (keyCode != KEY_F10) return;
+		isolationMode = isolationMode == ISOLATION_DISABLED
+				? ISOLATION_DIRECT_LIVE_MESH : ISOLATION_DISABLED;
+		System.out.println("[MODERN-CEILING-MODE] mode=" + isolationMode
+				+ " source=" + getIsolationModeName()
+				+ " (F10 toggles disabled/direct-live-mesh)");
+	}
+
+	public static int getIsolationMode() {
+		return isolationMode;
+	}
+
+	public static String getIsolationModeName() {
+		switch (isolationMode) {
+			case ISOLATION_DISABLED: return "DISABLED";
+			default: return "DIRECT_LIVE_MESH";
+		}
+	}
+
+	/** The plane check is kept at the live floor-batch draw site. */
+	static boolean rendersLiveGlMeshForPlane(int floorPlane) {
+		return RENDER_ENABLED && isEnabled() && floorPlane == Player.plane + 1
+				&& hasLiveFloorAbovePlayer();
+	}
+
+	/**
+	 * A roof LOC is a different live payload from the terrain-floor GlTile.
+	 * Reissue it only when the player's own tile has no upper-floor geometry;
+	 * this keeps the established floor-underpass authoritative wherever it
+	 * exists and prevents the two underside passes overlapping.
+	 */
+	static boolean rendersLiveRoofMeshForScenery(Scenery scenery) {
+		if (!RENDER_ENABLED || !isEnabled() || !GlRenderer.enabled || scenery == null
+				|| scenery.entity == null || !isPlayerUnderRoofWithoutFloor()) {
+			return false;
+		}
+		Player self = PlayerList.self;
+		if (self == null || scenery.level != Player.plane) {
+			return false;
+		}
+		int playerX = self.xFine >> 7;
+		int playerZ = self.zFine >> 7;
+		if (playerX < scenery.xMin || playerX > scenery.xMax
+				|| playerZ < scenery.zMin || playerZ > scenery.zMax) {
+			return false;
+		}
+		int shape = (int) (scenery.key >>> 14 & 0x3FL);
+		return shape >= LocType.ROOF_STRAIGHT && shape <= LocType.ROOFEDGE_SQUARECORNER;
+	}
+
+	/** One throttled proof that vanilla's exact roof LOC payload was reissued. */
+	static void noteLiveRoofMesh(Scenery scenery) {
+		diagSourceMode = "LIVE_GL_ROOF_MESH";
+		directRoofMeshSummaryBatches++;
+		if (directRoofMeshSummaryStartLoop == -1) {
+			directRoofMeshSummaryStartLoop = client.loop;
+			return;
+		}
+		if (client.loop - directRoofMeshSummaryStartLoop < 50) return;
+		System.out.println("[MODERN-ROOF-DIRECT-MESH] batches=" + directRoofMeshSummaryBatches
+				+ " source=Scenery.Loc exact_normal_roof_payload");
+		directRoofMeshSummaryStartLoop = client.loop;
+		directRoofMeshSummaryBatches = 0;
+	}
+
+	private static boolean isPlayerUnderRoofWithoutFloor() {
+		Player self = PlayerList.self;
+		if (self == null || Player.plane < 0 || Player.plane >= SceneGraph.renderFlags.length) {
+			return false;
+		}
+		int x = self.xFine >> 7;
+		int z = self.zFine >> 7;
+		if (x < 0 || z < 0 || x >= SceneGraph.renderFlags[Player.plane].length
+				|| z >= SceneGraph.renderFlags[Player.plane][x].length) {
+			return false;
+		}
+		return (SceneGraph.renderFlags[Player.plane][x][z] & plugin.api.API.TILE_FLAG_UNDER_ROOF) != 0
+				&& !hasLiveFloorAbovePlayer();
+	}
+
+	private static boolean hasLiveFloorAbovePlayer() {
+		Player self = PlayerList.self;
+		if (self == null || SceneGraph.tiles == null) {
+			return false;
+		}
+		int upperPlane = Player.plane + 1;
+		int x = self.xFine >> 7;
+		int z = self.zFine >> 7;
+		if (upperPlane < 0 || upperPlane >= SceneGraph.tiles.length || SceneGraph.tiles[upperPlane] == null || x < 0 || z < 0
+				|| x >= SceneGraph.tiles[upperPlane].length || SceneGraph.tiles[upperPlane][x] == null
+				|| z >= SceneGraph.tiles[upperPlane][x].length) {
+			return false;
+		}
+		Tile overhead = SceneGraph.tiles[upperPlane][x][z];
+		return overhead != null && (overhead.plainTile != null || overhead.shapedTile != null);
+	}
+
+	/** One throttled proof that the exact plane-above GL batches were reissued. */
+	static void noteLiveGlMeshBatch(int floorPlane) {
+		diagSourceMode = "LIVE_GL_MESH";
+		directMeshSummaryBatches++;
+		if (directMeshSummaryStartLoop == -1) {
+			directMeshSummaryStartLoop = client.loop;
+			return;
+		}
+		if (client.loop - directMeshSummaryStartLoop < 50) return;
+		System.out.println("[MODERN-CEILING-DIRECT-MESH] upperPlane=" + floorPlane
+				+ " batches=" + directMeshSummaryBatches
+				+ " source=GlTile exact_normal_floor_payload");
+		directMeshSummaryStartLoop = client.loop;
+		directMeshSummaryBatches = 0;
+	}
+
+	/** Legacy scan selectors are hard-disabled; do not revive reconstructed tiles. */
+	static boolean rendersPlainTiles() {
+		return false;
+	}
+
+	static boolean rendersShapedTiles() {
+		return false;
 	}
 
 	/**
@@ -130,14 +274,41 @@ public final class ModernCeiling {
 			diagPlainTiles = 0;
 			diagShapedTiles = 0;
 			diagTrianglesDrawn = 0;
+			diagOffscreenTriangles = 0;
+			diagInvalidProjection = 0;
+			diagSkippedTiles = 0;
+			diagLastSkipReason = "NONE";
+			currentCandidateActive = false;
 		}
 	}
 
 	/** Called by the coverage scan for every structurally valid tile. */
-	static void noteCandidate(boolean plain) {
+	static void noteCandidate(boolean plain, int tileX, int tileZ, int plane) {
+		finishCurrentCandidate();
 		diagCandidateTiles++;
+		summaryCandidateTiles++;
 		pendingPlain = plain;
 		currentTileDrawn = false;
+		currentCandidateActive = true;
+		currentTileX = tileX;
+		currentTileZ = tileZ;
+		currentPlane = plane;
+		traceTile(tileX, tileZ, plane, plain ? "plain" : "shaped", "candidate");
+	}
+
+	static void traceTile(int tileX, int tileZ, int plane, String kind, String status) {
+		if (DEBUG_TILE_TRACE) {
+			System.out.println("[MODERN-CEILING] tile=" + tileX + "," + tileZ
+					+ " upperPlane=" + plane + " kind=" + kind + " status=" + status);
+		}
+	}
+
+	static void noteUpClip(int tileX, int tileZ, int triangle, int verticesBefore,
+			int verticesAfterClip, boolean nearRejected, boolean backfaceRejected, boolean rendered) {
+		if (verticesAfterClip == 3) summaryClipped3++;
+		if (verticesAfterClip == 4) summaryClipped4++;
+		if (nearRejected) summaryNearRejected++;
+		if (backfaceRejected) summaryBackfaceRejected++;
 	}
 
 	/** Called for every projected vertex that lies behind the near plane. */
@@ -148,11 +319,13 @@ public final class ModernCeiling {
 	/** Called when a tile is rejected because all vertices are behind. */
 	static void noteNearRejectedTile() {
 		diagNearRejectedTiles++;
+		summaryNearRejected++;
 	}
 
-	/** Called for every triangle actually submitted to a rasterizer. */
-	static void noteTriangleDrawn() {
+	/** Called only after a triangle is actually submitted to a rasterizer. */
+	static void noteTriangleSubmitted() {
 		diagTrianglesDrawn++;
+		summarySubmittedTriangles++;
 		if (!currentTileDrawn) {
 			currentTileDrawn = true;
 			diagDrawnTiles++;
@@ -161,7 +334,71 @@ public final class ModernCeiling {
 			} else {
 				diagShapedTiles++;
 			}
+			traceTile(currentTileX, currentTileZ, currentPlane,
+					pendingPlain ? "plain" : "shaped", "rendered");
 		}
+	}
+
+	/** A submitted triangle was valid but cannot contribute to the viewport. */
+	static void noteOffscreenTriangle() {
+		diagOffscreenTriangles++;
+		summaryOffscreenTriangles++;
+	}
+
+	/** Invalid projection detail is rare and is the only per-triangle console output. */
+	static void noteInvalidProjection(int tileX, int tileZ, int triangle, int vertices) {
+		diagInvalidProjection++;
+		summaryInvalidProjection++;
+		System.out.println("[MODERN-CEILING-INVALID-PROJECTION] cameraPitch=" + Camera.cameraPitch
+				+ " tile=" + tileX + "," + tileZ + " triangle=" + triangle
+				+ " verticesAfterClip=" + vertices);
+	}
+
+	static void noteSkipped(String reason) {
+		diagSkippedTiles++;
+		diagLastSkipReason = reason;
+		traceTile(currentTileX, currentTileZ, currentPlane,
+				pendingPlain ? "plain" : "shaped", "skip:" + reason);
+	}
+
+	static void noteCurrentTileNotDrawn(String reason) {
+		traceTile(currentTileX, currentTileZ, currentPlane,
+				pendingPlain ? "plain" : "shaped", reason);
+	}
+
+	/** Finishes the pass and prints one aggregated result roughly once a second. */
+	static void finishCoverageFrame() {
+		finishCurrentCandidate();
+		if (summaryStartLoop == -1) {
+			summaryStartLoop = client.loop;
+			return;
+		}
+		if (client.loop - summaryStartLoop < 50) return;
+		System.out.println("[MODERN-CEILING-SUMMARY] cameraPitch=" + Camera.cameraPitch
+				+ " candidateTiles=" + summaryCandidateTiles
+				+ " submittedTriangles=" + summarySubmittedTriangles
+				+ " nearRejected=" + summaryNearRejected
+				+ " backfaceRejected=" + summaryBackfaceRejected
+				+ " clipped3=" + summaryClipped3
+				+ " clipped4=" + summaryClipped4
+				+ " invalidProjection=" + summaryInvalidProjection
+				+ " missingCoverageTiles=" + summaryMissingCoverageTiles
+				+ " offscreenTriangles=" + summaryOffscreenTriangles);
+		summaryStartLoop = client.loop;
+		summaryCandidateTiles = 0;
+		summarySubmittedTriangles = 0;
+		summaryNearRejected = 0;
+		summaryBackfaceRejected = 0;
+		summaryClipped3 = 0;
+		summaryClipped4 = 0;
+		summaryInvalidProjection = 0;
+		summaryMissingCoverageTiles = 0;
+		summaryOffscreenTriangles = 0;
+	}
+
+	private static void finishCurrentCandidate() {
+		if (currentCandidateActive && !currentTileDrawn) summaryMissingCoverageTiles++;
+		currentCandidateActive = false;
 	}
 
 	/** Ceiling triangles drawn during the current frame. */
@@ -209,21 +446,20 @@ public final class ModernCeiling {
 		if (overhead == null) {
 			return;
 		}
+		boolean directLiveMesh = GlRenderer.enabled && rendersLiveGlMeshForPlane(above);
 		if (overhead.plainTile != null) {
 			diagOverheadTilePresent = true;
 			diagTextureId = overhead.plainTile.anInt4869;
-			// CEILING_SOURCE_RESULT = UPPER_FLOOR_SINGLE_SIDED, so any drawn
-			// ceiling is generated underside geometry (P6).
-			diagSourceMode = "GENERATED";
+			diagSourceMode = directLiveMesh ? "LIVE_GL_MESH" : "NONE";
 		} else if (overhead.shapedTile != null
 				&& overhead.shapedTile.anIntArray161 != null
 				&& overhead.shapedTile.anIntArray161.length > 0) {
 			diagOverheadTilePresent = true;
 			diagTextureId = overhead.shapedTile.anIntArray161[0];
-			diagSourceMode = "GENERATED";
+			diagSourceMode = directLiveMesh ? "LIVE_GL_MESH" : "NONE";
 		} else if (overhead.shapedTile != null) {
 			diagOverheadTilePresent = true;
-			diagSourceMode = "GENERATED";
+			diagSourceMode = directLiveMesh ? "LIVE_GL_MESH" : "NONE";
 		}
 	}
 }

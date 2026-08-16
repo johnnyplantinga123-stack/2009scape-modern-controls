@@ -45,8 +45,17 @@ public final class CameraMode {
 		THIRD_PERSON
 	}
 
-	/** The currently active camera mode. */
+	/** The currently active camera mode. Written only by the client game thread. */
 	private static Mode current = Mode.ORIGINAL;
+
+	/**
+	 * F11 is received on the AWT event thread, but mode transitions touch live
+	 * player, movement-queue and camera state owned by the client game thread.
+	 * Keep the AWT boundary edge-trigger, and defer the actual transition until
+	 * {@link #processPendingCycle()} runs from {@link client#mainLoop()}.
+	 */
+	private static volatile boolean cycleRequested;
+	private static volatile String cycleRequestThread = "none";
 
 	private CameraMode() {
 	}
@@ -113,14 +122,38 @@ public final class CameraMode {
 	 * <p>Mode switching is designed not to teleport or reset the player's
 	 * position; only the control profile changes here.
 	 */
-	public static void cycle() {
+	private static void cycle() {
 		Mode previous = current;
+		if (previous == Mode.ORIGINAL) {
+			DebugOverlay.captureMovementBoundary("HEALTHY_ORIGINAL");
+		} else {
+			DebugOverlay.captureMovementBoundary("BEFORE_F11_EXIT");
+		}
 		if (current == Mode.ORIGINAL) {
 			current = Mode.THIRD_PERSON; // Enter MODERN
 		} else {
 			current = Mode.ORIGINAL; // Return to vanilla
 		}
 		onModeChanged(previous, current);
+		if (current == Mode.ORIGINAL) {
+			DebugOverlay.captureMovementBoundary("AFTER_F11_EXIT");
+		}
+	}
+
+	/**
+	 * Consumes an F11 request on the client game thread. Called immediately
+	 * after {@link Keyboard#loop()}, before modern movement and packet decoding,
+	 * so the ownership handoff cannot interleave with either subsystem.
+	 */
+	public static void processPendingCycle() {
+		if (!cycleRequested) {
+			return;
+		}
+		cycleRequested = false;
+		System.out.println("[F11-TRANSITION] requestedThread=" + cycleRequestThread
+				+ " processedThread=" + Thread.currentThread().getName()
+				+ " tick=" + client.loop);
+		cycle();
 	}
 
 	/**
@@ -174,8 +207,10 @@ public final class CameraMode {
 	 */
 	public static void onKeyPressed(int keyCode) {
 		if (keyCode == KEY_F11) {
-			cycle();
+			cycleRequestThread = Thread.currentThread().getName();
+			cycleRequested = true;
 		}
+		ModernCeiling.onKeyPressed(keyCode);
 		// F12 debug overlay toggle — works in any mode, edge-triggered
 		DebugOverlay.onKeyPressed(keyCode);
 	}

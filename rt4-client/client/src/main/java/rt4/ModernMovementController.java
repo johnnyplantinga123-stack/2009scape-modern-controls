@@ -47,6 +47,17 @@ public final class ModernMovementController {
 	// ---- Speed constants (fine units per client tick at 50Hz) ----
 	private static final int WALK_SPEED = 4;
 	private static final int RUN_SPEED = 8;
+	/** Authentic CollisionMap occupancy mask used by the vanilla pathfinder. */
+	private static final int BLOCKED_TILE_MASK = 0x1240100;
+	private static final int EAST_WALL = 0x80;
+	private static final int WEST_WALL = 0x8;
+	private static final int POSITIVE_Z_WALL = 0x20;
+	private static final int NEGATIVE_Z_WALL = 0x2;
+	/** Fine-unit inset for the player's collision footprint at a wall edge. */
+	private static final int FINE_FOOTPRINT_INSET = 16;
+	/** Short proven-valid history used for local collision recovery. */
+	private static final int VALID_FINE_HISTORY_CAPACITY = 16;
+	private static final int MAX_FINE_RECOVERY_DISTANCE = 128;
 
 	// ---- Reconciliation ----
 	/** ~2 seconds = ~3.3 server ticks (600ms each). Diagnostic, not blind snap. */
@@ -57,18 +68,56 @@ public final class ModernMovementController {
 	// ---- Pending request ring buffer ----
 	/** Walk ~640ms/tile, Run ~320ms/tile, Server tick ~600ms. Up to 3 outstanding. */
 	private static final int PENDING_CAPACITY = 4;
+	/** Hard cap on local prediction while server reporting is stalled. */
+	private static final int MAX_PREDICTION_LEAD_TILES = PENDING_CAPACITY;
 
 	// ==== Q16 POSITION (FINE-GRAIN PREDICTION) ====
 	/** Q16 sub-fine accumulators. self.xFine = (int)(predictedSubX >> 16). */
 	private static long predictedSubX;
 	private static long predictedSubZ;
+	private static int lastValidFineX;
+	private static int lastValidFineZ;
+	private static boolean lastValidInitialized;
+	private static final int[] validFineHistoryX = new int[VALID_FINE_HISTORY_CAPACITY];
+	private static final int[] validFineHistoryZ = new int[VALID_FINE_HISTORY_CAPACITY];
+	private static int validFineHistoryHead;
+	private static int validFineHistoryCount;
 	private static int velocityXQ16;
 	private static int velocityZQ16;
 
 	// ==== SERVER AUTHORITATIVE STATE (LOCAL tile coords) ====
 	private static int lastServerReportedTileX = -1;
 	private static int lastServerReportedTileZ = -1;
+	/**
+	 * Exact fine coordinates are only present in a far-teleport update. Normal
+	 * player-step updates carry a tile/direction, so they must never be
+	 * represented as a made-up tile-centre fine coordinate in diagnostics.
+	 */
+	private static int lastExactServerFineX = -1;
+	private static int lastExactServerFineZ = -1;
 	private static int lastServerReportTick = -1;
+	/**
+	 * Local movement anchor used for validating the next Q16 request.  This is
+	 * deliberately separate from lastServerReportedTile: during VANILLA_FREE,
+	 * queue[0] is the vanilla route's current server-side position, but it is
+	 * not necessarily a Q16 acknowledgement received by onServerStep().
+	 */
+	private static int movementAnchorTileX = -1;
+	private static int movementAnchorTileZ = -1;
+	private static int lastPacketDiagnosticTick = -100;
+	private static boolean lastPacketAccepted;
+	private static String lastPacketReason = "none";
+	private static int lastPacketTargetX = -1;
+	private static int lastPacketTargetZ = -1;
+	/** Throttle a held doorway/corner rejection to one record per ~second. */
+	private static int lastDoorParityLogTick = -100;
+	private static int lastDoorParitySourceX = Integer.MIN_VALUE;
+	private static int lastDoorParitySourceZ = Integer.MIN_VALUE;
+	private static int lastDoorParityTargetX = Integer.MIN_VALUE;
+	private static int lastDoorParityTargetZ = Integer.MIN_VALUE;
+	private static String lastDoorParityStage = "";
+	/** Classification carried from the first authoritative divergence to rebase logging. */
+	private static String lastReconcileSource = "reconcile";
 
 	// ==== PENDING REQUEST RING BUFFER (LOCAL tile coords) ====
 	private static final int[] pendingTileX = new int[PENDING_CAPACITY];
@@ -153,12 +202,34 @@ public final class ModernMovementController {
 
 		predictedSubX = ((long) self.xFine) << 16;
 		predictedSubZ = ((long) self.zFine) << 16;
+		lastValidFineX = self.xFine;
+		lastValidFineZ = self.zFine;
+		lastValidInitialized = isFinePositionValid(self.xFine, self.zFine, self.getSize());
+		clearValidFineHistory();
+		if (lastValidInitialized) rememberValidFine(self.xFine, self.zFine);
+		if (!lastValidInitialized) {
+			int[] recovered = findNearestValidFine(self.xFine, self.zFine, self.getSize());
+			if (recovered != null) {
+				lastValidFineX = recovered[0];
+				lastValidFineZ = recovered[1];
+				predictedSubX = ((long) lastValidFineX) << 16;
+				predictedSubZ = ((long) lastValidFineZ) << 16;
+				self.xFine = lastValidFineX;
+				self.zFine = lastValidFineZ;
+				lastValidInitialized = true;
+				rememberValidFine(lastValidFineX, lastValidFineZ);
+			}
+		}
 		velocityXQ16 = 0;
 		velocityZQ16 = 0;
 
 		// Initialize lastServerReportedTile from movement queue (LOCAL tiles)
 		lastServerReportedTileX = self.movementQueueX[0];
 		lastServerReportedTileZ = self.movementQueueZ[0];
+		lastExactServerFineX = -1;
+		lastExactServerFineZ = -1;
+		movementAnchorTileX = lastServerReportedTileX;
+		movementAnchorTileZ = lastServerReportedTileZ;
 		lastServerReportTick = client.loop;
 
 		targetOrientationAngle = self.anInt3400;
@@ -175,32 +246,18 @@ public final class ModernMovementController {
 	/**
 	 * MODERN → ORIGINAL transition.
 	 *
-	 * <p><b>Round P4B: F11 exit scene/collision resync.</b> Source trace
-	 * proved the staleness: while Q16 owns, {@link #update()} writes
-	 * self.xFine/zFine every tick but never movementQueueX/Z, and vanilla
-	 * {@link PathFinder} BFS originates exactly at movementQueueX[0]/Z[0].
-	 * After exit, queue[0] is still wherever it stood when MODERN was
-	 * entered, so click-to-walk paths radiate from a stale tile (blocked
-	 * walkable tiles, wrong clipping near walls). A normal region load
-	 * heals it because {@link LoginManager#method2463} ends in
-	 * {@code self.teleport()} → {@link PathingEntity#method2683} — the
-	 * vanilla authoritative entity reset (queue[0] + queueSize + xFine/zFine
-	 * to the tile centre).
-	 *
-	 * <p>Modern code never mutates {@link PathFinder#collisionMaps}
-	 * (exhaustive grep; only vanilla flagScenery/flagWall/flagTile and the
-	 * ::noclip cheat do), so NO collision rebuild is needed — the smallest
-	 * proven vanilla refresh is that exact teleport-style reset, reused
-	 * here verbatim. Order of operations per the P4B brief:
+	 * <p>The movement queue is kept at the last server-confirmed LOCAL tile by
+	 * {@link #onServerStep(int, int)} while Q16 owns visual prediction. The
+	 * actual F11 transition is executed by {@link CameraMode#processPendingCycle()}
+	 * on the client game thread, so this handoff cannot interleave with a Q16
+	 * write or {@link Protocol#readSelfPlayerInfo()} relative server step.
+	 * No scene, collision-map or teleport reset is required. Order:
 	 * <ol>
 	 *   <li>capture before-state for F12 diagnostics;</li>
-	 *   <li>resolve the authoritative tile (last server-confirmed);</li>
 	 *   <li>stop Q16 writes (velocity/intent/pending/initialized);</li>
-	 *   <li>invoke the vanilla reset ({@code self.teleport(auth, true, auth)})
-	 *       which syncs xFine/zFine AND movementQueueX[0]/Z[0];</li>
-	 *   <li>open the post-exit drain window so residual in-flight steps are
-	 *       consumed, not replayed;</li>
-	 *   <li>only then is movement ownership handed to ORIGINAL.</li>
+	 *   <li>leave the live vanilla queue, fine position, scene and collision
+	 *       maps untouched;</li>
+	 *   <li>hand movement ownership to ORIGINAL.</li>
 	 * </ol>
 	 * MODERN FREE needs none of this: vanilla already owns and the queue
 	 * is live (route = VANILLA_FREE_NOOP).
@@ -223,14 +280,43 @@ public final class ModernMovementController {
 		int queue0BeforeX = self.movementQueueX[0];
 		int queue0BeforeZ = self.movementQueueZ[0];
 		int pendingBefore = getPendingCount();
+		int predictedTileBeforeX = (int) (predictedSubX >> 16) >> 7;
+		int predictedTileBeforeZ = (int) (predictedSubZ >> 16) >> 7;
+		int distanceFromServerBefore = lastServerReportedTileX < 0 ? -1
+				: Math.max(Math.abs(predictedTileBeforeX - lastServerReportedTileX),
+						Math.abs(predictedTileBeforeZ - lastServerReportedTileZ));
+		String pendingTilesBefore = pendingTilesSummary();
 
-		// ---- P4B step 2: authoritative tile (last server-confirmed) ----
+		// ---- Last server-confirmed LOCAL tile (diagnostics only) ----
 		int authTileX = (lastServerReportedTileX >= 0) ? lastServerReportedTileX : self.xFine >> 7;
 		int authTileZ = (lastServerReportedTileZ >= 0) ? lastServerReportedTileZ : self.zFine >> 7;
 
-		// ---- P4B step 3: stop modern Q16 writes ----
+		// ---- Stop modern Q16 writes ----
 		boolean q16Owned = !ModernCameraRig.isActive()
 				|| ModernCameraRig.getRigState() != ModernCameraRig.RigState.FREE;
+		// Q16 prediction is deliberately ahead of the server queue. ORIGINAL's
+		// vanilla mover starts from queue[0], so leaving the predicted fine
+		// position in place makes its first click path interpolate from a
+		// different tile. Rebase to the authoritative queue tile at the owner
+		// handoff; this is the same tile-centre state vanilla uses after a
+		// normal server update and is bounded to at most the prediction lead.
+		if (q16Owned) {
+			int authoritativeX = self.movementQueueX[0];
+			int authoritativeZ = self.movementQueueZ[0];
+			int authoritativeFineX = authoritativeX * 128 + self.getSize() * 64;
+			int authoritativeFineZ = authoritativeZ * 128 + self.getSize() * 64;
+			if (Math.max(Math.abs((beforeFineX >> 7) - authoritativeX),
+					Math.abs((beforeFineZ >> 7) - authoritativeZ)) > 1) {
+				logSnapbackCause("F11", beforeFineX, beforeFineZ,
+						authoritativeFineX, authoritativeFineZ,
+						isFinePositionValid(beforeFineX, beforeFineZ, self.getSize()));
+			}
+			self.xFine = authoritativeFineX;
+			self.zFine = authoritativeFineZ;
+			// Drop any pre-Q16 or residual vanilla route while retaining queue[0].
+			// The next ORIGINAL click must be the only live route after F11.
+			self.method2689();
+		}
 		velocityXQ16 = 0;
 		velocityZQ16 = 0;
 		intent.clear();
@@ -240,19 +326,14 @@ public final class ModernMovementController {
 		wasFirstPersonLastTick = false;
 		lastMovementState = MovementState.IDLE;
 
-		// ---- P4B step 4: vanilla-proven collision/pathfinding refresh ----
+		// ---- Main-thread ownership handoff; preserve live vanilla state ----
 		String route;
 		if (q16Owned) {
-			// Reuse the exact vanilla authoritative reset used by the region
-			// shift path (LoginManager.method2463 → self.teleport →
-			// method2683 hard branch): movementQueueX[0]/Z[0], queueSize and
-			// xFine/zFine all land on the authoritative tile centre, so
-			// PathFinder BFS originates at the live player tile again.
-			self.teleport(authTileX, true, authTileZ);
-			// Round #8 P10: NO post-exit drain window. ORIGINAL click-to-walk
-			// must work IMMEDIATELY after F11. Residual in-flight steps arrive
-			// through the normal vanilla move() path and append cleanly.
-			route = "VANILLA_TELEPORT_RESET";
+			// Protocol's Q16 drain has already kept queue[0] at the last
+			// confirmed server tile. Do not manufacture a client teleport or
+			// mutate queue/fine/collision state during the ownership change.
+			// Residual server steps now append through the normal vanilla path.
+			route = "MAIN_THREAD_AUTHORITATIVE_REBASE";
 		} else {
 			// MODERN FREE: vanilla already owned locomotion — queue is live
 			// and consistent. Touching it would cancel legitimate walking.
@@ -277,7 +358,16 @@ public final class ModernMovementController {
 		DebugOverlay.f11ExitPendingMoves = pendingBefore;
 		DebugOverlay.f11ExitCollisionRefresh = q16Owned;
 		DebugOverlay.f11ExitCollisionRefreshRoute = route;
-		System.out.println("[F11-ORIGINAL-RESYNC] authTile=" + authTileX + "," + authTileZ
+		System.out.println("[F11-ORIGINAL-HANDOFF] authTile=" + authTileX + "," + authTileZ
+				+ " playerTile=" + (beforeFineX >> 7) + "," + (beforeFineZ >> 7)
+				+ " predictedTile=" + predictedTileBeforeX + "," + predictedTileBeforeZ
+				+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ
+				+ " movementAnchor=" + movementAnchorTileX + "," + movementAnchorTileZ
+				+ " pendingCount=" + pendingBefore + " pendingTiles=" + pendingTilesBefore
+				+ " distanceFromServer=" + distanceFromServerBefore
+				+ " lastPacketAccepted=" + lastPacketAccepted
+				+ " lastPacketReason=" + lastPacketReason
+				+ " lastPacketTarget=" + lastPacketTargetX + "," + lastPacketTargetZ
 				+ " queue0Before=" + queue0BeforeX + "," + queue0BeforeZ
 				+ " queue0After=" + self.movementQueueX[0] + "," + self.movementQueueZ[0]
 				+ " collisionRefreshRoute=" + route);
@@ -391,31 +481,46 @@ public final class ModernMovementController {
 	 *   <li>WASD enabled again; CHASE (this controller) owns movement.</li>
 	 * </ol>
 	 *
-	 * <p><b>Arbitration rule (documented per brief P10):</b> if the player
-	 * was walking a vanilla path in FREE and scrolls inward mid-path, the
-	 * client queue is cleared immediately and manual WASD takes ownership.
-	 * The server-side route is reset by the NEXT modern DDA walk packet
-	 * ({@code sendModernWalkPacket} = MOVE_GAMECLICK). Any residual server
-	 * steps for the cancelled path arrive through the Q16 drain hooks
-	 * ({@link #onServerStep}) and are reconciled — never replayed as
-	 * vanilla movement, because {@link NpcList#method4514} skips method2247
-	 * for self while {@link #isModernQ16Owner()} is true.
+	 * <p><b>Arbitration rule:</b> a client queue clear is not enough. The server
+	 * has its own WalkingQueue and can continue a previously submitted route.
+	 * Before clearing the local queue, send the existing MOVE_GAMECLICK packet
+	 * to the vanilla queue head. On the server this enters the normal
+	 * WorldspaceWalk/MovementPulse path, which stops the old pulse and resets the
+	 * server queue before installing the one-tile no-op route. Any packet already
+	 * in flight is then handled by the Q16 server-step drain and cannot run the
+	 * vanilla mover independently.
 	 */
 	public static void onExitFreeMode() {
 		Player self = PlayerList.self;
 		if (self == null) {
 			return;
 		}
-		// 1: cancel vanilla auto-path (client side).
+		// Capture queue[0] before method2689(). While vanilla owns movement this
+		// is the latest server-position/route head, not the interpolated xFine.
+		int vanillaRouteHeadX = self.movementQueueX[0];
+		int vanillaRouteHeadZ = self.movementQueueZ[0];
+		boolean hadVanillaRoute = self.movementQueueSize > 0;
+		movementAnchorTileX = vanillaRouteHeadX;
+		movementAnchorTileZ = vanillaRouteHeadZ;
+		if (hadVanillaRoute) {
+			int worldX = Camera.originX + vanillaRouteHeadX;
+			int worldZ = Camera.originZ + vanillaRouteHeadZ;
+			ClientProt.sendModernWalkPacket(worldX, worldZ, false);
+			System.out.println("[MODERN-MOVE] ROUTE_REPLACE: FREE -> CHASE"
+					+ " target=" + vanillaRouteHeadX + "," + vanillaRouteHeadZ
+					+ " previousServerTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ);
+		}
+		// 1: cancel vanilla auto-path (client side) after the server replacement
+		// packet has been queued.
 		self.method2689();
 		// 2-4: seed prediction from live state (no snap).
 		predictedSubX = ((long) self.xFine) << 16;
 		predictedSubZ = ((long) self.zFine) << 16;
 		velocityXQ16 = 0;
 		velocityZQ16 = 0;
-		lastServerReportedTileX = self.xFine >> 7;
-		lastServerReportedTileZ = self.zFine >> 7;
-		lastServerReportTick = client.loop;
+		// Do not promote interpolated/predicted xFine to server-confirmed state.
+		// lastServerReportedTile changes only from an actual server step,
+		// teleport, or scene rebuild.
 		// 5-6: heading from current body facing; discard stale modern state.
 		movementHeading = ModernCameraRig.bodyYawToCameraYaw(self.anInt3400);
 		targetOrientationAngle = self.anInt3400;
@@ -425,7 +530,9 @@ public final class ModernMovementController {
 		suspended = false;
 		initialized = true;
 		System.out.println("[MODERN-MOVE] HANDOFF: FREE -> CHASE (modern Q16 owns)"
-				+ " tile=" + lastServerReportedTileX + "," + lastServerReportedTileZ);
+				+ " predictedTile=" + (self.xFine >> 7) + "," + (self.zFine >> 7)
+				+ " anchorTile=" + movementAnchorTileX + "," + movementAnchorTileZ
+				+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ);
 	}
 
 	/**
@@ -436,6 +543,13 @@ public final class ModernMovementController {
 		if (!initialized) return;
 		Player self = PlayerList.self;
 		if (self == null) return;
+		int oldFineX = (int) (predictedSubX >> 16);
+		int oldFineZ = (int) (predictedSubZ >> 16);
+		if (Math.max(Math.abs((oldFineX >> 7) - (self.xFine >> 7)),
+				Math.abs((oldFineZ >> 7) - (self.zFine >> 7))) > 1) {
+			logSnapbackCause("region_rebuild", oldFineX, oldFineZ, self.xFine, self.zFine,
+					isFinePositionValid(self.xFine, self.zFine, self.getSize()));
+		}
 
 		predictedSubX = ((long) self.xFine) << 16;
 		predictedSubZ = ((long) self.zFine) << 16;
@@ -444,6 +558,13 @@ public final class ModernMovementController {
 
 		lastServerReportedTileX = self.xFine >> 7;
 		lastServerReportedTileZ = self.zFine >> 7;
+		movementAnchorTileX = lastServerReportedTileX;
+		movementAnchorTileZ = lastServerReportedTileZ;
+		lastValidFineX = self.xFine;
+		lastValidFineZ = self.zFine;
+		lastValidInitialized = isFinePositionValid(self.xFine, self.zFine, self.getSize());
+		clearValidFineHistory();
+		if (lastValidInitialized) rememberValidFine(lastValidFineX, lastValidFineZ);
 		lastServerReportTick = client.loop;
 		// P4: re-anchor the movement heading after a region rebuild.
 		movementHeading = ModernCameraRig.bodyYawToCameraYaw(self.anInt3400);
@@ -470,8 +591,16 @@ public final class ModernMovementController {
 
 		lastServerReportedTileX = localTileX;
 		lastServerReportedTileZ = localTileZ;
+		// A regular player-update step identifies a tile only. Any older exact
+		// teleport fine point is no longer authoritative after this step.
+		lastExactServerFineX = -1;
+		lastExactServerFineZ = -1;
+		movementAnchorTileX = localTileX;
+		movementAnchorTileZ = localTileZ;
 		lastServerReportTick = client.loop;
-		consumePendingExact(localTileX, localTileZ);
+		boolean hadPending = !pendingEmpty();
+		boolean matchedPending = consumePendingExact(localTileX, localTileZ);
+		lastReconcileSource = hadPending && !matchedPending ? "stale_movement_route" : "server_movement";
 		reconcile();
 	}
 
@@ -480,14 +609,35 @@ public final class ModernMovementController {
 	 * Rebase prediction from externally-updated fine coordinates.
 	 */
 	public static void onServerTeleportFine(int fineX, int fineZ) {
+		Player self = PlayerList.self;
+		int oldFineX = (int) (predictedSubX >> 16);
+		int oldFineZ = (int) (predictedSubZ >> 16);
 		predictedSubX = ((long) fineX) << 16;
 		predictedSubZ = ((long) fineZ) << 16;
 		velocityXQ16 = 0;
 		velocityZQ16 = 0;
 		lastServerReportedTileX = fineX >> 7;
 		lastServerReportedTileZ = fineZ >> 7;
+		lastExactServerFineX = fineX;
+		lastExactServerFineZ = fineZ;
+		movementAnchorTileX = lastServerReportedTileX;
+		movementAnchorTileZ = lastServerReportedTileZ;
+		lastValidFineX = fineX;
+		lastValidFineZ = fineZ;
+		lastValidInitialized = isFinePositionValid(fineX, fineZ, self.getSize());
+		clearValidFineHistory();
+		if (lastValidInitialized) rememberValidFine(fineX, fineZ);
 		lastServerReportTick = client.loop;
 		clearPending();
+		System.out.println("[MODERN-MOVE] AUTHORITATIVE_TELEPORT_FINE"
+				+ " fromFine=" + oldFineX + "," + oldFineZ
+				+ " toFine=" + fineX + "," + fineZ
+				+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ);
+		if (Math.max(Math.abs((oldFineX >> 7) - (fineX >> 7)),
+				Math.abs((oldFineZ >> 7) - (fineZ >> 7))) > 1) {
+			logSnapbackCause("teleport", oldFineX, oldFineZ, fineX, fineZ,
+					isFinePositionValid(fineX, fineZ, self.getSize()));
+		}
 	}
 
 	// =====================================================================
@@ -533,6 +683,38 @@ public final class ModernMovementController {
 			clearPending();
 			suspended = false;
 		}
+
+		// Keep every Q16 step anchored to a valid local position. If an older
+		// prediction already embedded the player, recover only to the last valid
+		// point (or a nearby valid tile), never to an arbitrary world location.
+		int currentFineX = (int) (predictedSubX >> 16);
+		int currentFineZ = (int) (predictedSubZ >> 16);
+		if (!isFinePositionOccupancyValid(currentFineX, currentFineZ, self.getSize())) {
+			int[] recovered = findRecentValidFine(currentFineX, currentFineZ, self.getSize());
+			if (recovered == null && lastValidInitialized
+					&& isFinePositionValid(lastValidFineX, lastValidFineZ, self.getSize())
+					&& fineDistance(lastValidFineX, lastValidFineZ, currentFineX, currentFineZ)
+					<= MAX_FINE_RECOVERY_DISTANCE) {
+				recovered = new int[]{lastValidFineX, lastValidFineZ};
+			}
+			if (recovered == null) recovered = findNearestValidFine(currentFineX, currentFineZ, self.getSize());
+			if (recovered == null) return;
+			currentFineX = recovered[0];
+			currentFineZ = recovered[1];
+			predictedSubX = ((long) currentFineX) << 16;
+			predictedSubZ = ((long) currentFineZ) << 16;
+			self.xFine = currentFineX;
+			self.zFine = currentFineZ;
+			lastValidFineX = currentFineX;
+			lastValidFineZ = currentFineZ;
+			lastValidInitialized = true;
+			rememberValidFine(currentFineX, currentFineZ);
+			DebugOverlay.collisionRecovery = true;
+		} else {
+			DebugOverlay.collisionRecovery = false;
+		}
+		DebugOverlay.lastValidFineX = lastValidFineX;
+		DebugOverlay.lastValidFineZ = lastValidFineZ;
 
 		// ---- Read WASD input ----
 		readInput();
@@ -631,14 +813,145 @@ public final class ModernMovementController {
 		velocityZQ16 = (int) (fwdMul * MathUtils.cos[yaw & 2047]
 				+ strMul * MathUtils.sin[yaw & 2047]);
 
-		// ---- Apply Q16 prediction ----
-		predictedSubX += velocityXQ16;
-		predictedSubZ += velocityZQ16;
+		// A full/stale pending ring is not permission to keep travelling. Bound
+		// local prediction while packet reporting or acknowledgements are stalled.
+		int predictedTileX = currentFineX >> 7;
+		int predictedTileZ = currentFineZ >> 7;
+		// Pending requests are intentions, not acknowledgements. The safety
+		// budget must therefore be measured from the last actual server tile.
+		int authorityTileX = lastServerReportedTileX >= 0 ? lastServerReportedTileX : movementAnchorTileX;
+		int authorityTileZ = lastServerReportedTileZ >= 0 ? lastServerReportedTileZ : movementAnchorTileZ;
+		int distanceFromAuthority = Math.max(Math.abs(predictedTileX - authorityTileX),
+				Math.abs(predictedTileZ - authorityTileZ));
+		if (distanceFromAuthority >= MAX_PREDICTION_LEAD_TILES) {
+			velocityXQ16 = 0;
+			velocityZQ16 = 0;
+			if (client.loop - lastPacketDiagnosticTick >= 25) {
+				lastPacketDiagnosticTick = client.loop;
+				System.out.println("[MODERN-MOVE] PREDICTION_PAUSED reason=authority_budget"
+						+ " anchor=" + movementAnchorTileX + "," + movementAnchorTileZ
+						+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ
+						+ " predictedTile=" + predictedTileX + "," + predictedTileZ
+						+ " pendingTail=" + pendingTail + " pendingCount=" + getPendingCount()
+						+ " distanceFromServer=" + distanceFromAuthority);
+			}
+		}
+
+		// ---- Apply Q16 prediction through the live vanilla CollisionMap ----
+		int desiredX = velocityXQ16;
+		int desiredZ = velocityZQ16;
+		CollisionResult resolved = resolveCollision(currentFineX, currentFineZ,
+				desiredX, desiredZ, self.getSize());
+		velocityXQ16 = resolved.deltaX;
+		velocityZQ16 = resolved.deltaZ;
+		DebugOverlay.desiredDeltaX = desiredX;
+		DebugOverlay.desiredDeltaZ = desiredZ;
+		DebugOverlay.resolvedDeltaX = resolved.deltaX;
+		DebugOverlay.resolvedDeltaZ = resolved.deltaZ;
+		DebugOverlay.movementBlockedX = resolved.blockedX;
+		DebugOverlay.movementBlockedZ = resolved.blockedZ;
+		DebugOverlay.movementCollisionFlags = resolved.flags;
+		DebugOverlay.fullMoveValid = resolved.fullAllowed;
+		DebugOverlay.xOnlyMoveValid = resolved.xAllowed;
+		DebugOverlay.zOnlyMoveValid = resolved.zAllowed;
+
+		// A fine step is a transaction.  Collision resolution alone is not
+		// enough: a tile boundary may only be entered when that tile can be
+		// represented by the current authority/pending chain.  Validate and
+		// enqueue the report before committing predictedSub/self.xFine.
+		long candidateSubX = predictedSubX + resolved.deltaX;
+		long candidateSubZ = predictedSubZ + resolved.deltaZ;
+		int candidateFineX = (int) (candidateSubX >> 16);
+		int candidateFineZ = (int) (candidateSubZ >> 16);
+		int currentTileX = currentFineX >> 7;
+		int currentTileZ = currentFineZ >> 7;
+		int candidateTileX = candidateFineX >> 7;
+		int candidateTileZ = candidateFineZ >> 7;
+		boolean candidateFineValid = isFineStepValid(currentFineX, currentFineZ,
+				candidateFineX, candidateFineZ, self.getSize());
+		// Capture the first decision, before any local entry-point recovery can
+		// obscure a vanilla-vs-fine disagreement. Successful crossings are one
+		// record per tile; a held rejection is throttled below.
+		if (candidateTileX != currentTileX || candidateTileZ != currentTileZ || !candidateFineValid) {
+			logDoorParity(currentTileX, currentTileZ, candidateTileX, candidateTileZ,
+					currentFineX, currentFineZ, candidateFineX, candidateFineZ, self.getSize(),
+					resolved.blockedX, resolved.blockedZ, "fine_validation",
+					candidateFineValid ? "accepted" : finePositionRejectReason(candidateFineX, candidateFineZ, self.getSize()));
+		}
+		if (!candidateFineValid && (candidateTileX != currentTileX || candidateTileZ != currentTileZ)
+				&& vanillaTileRouteAllowed(currentTileX, currentTileZ, candidateTileX, candidateTileZ, self.getSize())) {
+			int[] legalEntry = findFineEntryInVanillaTile(candidateTileX, candidateTileZ,
+					candidateFineX, candidateFineZ, self.getSize());
+			if (legalEntry != null) {
+				candidateFineX = legalEntry[0];
+				candidateFineZ = legalEntry[1];
+				candidateSubX = ((long) candidateFineX) << 16;
+				candidateSubZ = ((long) candidateFineZ) << 16;
+				resolved = new CollisionResult((int) (candidateSubX - predictedSubX),
+						(int) (candidateSubZ - predictedSubZ), resolved.blockedX, resolved.blockedZ,
+						resolved.flags, resolved.fullAllowed, resolved.xAllowed, resolved.zAllowed);
+				velocityXQ16 = resolved.deltaX;
+				velocityZQ16 = resolved.deltaZ;
+				candidateFineValid = true;
+				System.out.println("[MODERN-MOVE] FINE_ENTRY_REBASED reason=vanilla_tile_reachable"
+						+ " plane=" + Player.plane + " sourceTile=" + currentTileX + "," + currentTileZ
+						+ " destinationTile=" + candidateTileX + "," + candidateTileZ
+						+ " fine=" + candidateFineX + "," + candidateFineZ);
+			}
+		}
+		if (!candidateFineValid) {
+			resolved = new CollisionResult(0, 0, true, true, resolved.flags,
+					false, false, false);
+			velocityXQ16 = 0;
+			velocityZQ16 = 0;
+		} else if ((candidateTileX != currentTileX || candidateTileZ != currentTileZ)
+				&& !prepareTileTransition(candidateTileX, candidateTileZ)) {
+			logDoorParity(currentTileX, currentTileZ, candidateTileX, candidateTileZ,
+					currentFineX, currentFineZ, candidateFineX, candidateFineZ, self.getSize(),
+					resolved.blockedX, resolved.blockedZ, "authority_packet", lastPacketReason);
+			resolved = new CollisionResult(0, 0, true, true, resolved.flags,
+					false, false, false);
+			velocityXQ16 = 0;
+			velocityZQ16 = 0;
+		}
+		predictedSubX += resolved.deltaX;
+		predictedSubZ += resolved.deltaZ;
 		self.xFine = (int) (predictedSubX >> 16);
 		self.zFine = (int) (predictedSubZ >> 16);
+		if (!isFineStepValid(currentFineX, currentFineZ, self.xFine, self.zFine, self.getSize())) {
+			predictedSubX = ((long) lastValidFineX) << 16;
+			predictedSubZ = ((long) lastValidFineZ) << 16;
+			self.xFine = lastValidFineX;
+			self.zFine = lastValidFineZ;
+			velocityXQ16 = 0;
+			velocityZQ16 = 0;
+			resolved = new CollisionResult(0, 0, true, true, resolved.flags,
+					false, false, false);
+		}
+		lastValidFineX = self.xFine;
+		lastValidFineZ = self.zFine;
+		lastValidInitialized = true;
+		rememberValidFine(self.xFine, self.zFine);
+		DebugOverlay.lastValidFineX = lastValidFineX;
+		DebugOverlay.lastValidFineZ = lastValidFineZ;
 
 		// ---- DDA tile boundary crossing → server sync ----
-		performDDACheck();
+		// Tile transitions were validated and queued before the commit above.
+		// Keep DDA as a harmless deduplicating backstop for externally changed
+		// fine coordinates, but never let it be the first packet validation.
+		if (resolved.deltaX != 0 || resolved.deltaZ != 0) performDDACheck();
+		if ((resolved.blockedX || resolved.blockedZ || DebugOverlay.collisionRecovery)
+				&& client.loop % 25 == 0) {
+			System.out.println("[MODERN-COLLISION] currentFine=" + currentFineX + "," + currentFineZ
+					+ " desiredFineDelta=" + (desiredX >> 16) + "," + (desiredZ >> 16)
+					+ " resolvedFineDelta=" + (resolved.deltaX >> 16) + "," + (resolved.deltaZ >> 16)
+					+ " currentTile=" + (currentFineX >> 7) + "," + (currentFineZ >> 7)
+					+ " attemptedTile=" + (self.xFine >> 7) + "," + (self.zFine >> 7)
+					+ " blockedX=" + resolved.blockedX + " blockedZ=" + resolved.blockedZ
+					+ " full=" + resolved.fullAllowed + " xOnly=" + resolved.xAllowed
+					+ " zOnly=" + resolved.zAllowed + " flags=0x" + Integer.toHexString(resolved.flags)
+					+ " lastValid=" + lastValidFineX + "," + lastValidFineZ);
+		}
 
 		// ---- Orientation ----
 		// Review #2: In FP rig state (including scroll-FP within THIRD_PERSON
@@ -690,89 +1003,532 @@ public final class ModernMovementController {
 		}
 	}
 
+	/** Result of one fine-coordinate collision resolution step. */
+	private static final class CollisionResult {
+		private final int deltaX;
+		private final int deltaZ;
+		private final boolean blockedX;
+		private final boolean blockedZ;
+		private final int flags;
+		private final boolean fullAllowed;
+		private final boolean xAllowed;
+		private final boolean zAllowed;
+
+		private CollisionResult(int deltaX, int deltaZ, boolean blockedX, boolean blockedZ, int flags,
+				boolean fullAllowed, boolean xAllowed, boolean zAllowed) {
+			this.deltaX = deltaX;
+			this.deltaZ = deltaZ;
+			this.blockedX = blockedX;
+			this.blockedZ = blockedZ;
+			this.flags = flags;
+			this.fullAllowed = fullAllowed;
+			this.xAllowed = xAllowed;
+			this.zAllowed = zAllowed;
+		}
+	}
+
+	/**
+	 * Resolves a short WASD step against the same tile flags used by PathFinder.
+	 * The full vector is attempted first; if a corner or object blocks it, each
+	 * axis is attempted independently so movement slides along walls. A diagonal
+	 * step can therefore never bypass two perpendicular blocked edges.
+	 */
+	private static CollisionResult resolveCollision(int fineX, int fineZ, int desiredX, int desiredZ, int size) {
+		CollisionMap map = Player.plane >= 0 && Player.plane < PathFinder.collisionMaps.length
+				? PathFinder.collisionMaps[Player.plane] : null;
+		if (map == null) {
+			return new CollisionResult(desiredX, desiredZ, false, false, 0, true, true, true);
+		}
+		int flags = sampleFlags(map, fineX >> 7, fineZ >> 7);
+		int fullX = desiredX;
+		int fullZ = desiredZ;
+		boolean fullAllowed = canMoveFine(map, fineX, fineZ, fineX + (fullX >> 16),
+				fineZ + (fullZ >> 16), size);
+		if (fullAllowed) {
+			return new CollisionResult(fullX, fullZ, false, false, flags, true, true, true);
+		}
+		boolean xAllowed = desiredX != 0 && (canMoveFine(map, fineX, fineZ,
+				fineX + (desiredX >> 16), fineZ, size)
+				|| canMoveAwayFromBlockedEdge(map, fineX, fineZ,
+						fineX + (desiredX >> 16), fineZ, size));
+		boolean zAllowed = desiredZ != 0 && (canMoveFine(map, fineX, fineZ,
+				fineX, fineZ + (desiredZ >> 16), size)
+				|| canMoveAwayFromBlockedEdge(map, fineX, fineZ,
+						fineX, fineZ + (desiredZ >> 16), size));
+		int resolvedX = xAllowed ? desiredX : 0;
+		int resolvedZ = zAllowed ? desiredZ : 0;
+		return new CollisionResult(resolvedX, resolvedZ, desiredX != 0 && !xAllowed,
+				desiredZ != 0 && !zAllowed, flags, false, xAllowed, zAllowed);
+	}
+
+	/**
+	 * Allows escape from an over-constrained fine edge only when the candidate
+	 * itself is fully valid and the input moves away from the blocked boundary.
+	 * This is deliberately not a general collision bypass: destination validity
+	 * remains mandatory and the direction must reduce the edge overlap margin.
+	 */
+	private static boolean canMoveAwayFromBlockedEdge(CollisionMap map, int fromFineX, int fromFineZ,
+			int toFineX, int toFineZ, int size) {
+		if (!isFinePositionValid(map, toFineX, toFineZ, size)) return false;
+		int tileX = fineToCollisionTile(fromFineX, size);
+		int tileZ = fineToCollisionTile(fromFineZ, size);
+		if (tileX < 0 || tileZ < 0 || tileX + size > 104 || tileZ + size > 104) return false;
+		int left = tileX * 128;
+		int right = (tileX + size) * 128;
+		int bottom = tileZ * 128;
+		int top = (tileZ + size) * 128;
+		if (toFineX < fromFineX && hasEastBoundaryBlock(map, tileX, tileZ, size)
+				&& fromFineX >= right - FINE_FOOTPRINT_INSET) return true;
+		if (toFineX > fromFineX && hasWestBoundaryBlock(map, tileX, tileZ, size)
+				&& fromFineX <= left + FINE_FOOTPRINT_INSET) return true;
+		if (toFineZ < fromFineZ && hasNorthBoundaryBlock(map, tileX, tileZ, size)
+				&& fromFineZ >= top - FINE_FOOTPRINT_INSET) return true;
+		return toFineZ > fromFineZ && hasSouthBoundaryBlock(map, tileX, tileZ, size)
+				&& fromFineZ <= bottom + FINE_FOOTPRINT_INSET;
+	}
+
+	private static boolean canMoveFine(CollisionMap map, int fromFineX, int fromFineZ,
+			int toFineX, int toFineZ, int size) {
+		int fromX = fineToCollisionTile(fromFineX, size);
+		int fromZ = fineToCollisionTile(fromFineZ, size);
+		int toX = fineToCollisionTile(toFineX, size);
+		int toZ = fineToCollisionTile(toFineZ, size);
+		if (fromX < 0 || fromZ < 0 || fromX + size > 104 || fromZ + size > 104
+				|| toX < 0 || toZ < 0 || toX + size > 104 || toZ + size > 104) return false;
+		if (!isFineStepValid(map, fromFineX, fromFineZ, toFineX, toFineZ, size)) return false;
+		int dx = toX - fromX;
+		int dz = toZ - fromZ;
+		if (dx == 0 && dz == 0) return true;
+		// For the normal one-tile player, delegate wall/corner semantics to the
+		// exact vanilla CollisionMap routine. This covers wall orientations and
+		// diagonal side masks that are easy to invert in a local reimplementation.
+		if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1) {
+			// For a size-1 player, method3054 is the authoritative vanilla
+			// doorway/wall test. The old extra raw reciprocal-bit test could let a
+			// neighbouring or stale wall bit bleed into an otherwise open gap.
+			// Fine-position validity above still protects the actual footprint.
+			if (!map.method3054(fromZ, toZ, toX, fromX)) return false;
+			return size == 1 || canCrossBoundary(map, fromX, fromZ, toX, toZ, size);
+		}
+		if (Math.abs(dx) > 1 || Math.abs(dz) > 1) {
+			return canMoveFine(map, fromFineX, fromFineZ,
+					fromFineX + Integer.signum(dx) * 128, fromFineZ + Integer.signum(dz) * 128, size);
+		}
+		if (dx != 0 && dz != 0) {
+			// Validate the two possible edge crossings independently. This keeps
+			// the footprint check symmetric at a diagonal corner instead of only
+			// sampling the source row/column.
+			int stepX = fromX + dx;
+			if (!canCrossBoundary(map, fromX, fromZ, stepX, fromZ, size)) return false;
+			return canCrossBoundary(map, stepX, fromZ, stepX, fromZ + dz, size);
+		}
+		return canCrossBoundary(map, fromX, fromZ, toX, toZ, size);
+	}
+
+	private static boolean canCrossBoundary(CollisionMap map, int fromX, int fromZ,
+			int toX, int toZ, int size) {
+		int dx = Integer.signum(toX - fromX);
+		int dz = Integer.signum(toZ - fromZ);
+		if (dx != 0) {
+			int sourceX = dx > 0 ? fromX + size - 1 : fromX;
+			int destinationX = dx > 0 ? toX : toX + size - 1;
+			int sourceMask = dx > 0 ? EAST_WALL : WEST_WALL;
+			int reciprocalMask = dx > 0 ? WEST_WALL : EAST_WALL;
+			for (int z = fromZ; z < fromZ + size; z++) {
+				if ((sampleFlags(map, sourceX, z) & sourceMask) != 0
+						|| (sampleFlags(map, destinationX, z) & reciprocalMask) != 0) return false;
+			}
+		}
+		if (dz != 0) {
+			int sourceZ = dz > 0 ? fromZ + size - 1 : fromZ;
+			int destinationZ = dz > 0 ? toZ : toZ + size - 1;
+			int sourceMask = dz > 0 ? POSITIVE_Z_WALL : NEGATIVE_Z_WALL;
+			int reciprocalMask = dz > 0 ? NEGATIVE_Z_WALL : POSITIVE_Z_WALL;
+			for (int x = fromX; x < fromX + size; x++) {
+				if ((sampleFlags(map, x, sourceZ) & sourceMask) != 0
+						|| (sampleFlags(map, x, destinationZ) & reciprocalMask) != 0) return false;
+			}
+		}
+		return true;
+	}
+
+	private static boolean isFinePositionValid(int fineX, int fineZ, int size) {
+		if (Player.plane < 0 || Player.plane >= PathFinder.collisionMaps.length) return false;
+		CollisionMap map = PathFinder.collisionMaps[Player.plane];
+		return isFinePositionValid(map, fineX, fineZ, size);
+	}
+
+	/**
+	 * Validates the actual fine footprint, not only the tile containing its
+	 * centre. A wall flag on an edge is blocking before the centre reaches the
+	 * tile boundary, and a scenery/object flag must reject the whole occupied
+	 * footprint. All flags here come from the client-owned CollisionMap, which
+	 * is populated from the same rotated scene data used by vanilla PathFinder.
+	 */
+	private static boolean isFinePositionValid(CollisionMap map, int fineX, int fineZ, int size) {
+		if (map == null) return false;
+		int tileX = fineToCollisionTile(fineX, size);
+		int tileZ = fineToCollisionTile(fineZ, size);
+		if (tileX < 0 || tileZ < 0 || tileX + size > 104 || tileZ + size > 104
+				|| !canOccupy(map, tileX, tileZ, size)) return false;
+		return hasFineEdgeClearance(map, fineX, fineZ, tileX, tileZ, size);
+	}
+
+	private static boolean isFinePositionOccupancyValid(int fineX, int fineZ, int size) {
+		if (Player.plane < 0 || Player.plane >= PathFinder.collisionMaps.length) return false;
+		return isFinePositionOccupancyValid(PathFinder.collisionMaps[Player.plane], fineX, fineZ, size);
+	}
+
+	private static boolean isFinePositionOccupancyValid(CollisionMap map, int fineX, int fineZ, int size) {
+		if (map == null) return false;
+		int tileX = fineToCollisionTile(fineX, size);
+		int tileZ = fineToCollisionTile(fineZ, size);
+		return tileX >= 0 && tileZ >= 0 && tileX + size <= 104 && tileZ + size <= 104
+				&& canOccupy(map, tileX, tileZ, size);
+	}
+
+	/** Same-tile movement must not sample adjacent boundary masks as collision. */
+	private static boolean isFineStepValid(CollisionMap map, int fromFineX, int fromFineZ,
+			int toFineX, int toFineZ, int size) {
+		int fromTileX = fineToCollisionTile(fromFineX, size);
+		int fromTileZ = fineToCollisionTile(fromFineZ, size);
+		int toTileX = fineToCollisionTile(toFineX, size);
+		int toTileZ = fineToCollisionTile(toFineZ, size);
+		if (fromTileX == toTileX && fromTileZ == toTileZ) {
+			return isFinePositionOccupancyValid(map, fromFineX, fromFineZ, size)
+					&& isFinePositionOccupancyValid(map, toFineX, toFineZ, size);
+		}
+		return isFinePositionValid(map, fromFineX, fromFineZ, size)
+				&& isFinePositionValid(map, toFineX, toFineZ, size);
+	}
+
+	private static boolean isFineStepValid(int fromFineX, int fromFineZ, int toFineX, int toFineZ, int size) {
+		if (Player.plane < 0 || Player.plane >= PathFinder.collisionMaps.length) return false;
+		return isFineStepValid(PathFinder.collisionMaps[Player.plane], fromFineX, fromFineZ,
+				toFineX, toFineZ, size);
+	}
+
+	private static String finePositionRejectReason(int fineX, int fineZ, int size) {
+		if (Player.plane < 0 || Player.plane >= PathFinder.collisionMaps.length) return "plane_invalid";
+		CollisionMap map = PathFinder.collisionMaps[Player.plane];
+		int tileX = fineToCollisionTile(fineX, size);
+		int tileZ = fineToCollisionTile(fineZ, size);
+		if (tileX < 0 || tileZ < 0 || tileX + size > 104 || tileZ + size > 104) return "fine_bounds";
+		if (!canOccupy(map, tileX, tileZ, size)) {
+			return "occupancy_flags=0x" + Integer.toHexString(sampleFlags(map, tileX, tileZ));
+		}
+		if (!hasFineEdgeClearance(map, fineX, fineZ, tileX, tileZ, size)) {
+			return "edge_clearance inset=" + FINE_FOOTPRINT_INSET
+					+ " flags=0x" + Integer.toHexString(sampleFlags(map, tileX, tileZ));
+		}
+		return "unknown";
+	}
+
+	/** Vanilla route parity check for one committed tile transition. */
+	private static boolean vanillaTileRouteAllowed(int sourceX, int sourceZ, int targetX, int targetZ, int size) {
+		if (Math.abs(targetX - sourceX) > 1 || Math.abs(targetZ - sourceZ) > 1) return false;
+		CollisionMap map = Player.plane >= 0 && Player.plane < PathFinder.collisionMaps.length
+				? PathFinder.collisionMaps[Player.plane] : null;
+		return map != null && targetX >= 0 && targetZ >= 0
+				&& targetX + size <= 104 && targetZ + size <= 104
+				&& canOccupy(map, targetX, targetZ, size)
+				&& map.method3054(sourceZ, targetZ, targetX, sourceX);
+	}
+
+	/**
+	 * Read-only copy of PathFinder's size-one first-edge masks. This does not
+	 * call findPath (which would send a packet); it reports whether vanilla's
+	 * BFS may expand directly from source to destination. The normal player is
+	 * size one, while larger entities retain the existing CollisionMap test.
+	 */
+	private static boolean vanillaPathFinderDirectReachable(CollisionMap map, int sourceX, int sourceZ,
+			int targetX, int targetZ, int size) {
+		if (map == null || targetX < 0 || targetZ < 0 || targetX >= 104 || targetZ >= 104
+				|| sourceX < 0 || sourceZ < 0 || sourceX >= 104 || sourceZ >= 104) return false;
+		int dx = targetX - sourceX;
+		int dz = targetZ - sourceZ;
+		if (Math.abs(dx) > 1 || Math.abs(dz) > 1) return false;
+		if (dx == 0 && dz == 0) return true;
+		if (size != 1) return map.method3054(sourceZ, targetZ, targetX, sourceX);
+		int[][] flags = map.flags;
+		if (dx == -1 && dz == 0) return (flags[sourceX - 1][sourceZ] & 0x12C0108) == 0;
+		if (dx == 1 && dz == 0) return (flags[sourceX + 1][sourceZ] & 0x12C0180) == 0;
+		if (dx == 0 && dz == -1) return (flags[sourceX][sourceZ - 1] & 0x12C0102) == 0;
+		if (dx == 0 && dz == 1) return (flags[sourceX][sourceZ + 1] & 0x12C0120) == 0;
+		if (dx == -1 && dz == -1) return (flags[sourceX - 1][sourceZ - 1] & 0x12C010E) == 0
+				&& (flags[sourceX - 1][sourceZ] & 0x12C0108) == 0
+				&& (flags[sourceX][sourceZ - 1] & 0x12C0102) == 0;
+		if (dx == 1 && dz == -1) return (flags[sourceX + 1][sourceZ - 1] & 0x12C010E) == 0
+				&& (flags[sourceX + 1][sourceZ] & 0x12C0180) == 0
+				&& (flags[sourceX][sourceZ - 1] & 0x12C0102) == 0;
+		if (dx == -1 && dz == 1) return (flags[sourceX - 1][sourceZ + 1] & 0x12C010E) == 0
+				&& (flags[sourceX - 1][sourceZ] & 0x12C0108) == 0
+				&& (flags[sourceX][sourceZ + 1] & 0x12C0120) == 0;
+		return (flags[sourceX + 1][sourceZ + 1] & 0x12C010E) == 0
+				&& (flags[sourceX + 1][sourceZ] & 0x12C0180) == 0
+				&& (flags[sourceX][sourceZ + 1] & 0x12C0120) == 0;
+	}
+
+	/**
+	 * Records the full first-person doorway/corner decision without treating a
+	 * server tile as a fictitious fine coordinate. This is read-only: the normal
+	 * CollisionMap and authority path remain the sole decision makers.
+	 */
+	private static void logDoorParity(int sourceX, int sourceZ, int destinationX, int destinationZ,
+			int fromFineX, int fromFineZ, int candidateFineX, int candidateFineZ, int size,
+			boolean blockedX, boolean blockedZ, String rejectStage, String rejectReason) {
+		boolean sameCase = sourceX == lastDoorParitySourceX && sourceZ == lastDoorParitySourceZ
+				&& destinationX == lastDoorParityTargetX && destinationZ == lastDoorParityTargetZ
+				&& rejectStage.equals(lastDoorParityStage);
+		boolean rejected = !"accepted".equals(rejectReason);
+		if (rejected && sameCase && client.loop - lastDoorParityLogTick < 50) return;
+		lastDoorParityLogTick = client.loop;
+		lastDoorParitySourceX = sourceX;
+		lastDoorParitySourceZ = sourceZ;
+		lastDoorParityTargetX = destinationX;
+		lastDoorParityTargetZ = destinationZ;
+		lastDoorParityStage = rejectStage;
+		CollisionMap map = Player.plane >= 0 && Player.plane < PathFinder.collisionMaps.length
+				? PathFinder.collisionMaps[Player.plane] : null;
+		boolean vanillaReachable = vanillaPathFinderDirectReachable(map, sourceX, sourceZ,
+				destinationX, destinationZ, size);
+		boolean modernGameplayReachable = vanillaTileRouteAllowed(sourceX, sourceZ,
+				destinationX, destinationZ, size);
+		boolean modernFineReachable = isFineStepValid(map, fromFineX, fromFineZ,
+				candidateFineX, candidateFineZ, size);
+		String serverFineIfKnown = lastExactServerFineX >= 0
+				? lastExactServerFineX + "," + lastExactServerFineZ + "(far_teleport)"
+				: "unknown(step_update_is_tile_only)";
+		String direction = sourceX == destinationX && sourceZ == destinationZ
+				? "same_tile"
+				: sourceX + "," + sourceZ + "->" + destinationX + "," + destinationZ;
+		System.out.println("[FP-DOOR-PARITY]"
+				+ " direction=" + direction
+				+ " currentFine=" + fromFineX + "," + fromFineZ
+				+ " candidateFine=" + candidateFineX + "," + candidateFineZ
+				+ " serverFineIfKnown=" + serverFineIfKnown
+				+ " sourceTile=" + sourceX + "," + sourceZ
+				+ " destinationTile=" + destinationX + "," + destinationZ
+				+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ
+				+ " predictedTile=" + ((int) (predictedSubX >> 16) >> 7) + "," + ((int) (predictedSubZ >> 16) >> 7)
+				+ " anchorTile=" + movementAnchorTileX + "," + movementAnchorTileZ
+				+ " pathQueueTile=" + PlayerList.self.movementQueueX[0] + "," + PlayerList.self.movementQueueZ[0]
+				+ " sourceFlags=0x" + Integer.toHexString(sampleFlags(map, sourceX, sourceZ))
+				+ " destinationFlags=0x" + Integer.toHexString(sampleFlags(map, destinationX, destinationZ))
+				+ " playerSize=" + size
+				+ " vanillaReachable=" + vanillaReachable
+				+ " modernGameplayReachable=" + modernGameplayReachable
+				+ " modernFineReachable=" + modernFineReachable
+				+ " blockedX=" + blockedX + " blockedZ=" + blockedZ
+				+ " collisionSourceTile=" + fineToCollisionTile(fromFineX, size) + "," + fineToCollisionTile(fromFineZ, size)
+				+ " collisionCandidateTile=" + fineToCollisionTile(candidateFineX, size) + "," + fineToCollisionTile(candidateFineZ, size)
+				+ " fineInset=" + FINE_FOOTPRINT_INSET + "/128"
+				+ " rejectStage=" + rejectStage + " rejectReason=" + rejectReason);
+	}
+
+	/**
+	 * Finds a small, valid fine entry inside a tile vanilla already accepts.
+	 * This prevents the visual inset from making a legal gameplay tile
+	 * unreachable while retaining fine collision once inside the tile.
+	 */
+	private static int[] findFineEntryInVanillaTile(int tileX, int tileZ, int nearX, int nearZ, int size) {
+		int centerX = tileX * 128 + size * 64;
+		int centerZ = tileZ * 128 + size * 64;
+		int bestDistance = Integer.MAX_VALUE;
+		int[] best = null;
+		for (int dx = -48; dx <= 48; dx += 16) {
+			for (int dz = -48; dz <= 48; dz += 16) {
+				int candidateX = centerX + dx;
+				int candidateZ = centerZ + dz;
+				if (!isFinePositionValid(candidateX, candidateZ, size)) continue;
+				int distance = Math.abs(candidateX - nearX) + Math.abs(candidateZ - nearZ);
+				if (distance < bestDistance) {
+					bestDistance = distance;
+					best = new int[]{candidateX, candidateZ};
+				}
+			}
+		}
+		return best;
+	}
+
+	private static boolean hasFineEdgeClearance(CollisionMap map, int fineX, int fineZ,
+			int tileX, int tileZ, int size) {
+		int leftBoundary = tileX * 128;
+		int rightBoundary = (tileX + size) * 128;
+		int bottomBoundary = tileZ * 128;
+		int topBoundary = (tileZ + size) * 128;
+		int minFineX = leftBoundary + FINE_FOOTPRINT_INSET;
+		int maxFineX = rightBoundary - FINE_FOOTPRINT_INSET;
+		int minFineZ = bottomBoundary + FINE_FOOTPRINT_INSET;
+		int maxFineZ = topBoundary - FINE_FOOTPRINT_INSET;
+
+		// The outer footprint may not overlap a flagged wall edge. Check both
+		// source and reciprocal destination flags because malformed/rotated cache
+		// data can expose only one half of a wall pair.
+		if (fineX < minFineX && hasWestBoundaryBlock(map, tileX, tileZ, size)) return false;
+		if (fineX > maxFineX && hasEastBoundaryBlock(map, tileX, tileZ, size)) return false;
+		if (fineZ < minFineZ && hasSouthBoundaryBlock(map, tileX, tileZ, size)) return false;
+		if (fineZ > maxFineZ && hasNorthBoundaryBlock(map, tileX, tileZ, size)) return false;
+
+		// Internal footprint edges matter for multi-tile entities and rotated
+		// scenery. A blocked edge inside the footprint means the whole fine
+		// position overlaps collision geometry.
+		for (int x = tileX; x < tileX + size - 1; x++) {
+			for (int z = tileZ; z < tileZ + size; z++) {
+				if ((sampleFlags(map, x, z) & EAST_WALL) != 0
+						|| (sampleFlags(map, x + 1, z) & WEST_WALL) != 0) return false;
+			}
+		}
+		for (int x = tileX; x < tileX + size; x++) {
+			for (int z = tileZ; z < tileZ + size - 1; z++) {
+				if ((sampleFlags(map, x, z) & POSITIVE_Z_WALL) != 0
+						|| (sampleFlags(map, x, z + 1) & NEGATIVE_Z_WALL) != 0) return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Converts a fine position to the CollisionMap coordinate consumed by the
+	 * vanilla size-1 route tests. A player is centered at {@code tile * 128 +
+	 * 64}, so subtracting 64 delayed every size-1 collision transition by half
+	 * a tile while packet/gameplay transitions already used {@code fine >> 7}.
+	 * Larger transformed entities retain their vanilla lower-left footprint
+	 * convention.
+	 */
+	private static int fineToCollisionTile(int fine, int size) {
+		return size == 1 ? fine >> 7 : (fine - size * 64) >> 7;
+	}
+
+	private static boolean hasWestBoundaryBlock(CollisionMap map, int x, int z, int size) {
+		for (int tz = z; tz < z + size; tz++) {
+			if ((sampleFlags(map, x, tz) & WEST_WALL) != 0
+					|| (sampleFlags(map, x - 1, tz) & EAST_WALL) != 0) return true;
+		}
+		return false;
+	}
+
+	private static boolean hasEastBoundaryBlock(CollisionMap map, int x, int z, int size) {
+		for (int tz = z; tz < z + size; tz++) {
+			if ((sampleFlags(map, x + size - 1, tz) & EAST_WALL) != 0
+					|| (sampleFlags(map, x + size, tz) & WEST_WALL) != 0) return true;
+		}
+		return false;
+	}
+
+	private static boolean hasSouthBoundaryBlock(CollisionMap map, int x, int z, int size) {
+		for (int tx = x; tx < x + size; tx++) {
+			if ((sampleFlags(map, tx, z) & NEGATIVE_Z_WALL) != 0
+					|| (sampleFlags(map, tx, z - 1) & POSITIVE_Z_WALL) != 0) return true;
+		}
+		return false;
+	}
+
+	private static boolean hasNorthBoundaryBlock(CollisionMap map, int x, int z, int size) {
+		for (int tx = x; tx < x + size; tx++) {
+			if ((sampleFlags(map, tx, z + size - 1) & POSITIVE_Z_WALL) != 0
+					|| (sampleFlags(map, tx, z + size) & NEGATIVE_Z_WALL) != 0) return true;
+		}
+		return false;
+	}
+
+	private static int[] findNearestValidFine(int fineX, int fineZ, int size) {
+		CollisionMap map = Player.plane >= 0 && Player.plane < PathFinder.collisionMaps.length
+				? PathFinder.collisionMaps[Player.plane] : null;
+		if (map == null) return null;
+		int bestDistance = Integer.MAX_VALUE;
+		int[] best = null;
+		for (int dx = -MAX_FINE_RECOVERY_DISTANCE; dx <= MAX_FINE_RECOVERY_DISTANCE; dx += 16) {
+			for (int dz = -MAX_FINE_RECOVERY_DISTANCE; dz <= MAX_FINE_RECOVERY_DISTANCE; dz += 16) {
+				int candidateX = fineX + dx;
+				int candidateZ = fineZ + dz;
+				if (!isFinePositionValid(map, candidateX, candidateZ, size)) continue;
+				int distance = Math.abs(dx) + Math.abs(dz);
+				if (distance < bestDistance) {
+					bestDistance = distance;
+					best = new int[]{candidateX, candidateZ};
+				}
+			}
+		}
+		return best;
+	}
+
+	private static void clearValidFineHistory() {
+		validFineHistoryHead = 0;
+		validFineHistoryCount = 0;
+	}
+
+	private static void rememberValidFine(int fineX, int fineZ) {
+		if (!lastValidInitialized && !isFinePositionValid(fineX, fineZ, PlayerList.self.getSize())) return;
+		int index = (validFineHistoryHead + validFineHistoryCount) % VALID_FINE_HISTORY_CAPACITY;
+		if (validFineHistoryCount == VALID_FINE_HISTORY_CAPACITY) {
+			index = validFineHistoryHead;
+			validFineHistoryHead = (validFineHistoryHead + 1) % VALID_FINE_HISTORY_CAPACITY;
+		} else {
+			validFineHistoryCount++;
+		}
+		validFineHistoryX[index] = fineX;
+		validFineHistoryZ[index] = fineZ;
+	}
+
+	private static int[] findRecentValidFine(int fineX, int fineZ, int size) {
+		int bestDistance = Integer.MAX_VALUE;
+		int[] best = null;
+		for (int i = 0; i < validFineHistoryCount; i++) {
+			int index = (validFineHistoryHead + i) % VALID_FINE_HISTORY_CAPACITY;
+			int candidateX = validFineHistoryX[index];
+			int candidateZ = validFineHistoryZ[index];
+			if (!isFinePositionValid(candidateX, candidateZ, size)) continue;
+			int distance = fineDistance(candidateX, candidateZ, fineX, fineZ);
+			if (distance <= MAX_FINE_RECOVERY_DISTANCE && distance < bestDistance) {
+				bestDistance = distance;
+				best = new int[]{candidateX, candidateZ};
+			}
+		}
+		return best;
+	}
+
+	private static int fineDistance(int x1, int z1, int x2, int z2) {
+		return Math.abs(x1 - x2) + Math.abs(z1 - z2);
+	}
+
+	private static boolean canOccupy(CollisionMap map, int x, int z, int size) {
+		for (int tx = x; tx < x + size; tx++) {
+			for (int tz = z; tz < z + size; tz++) {
+				if ((map.flags[tx][tz] & BLOCKED_TILE_MASK) != 0) return false;
+			}
+		}
+		return true;
+	}
+
+	private static boolean crossesX(CollisionMap map, int x, int z, int size, int wall) {
+		for (int tz = z; tz < z + size; tz++) if ((map.flags[x][tz] & wall) != 0) return false;
+		return true;
+	}
+
+	private static boolean crossesZ(CollisionMap map, int x, int z, int size, int wall) {
+		for (int tx = x; tx < x + size; tx++) if ((map.flags[tx][z] & wall) != 0) return false;
+		return true;
+	}
+
+	private static int sampleFlags(CollisionMap map, int x, int z) {
+		return map != null && x >= 0 && x < map.flags.length && z >= 0 && z < map.flags[x].length
+				? map.flags[x][z] : BLOCKED_TILE_MASK;
+	}
+
 	// =====================================================================
 	// DDA TILE BOUNDARY DETECTION
 	// =====================================================================
 
 	/**
-	 * Digital Differential Analyzer: calculate which tile boundary the continuous
-	 * trajectory crosses first, and send a walk request for that tile.
-	 *
-	 * <p>Correction 4: simultaneous X+Z boundary → diagonal target tile.
-	 * <p>Correction 5: exact boundary math without -1 fudge.
+	 * Reports only the tile the collision-resolved prediction is currently in.
+	 * The previous boundary look-ahead sent the next tile before the player had
+	 * entered it, which made a blocked tile pending one tile too early.
 	 */
 	private static void performDDACheck() {
-		int currentTileX = (int) (predictedSubX >> 16) >> 7;
-		int currentTileZ = (int) (predictedSubZ >> 16) >> 7;
-
-		int ticksX = Integer.MAX_VALUE;
-		int ticksZ = Integer.MAX_VALUE;
-		int nextTileX = currentTileX;
-		int nextTileZ = currentTileZ;
-		long distXQ16 = 0;
-		long distZQ16 = 0;
-
-		// X axis
-		if (velocityXQ16 > 0) {
-			// Positive: next boundary is RIGHT edge of current tile = (tile+1)*128
-			int boundaryFine = (currentTileX + 1) << 7;
-			distXQ16 = ((long) boundaryFine << 16) - predictedSubX;
-			ticksX = (int) (distXQ16 / velocityXQ16);
-			nextTileX = currentTileX + 1;
-		} else if (velocityXQ16 < 0) {
-			// Negative: next boundary is LEFT edge of current tile = tile*128
-			int boundaryFine = currentTileX << 7;
-			distXQ16 = predictedSubX - ((long) boundaryFine << 16);
-			ticksX = (int) (distXQ16 / (-velocityXQ16));
-			nextTileX = currentTileX - 1;
-		}
-
-		// Z axis
-		if (velocityZQ16 > 0) {
-			int boundaryFine = (currentTileZ + 1) << 7;
-			distZQ16 = ((long) boundaryFine << 16) - predictedSubZ;
-			ticksZ = (int) (distZQ16 / velocityZQ16);
-			nextTileZ = currentTileZ + 1;
-		} else if (velocityZQ16 < 0) {
-			int boundaryFine = currentTileZ << 7;
-			distZQ16 = predictedSubZ - ((long) boundaryFine << 16);
-			ticksZ = (int) (distZQ16 / (-velocityZQ16));
-			nextTileZ = currentTileZ - 1;
-		}
-
-		// Determine which boundary is crossed first
-		int targetTileX = currentTileX;
-		int targetTileZ = currentTileZ;
-		boolean crossed = false;
-
-		if (ticksX != Integer.MAX_VALUE && ticksZ != Integer.MAX_VALUE) {
-			// Cross-multiply to compare without floating point:
-			// ticksX < ticksZ  ⟺  distX * |velZ| < distZ * |velX|
-			long crossX = distXQ16 * (long) Math.abs(velocityZQ16);
-			long crossZ = distZQ16 * (long) Math.abs(velocityXQ16);
-			if (crossX < crossZ) {
-				targetTileX = nextTileX;
-				crossed = true;
-			} else if (crossZ < crossX) {
-				targetTileZ = nextTileZ;
-				crossed = true;
-			} else {
-				// SIMULTANEOUS: diagonal crossing (Correction 4)
-				targetTileX = nextTileX;
-				targetTileZ = nextTileZ;
-				crossed = true;
-			}
-		} else if (ticksX != Integer.MAX_VALUE) {
-			targetTileX = nextTileX;
-			crossed = true;
-		} else if (ticksZ != Integer.MAX_VALUE) {
-			targetTileZ = nextTileZ;
-			crossed = true;
-		}
-
-		if (crossed) {
-			maybeSendWalkRequest(targetTileX, targetTileZ);
-		}
+		int currentTileX = ((int) (predictedSubX >> 16)) >> 7;
+		int currentTileZ = ((int) (predictedSubZ >> 16)) >> 7;
+		maybeSendWalkRequest(currentTileX, currentTileZ);
 	}
 
 	// =====================================================================
@@ -784,37 +1540,133 @@ public final class ModernMovementController {
 	 * last server-reported tile. Uses LOCAL coords internally, converts to
 	 * WORLD only for the packet.
 	 */
-	private static void maybeSendWalkRequest(int targetLocalTileX, int targetLocalTileZ) {
+	private static boolean prepareTileTransition(int targetLocalTileX, int targetLocalTileZ) {
+		return maybeSendWalkRequest(targetLocalTileX, targetLocalTileZ);
+	}
+
+	private static boolean maybeSendWalkRequest(int targetLocalTileX, int targetLocalTileZ) {
 		// Dedup: don't send if this exact tile is already pending
-		if (pendingContains(targetLocalTileX, targetLocalTileZ)) return;
+		if (pendingContains(targetLocalTileX, targetLocalTileZ)) {
+			logPacketDecision(false, "pending_duplicate", targetLocalTileX, targetLocalTileZ);
+			return true;
+		}
 
 		// Don't send if target == last server reported (already confirmed)
-		if (targetLocalTileX == lastServerReportedTileX
-				&& targetLocalTileZ == lastServerReportedTileZ) return;
+		if ((targetLocalTileX == lastServerReportedTileX
+				&& targetLocalTileZ == lastServerReportedTileZ)
+				|| (targetLocalTileX == movementAnchorTileX
+				&& targetLocalTileZ == movementAnchorTileZ)) {
+			logPacketDecision(false, "already_authority", targetLocalTileX, targetLocalTileZ);
+			return true;
+		}
 
 		// Validate local tile bounds
 		if (targetLocalTileX < 0 || targetLocalTileX > 103
-				|| targetLocalTileZ < 0 || targetLocalTileZ > 103) return;
+				|| targetLocalTileZ < 0 || targetLocalTileZ > 103) {
+			logPacketDecision(false, "local_tile_out_of_bounds", targetLocalTileX, targetLocalTileZ);
+			return false;
+		}
+		CollisionMap map = PathFinder.collisionMaps[Player.plane];
+		String rejectionReason = reportedTileRejectionReason(map, targetLocalTileX, targetLocalTileZ,
+				PlayerList.self.getSize());
+		if (rejectionReason != null) {
+			logPacketDecision(false, rejectionReason, targetLocalTileX, targetLocalTileZ);
+			return false;
+		}
 
 		// Convert LOCAL → WORLD for packet (Correction 7: explicit coordinate space)
 		int worldX = Camera.originX + targetLocalTileX;
 		int worldZ = Camera.originZ + targetLocalTileZ;
 
 		ClientProt.sendModernWalkPacket(worldX, worldZ, intent.runRequested);
+		lastPacketAccepted = true;
+		lastPacketReason = "validated";
+		lastPacketTargetX = targetLocalTileX;
+		lastPacketTargetZ = targetLocalTileZ;
 		// P4B: track the last sent target for F11 EXIT diagnostics.
 		lastSentTileX = targetLocalTileX;
 		lastSentTileZ = targetLocalTileZ;
 
 		// Phase 3B fix #3: diagnostic logging for server sync analysis
-		System.out.println("[MODERN-MOVE] PACKET: localTile=" + targetLocalTileX + "," + targetLocalTileZ
+		System.out.println("[MODERN-MOVE] PACKET: packetAccepted=true reason=validated localTile=" + targetLocalTileX + "," + targetLocalTileZ
 				+ " worldTile=" + worldX + "," + worldZ
 				+ " run=" + intent.runRequested
 				+ " predictedTile=" + ((int)(predictedSubX >> 16) >> 7) + "," + ((int)(predictedSubZ >> 16) >> 7)
 				+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ
-				+ " pending=" + (pendingTail - pendingHead));
+				+ " anchor=" + movementAnchorTileX + "," + movementAnchorTileZ
+				+ " pendingTail=" + pendingTail
+				+ " pendingLast=" + (pendingEmpty() ? "none" : pendingTileX[(pendingTail - 1) % PENDING_CAPACITY]
+						+ "," + pendingTileZ[(pendingTail - 1) % PENDING_CAPACITY])
+				+ " distanceFromServer=" + Math.max(Math.abs(((int) (predictedSubX >> 16) >> 7) - lastServerReportedTileX),
+						Math.abs(((int) (predictedSubZ >> 16) >> 7) - lastServerReportedTileZ)));
 
 		// Record in pending ring buffer (LOCAL coords)
 		pendingAdd(targetLocalTileX, targetLocalTileZ);
+		return true;
+	}
+
+	private static void logPacketDecision(boolean accepted, String reason, int targetX, int targetZ) {
+		lastPacketAccepted = accepted;
+		lastPacketReason = reason;
+		lastPacketTargetX = targetX;
+		lastPacketTargetZ = targetZ;
+		if (accepted || client.loop - lastPacketDiagnosticTick >= 25) {
+			lastPacketDiagnosticTick = client.loop;
+			int predictedX = (int) (predictedSubX >> 16) >> 7;
+			int predictedZ = (int) (predictedSubZ >> 16) >> 7;
+			int authorityX = lastServerReportedTileX >= 0 ? lastServerReportedTileX : movementAnchorTileX;
+			int authorityZ = lastServerReportedTileZ >= 0 ? lastServerReportedTileZ : movementAnchorTileZ;
+			System.out.println("[MODERN-MOVE] PACKET_DECISION packetAccepted=" + accepted
+					+ " reason=" + reason + " target=" + targetX + "," + targetZ
+					+ " anchor=" + movementAnchorTileX + "," + movementAnchorTileZ
+					+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ
+					+ " predictedTile=" + predictedX + "," + predictedZ
+					+ " pendingTail=" + pendingTail + " pendingCount=" + getPendingCount()
+					+ " distanceFromServer=" + Math.max(Math.abs(predictedX - authorityX),
+							Math.abs(predictedZ - authorityZ)));
+		}
+	}
+
+	private static String pendingTilesSummary() {
+		if (pendingEmpty()) return "none";
+		StringBuilder result = new StringBuilder();
+		for (int i = pendingHead; i < pendingTail; i++) {
+			if (result.length() > 0) result.append('|');
+			int index = i % PENDING_CAPACITY;
+			result.append(pendingTileX[index]).append(',').append(pendingTileZ[index]);
+		}
+		return result.toString();
+	}
+
+	/** Final packet invariant: never report a tile the live CollisionMap rejects. */
+	private static String reportedTileRejectionReason(CollisionMap map, int targetX, int targetZ, int size) {
+		int fromX = movementAnchorTileX >= 0 ? movementAnchorTileX : lastServerReportedTileX;
+		int fromZ = movementAnchorTileZ >= 0 ? movementAnchorTileZ : lastServerReportedTileZ;
+		if (fromX < 0 || fromZ < 0) {
+			fromX = targetX;
+			fromZ = targetZ;
+		}
+		if (!pendingEmpty()) {
+			int pendingIndex = (pendingTail - 1) % PENDING_CAPACITY;
+			fromX = pendingTileX[pendingIndex];
+			fromZ = pendingTileZ[pendingIndex];
+		}
+		if (map == null) return "collision_map_missing";
+		if (!canOccupy(map, targetX, targetZ, size)) return "destination_occupied";
+		if (fromX == targetX && fromZ == targetZ) return null;
+		if (Math.abs(targetX - fromX) > 1 || Math.abs(targetZ - fromZ) > 1) return "not_adjacent_to_authority";
+		if (!map.method3054(fromZ, targetZ, targetX, fromX)) return "vanilla_method3054_rejected";
+		// Vanilla's size-1 route test is authoritative for open doorways. Do not
+		// reject a passage solely because a neighbouring/stale raw reciprocal bit
+		// disagrees; the fine footprint checks above still prevent wall clipping.
+		if (size != 1 && !canCrossBoundary(map, fromX, fromZ, targetX, targetZ, size)) {
+			return "reciprocal_edge_blocked";
+		}
+		return null;
+	}
+
+	private static boolean isValidReportedTile(CollisionMap map, int targetX, int targetZ, int size) {
+		return reportedTileRejectionReason(map, targetX, targetZ, size) == null;
 	}
 
 	/**
@@ -847,19 +1699,20 @@ public final class ModernMovementController {
 	 * discard entries through and including that entry.
 	 * If genuinely different, clear stale pending prediction.
 	 */
-	private static void consumePendingExact(int serverTileX, int serverTileZ) {
+	private static boolean consumePendingExact(int serverTileX, int serverTileZ) {
 		// Search for exact match in pending ring
 		for (int i = pendingHead; i < pendingTail; i++) {
 			int idx = i % PENDING_CAPACITY;
 			if (pendingTileX[idx] == serverTileX && pendingTileZ[idx] == serverTileZ) {
 				// Found: discard through and including this entry
 				pendingHead = i + 1;
-				return;
+				return true;
 			}
 		}
 		// No exact match: server reported a genuinely different tile.
 		// Clear stale pending prediction (authoritative route divergence).
 		clearPending();
+		return false;
 	}
 
 	private static void clearPending() {
@@ -914,6 +1767,27 @@ public final class ModernMovementController {
 		// Timeout with pending outstanding → do nothing (server is processing)
 	}
 
+	private static void logSnapbackCause(String source, int oldFineX, int oldFineZ,
+			int newFineX, int newFineZ, boolean currentFineValid) {
+		int predictedFineX = (int) (predictedSubX >> 16);
+		int predictedFineZ = (int) (predictedSubZ >> 16);
+		System.out.println("[MODERN-SNAPBACK]"
+				+ " beforeFine=" + oldFineX + "," + oldFineZ
+				+ " afterFine=" + newFineX + "," + newFineZ
+				+ " beforeTile=" + (oldFineX >> 7) + "," + (oldFineZ >> 7)
+				+ " afterTile=" + (newFineX >> 7) + "," + (newFineZ >> 7)
+				+ " predictedTile=" + (predictedFineX >> 7) + "," + (predictedFineZ >> 7)
+				+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ
+				+ " anchor=" + movementAnchorTileX + "," + movementAnchorTileZ
+				+ " pending=" + pendingTilesSummary()
+				+ " distanceTiles=" + Math.max(Math.abs((oldFineX >> 7) - (newFineX >> 7)),
+						Math.abs((oldFineZ >> 7) - (newFineZ >> 7)))
+				+ " cause=" + source
+				+ " currentFineValid=" + currentFineValid
+				+ " lastPacket=" + lastPacketAccepted + ":" + lastPacketTargetX + "," + lastPacketTargetZ
+				+ " lastRejectReason=" + lastPacketReason);
+	}
+
 	/**
 	 * Rebase prediction from lastServerReported tile, preserving the fractional
 	 * offset within the tile so the player doesn't snap to tile centre.
@@ -935,8 +1809,20 @@ public final class ModernMovementController {
 		if (offsetX < -128) offsetX = -128;
 		if (offsetZ > 128) offsetZ = 128;
 		if (offsetZ < -128) offsetZ = -128;
-		predictedSubX = ((long) (serverFineX + offsetX)) << 16;
-		predictedSubZ = ((long) (serverFineZ + offsetZ)) << 16;
+		int targetFineX = serverFineX + offsetX;
+		int targetFineZ = serverFineZ + offsetZ;
+		if (Math.max(Math.abs((currentFineX >> 7) - (targetFineX >> 7)),
+				Math.abs((currentFineZ >> 7) - (targetFineZ >> 7))) > 1) {
+			logSnapbackCause(lastReconcileSource, currentFineX, currentFineZ,
+					targetFineX, targetFineZ,
+					isFinePositionValid(currentFineX, currentFineZ, PlayerList.self.getSize()));
+		}
+		System.out.println("[MODERN-MOVE] REBASE_APPLY fromFine=" + currentFineX + "," + currentFineZ
+				+ " serverTile=" + lastServerReportedTileX + "," + lastServerReportedTileZ
+				+ " targetFine=" + (serverFineX + offsetX) + "," + (serverFineZ + offsetZ)
+				+ " pendingTail=" + pendingTail);
+		predictedSubX = ((long) targetFineX) << 16;
+		predictedSubZ = ((long) targetFineZ) << 16;
 		velocityXQ16 = 0;
 		velocityZQ16 = 0;
 	}

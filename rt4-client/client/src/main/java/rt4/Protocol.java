@@ -748,9 +748,9 @@ public class Protocol {
 			// Phase 3B: drain legacy queue, store authoritative server tile
 			// Round #6B/C P7: only while Q16 owns locomotion — in MODERN FREE
 			// the vanilla movement queue must keep these steps for method2247.
-			// Round P4B: isDrainingServerSteps() extends the gate through the
-			// short post-F11-exit window so residual in-flight steps are
-			// consumed instead of replaying as vanilla queue movement.
+			// F11 transitions are processed on the game thread before packet
+			// decoding. Once ORIGINAL owns, residual steps follow this same
+			// vanilla move() path and are not swallowed.
 			if (ModernMovementController.isDrainingServerSteps()) {
 				ModernMovementController.onServerStep(
 					PlayerList.self.movementQueueX[0],

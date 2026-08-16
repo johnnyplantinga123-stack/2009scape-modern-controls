@@ -1144,6 +1144,9 @@ public class LoginManager {
 			}
 		}
 		WorldMap.method2720();
+		// Collision maps and scene locs are fully rebuilt at this point. Keep a
+		// compact boundary snapshot for comparison with the F11 handoff.
+		DebugOverlay.captureMovementBoundary("AFTER_REGION_REBUILD");
 		client.audioLoop();
 		GameShell.resetTimer();
 	}
