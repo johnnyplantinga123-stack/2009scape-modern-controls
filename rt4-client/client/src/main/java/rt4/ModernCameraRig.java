@@ -752,7 +752,7 @@ public final class ModernCameraRig {
 
 		Camera.renderX = fineX;
 		Camera.renderZ = fineZ;
-		Camera.anInt40 = groundHeight - 200; // EYE_HEIGHT = 200
+		Camera.anInt40 = groundHeight - FirstPersonCamera.getEyeHeight();
 		Camera.cameraYaw = FirstPersonCamera.getYaw();
 		Camera.cameraPitch = 0; // Horizon
 		Camera.yawTarget = Camera.cameraYaw;

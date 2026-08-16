@@ -2298,9 +2298,9 @@ public class SceneGraph {
 	}
 
 	/**
-	 * Reuses live roof LOCs from the structural cluster around a first-person
-	 * player. Roof flags identify interior tiles, while the corresponding mesh
-	 * may be stored on a neighbouring origin tile or a multi-tile footprint.
+	 * Reuses every live roof LOC in the SceneGraph visibility window. Roof flags
+	 * identify the indoor source, but ridges and corner pieces can be farther
+	 * than the player-local cluster while still visible looking upward.
 	 */
 	private static void renderLiveRoofUndersideCoverage() {
 		if (!ModernCeiling.isEnabled() || !GlRenderer.enabled || tileHeights == underwaterTileHeights) {
@@ -2310,23 +2310,21 @@ public class SceneGraph {
 		if (self == null || tiles == null) {
 			return;
 		}
-		int radius = ModernCeiling.getDirectRoofSearchRadius();
-		int playerX = self.xFine >> 7;
-		int playerZ = self.zFine >> 7;
 		// Entries are shared by every tile in their footprint. Claim the object
-		// identity rather than its origin: a large roof can cover this window
-		// even when its origin is outside it.
+		// identity rather than its origin: a large roof can cover this visibility
+		// window even when its origin/footprint starts outside the player tile.
 		IdentityHashMap<Scenery, Boolean> submitted = new IdentityHashMap<Scenery, Boolean>();
 		for (int level = Player.plane; level <= Player.plane + 1 && level < tiles.length; level++) {
 			Tile[][] planeTiles = tiles[level];
 			if (planeTiles == null) continue;
-			int x0 = Math.max(0, playerX - radius);
-			int x1 = Math.min(planeTiles.length - 1, playerX + radius);
+			int x0 = Math.max(0, LightingManager.anInt987);
+			int x1 = Math.min(planeTiles.length - 1, LightingManager.anInt15 - 1);
+			if (x0 > x1) continue;
 			for (int x = x0; x <= x1; x++) {
 				Tile[] row = planeTiles[x];
 				if (row == null) continue;
-				int z0 = Math.max(0, playerZ - radius);
-				int z1 = Math.min(row.length - 1, playerZ + radius);
+				int z0 = Math.max(0, LightingManager.anInt4698);
+				int z1 = Math.min(row.length - 1, LightingManager.anInt4866 - 1);
 				for (int z = z0; z <= z1; z++) {
 					Tile tile = row[z];
 					if (tile == null) continue;
@@ -3176,9 +3174,12 @@ public class SceneGraph {
 							gl.glPushAttrib(GL2.GL_POLYGON_BIT | GL2.GL_DEPTH_BUFFER_BIT);
 							if (!cullWasEnabled) gl.glEnable(GL2.GL_CULL_FACE);
 							gl.glCullFace(GL2.GL_FRONT);
-							local336.method1944(tiles, local350, false);
-							gl.glPopAttrib();
-							if (!cullWasEnabled) gl.glDisable(GL2.GL_CULL_FACE);
+							try {
+								local336.method1944(tiles, local350, false);
+							} finally {
+								gl.glPopAttrib();
+								if (!cullWasEnabled) gl.glDisable(GL2.GL_CULL_FACE);
+							}
 								ModernCeiling.noteDirectFloorMeshBatch(local336, tiles, local32, true);
 						}
 					}

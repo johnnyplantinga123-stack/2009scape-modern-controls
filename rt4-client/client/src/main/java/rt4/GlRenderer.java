@@ -113,6 +113,12 @@ public final class GlRenderer {
 
 	@OriginalMember(owner = "client!tf", name = "q", descriptor = "F")
 	private static final float aFloat34 = 0.09765625F;
+	/**
+	 * Vanilla uses 50 units. A first-person eye can stand much closer to a
+	 * collision wall, so retain a small but non-zero clip distance there.
+	 */
+	private static final float FIRST_PERSON_NEAR_CLIP = 2.0F;
+	private static final float VANILLA_NEAR_CLIP = 50.0F;
 
 	@OriginalMember(owner = "client!tf", name = "s", descriptor = "I")
 	private static int textureId = -1;
@@ -565,11 +571,20 @@ public final class GlRenderer {
 		@Pc(17) int local17 = (arg0 + arg2 - arg4 << 8) / arg8;
 		@Pc(25) int local25 = (arg1 - arg5 << 8) / arg9;
 		@Pc(35) int local35 = (arg1 + arg3 - arg5 << 8) / arg9;
-		// Apply FOV scaling for first-person camera
+		// Apply FOV scaling for first-person camera.
+		// Scale the frustum extents by the same factor as the reduced near clip:
+		// this leaves matrix[0]/matrix[5] (and therefore the visible FOV) exactly
+		// unchanged. Only near-plane clipping becomes closer.
 		float fovScale = FirstPersonCamera.isActive() ? FirstPersonCamera.getProjectionScale() : 1.0f;
+		float nearClip = getNearClipDistance();
+		float nearScale = nearClip / VANILLA_NEAR_CLIP;
 		gl.glMatrixMode(GL2.GL_PROJECTION);
 		gl.glLoadIdentity();
-		method4175((float) local7 * aFloat34 * fovScale, (float) local17 * aFloat34 * fovScale, (float) -local35 * aFloat34 * fovScale, (float) -local25 * aFloat34 * fovScale, 50.0F, (float) GlobalConfig.VIEW_DISTANCE);
+		method4175((float) local7 * aFloat34 * fovScale * nearScale,
+				(float) local17 * aFloat34 * fovScale * nearScale,
+				(float) -local35 * aFloat34 * fovScale * nearScale,
+				(float) -local25 * aFloat34 * fovScale * nearScale,
+				nearClip, (float) GlobalConfig.VIEW_DISTANCE);
 		setViewportBounds(arg0, canvasHeight - arg1 - arg3, arg2, arg3);
 		gl.glMatrixMode(GL2.GL_MODELVIEW);
 		gl.glLoadIdentity();
@@ -585,6 +600,11 @@ public final class GlRenderer {
 		Rasteriser.screenUpperX = local17;
 		Rasteriser.screenLowerY = local25;
 		Rasteriser.screenUpperY = local35;
+	}
+
+	/** The active camera's near clip used by both projection and model culling. */
+	static int getNearClipDistance() {
+		return FirstPersonCamera.isActive() ? (int) FIRST_PERSON_NEAR_CLIP : (int) VANILLA_NEAR_CLIP;
 	}
 
 	@OriginalMember(owner = "client!tf", name = "d", descriptor = "(Z)V")

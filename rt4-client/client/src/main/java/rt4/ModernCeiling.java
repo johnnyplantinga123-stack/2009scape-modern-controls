@@ -60,8 +60,6 @@ public final class ModernCeiling {
 	public static final boolean DEBUG_TILE_TRACE = false;
 	/** Per-triangle console output is reserved for invalid geometry only. */
 	public static final boolean DEBUG_UPCLIP = false;
-	/** Search the live roof LOC cluster around the structurally roofed player. */
-	private static final int DIRECT_ROOF_SEARCH_RADIUS = 4;
 
 	// ---- Round #7 diagnostics (read by DebugOverlay) ----
 	/** Whether the player's tile has a real floor tile on the plane above. */
@@ -214,10 +212,6 @@ public final class ModernCeiling {
 		}
 	}
 
-	static int getDirectRoofSearchRadius() {
-		return DIRECT_ROOF_SEARCH_RADIUS;
-	}
-
 	/**
 	 * Compact proof for the player tile's contribution to the exact GlTile path.
 	 * The count comes from the same indexed fan groups that method1944 submits;
@@ -289,6 +283,11 @@ public final class ModernCeiling {
 		if (active) directRoofModelSubmissionMode = 0;
 	}
 
+	/** True only while the reissued underside Entity.render call is active. */
+	static boolean isLiveRoofUndersideSubmission() {
+		return directRoofModelSubmissionMode == 2;
+	}
+
 	/** Called only by GlModel at its normal material/index-group draw loop. */
 	static void noteLiveRoofModelDraw(int indexGroups, int triangles) {
 		if (directRoofModelSubmissionMode == 1) {
@@ -316,32 +315,31 @@ public final class ModernCeiling {
 	private static boolean isLiveRoofSearchCandidate(Scenery scenery) {
 		Player self = PlayerList.self;
 		if (self == null || scenery.level < Player.plane || scenery.level > Player.plane + 1) return false;
-		int x = self.xFine >> 7;
-		int z = self.zFine >> 7;
-		int distanceX = x < scenery.xMin ? scenery.xMin - x : x > scenery.xMax ? x - scenery.xMax : 0;
-		int distanceZ = z < scenery.zMin ? scenery.zMin - z : z > scenery.zMax ? z - scenery.zMax : 0;
-		if (Math.max(distanceX, distanceZ) > DIRECT_ROOF_SEARCH_RADIUS) return false;
 		int shape = (int) (scenery.key >>> 14 & 0x3FL);
 		return shape >= LocType.ROOF_STRAIGHT && shape <= LocType.ROOFEDGE_SQUARECORNER;
 	}
 
 	/**
 	 * Roof LOCs are stored on their origin/footprint tiles, not necessarily on
-	 * the player tile that carries TILE_FLAG_UNDER_ROOF. Inspect that bounded
-	 * cluster before rendering so the trace proves the live source selection.
+	 * the player tile that carries TILE_FLAG_UNDER_ROOF. Inspect the full live
+	 * SceneGraph visibility window: roof ridges/corners can be visible from more
+	 * than four tiles away, especially when the player looks upward.
 	 */
 	private static void scanLiveRoofCandidates() {
 		Player self = PlayerList.self;
 		if (self == null || SceneGraph.tiles == null) return;
-		int playerX = self.xFine >> 7;
-		int playerZ = self.zFine >> 7;
 		for (int plane = Player.plane; plane <= Player.plane + 1 && plane < SceneGraph.tiles.length; plane++) {
 			Tile[][] level = SceneGraph.tiles[plane];
 			if (level == null) continue;
-			for (int x = Math.max(0, playerX - DIRECT_ROOF_SEARCH_RADIUS); x <= Math.min(level.length - 1, playerX + DIRECT_ROOF_SEARCH_RADIUS); x++) {
+			int x0 = Math.max(0, LightingManager.anInt987);
+			int x1 = Math.min(level.length - 1, LightingManager.anInt15 - 1);
+			if (x0 > x1) continue;
+			for (int x = x0; x <= x1; x++) {
 				Tile[] row = level[x];
 				if (row == null) continue;
-				for (int z = Math.max(0, playerZ - DIRECT_ROOF_SEARCH_RADIUS); z <= Math.min(row.length - 1, playerZ + DIRECT_ROOF_SEARCH_RADIUS); z++) {
+				int z0 = Math.max(0, LightingManager.anInt4698);
+				int z1 = Math.min(row.length - 1, LightingManager.anInt4866 - 1);
+				for (int z = z0; z <= z1; z++) {
 					Tile tile = row[z];
 					if (tile == null) continue;
 					for (int i = 0; i < tile.sceneryLen; i++) {

@@ -89,6 +89,11 @@ public final class FirstPersonCamera {
 		return active;
 	}
 
+	/** Shared by the immediate rig hand-off to avoid a first-frame height snap. */
+	static int getEyeHeight() {
+		return EYE_HEIGHT;
+	}
+
 	/**
 	 * Returns whether the FP UI-cursor substate is active (CTRL held).
 	 * While true, mouse-look is suspended and the normal RuneScape cursor
@@ -346,17 +351,16 @@ public final class FirstPersonCamera {
 			return;
 		}
 
-		// Terrain is valid — compute camera height from terrain data
+		// Terrain is valid — derive the eye from the entity's stable world anchor,
+		// never from the animated player model. Walking/turning animations can
+		// deform that model, but must not make first-person view bob or detach.
 		int groundHeight = SceneGraph.getTileHeight(Player.plane, fpCamX, fpCamZ);
 		hasValidPosition = true;
 
 		// --- Write to Camera fields ---
 		Camera.renderX = fpCamX;
 		Camera.renderZ = fpCamZ;
-		// anInt40 is the height component: terrain height minus eye offset.
-		// RT4 convention: tileHeights are negative, so anInt40 = terrainHeight - 200
-		// places the camera 200 units above the terrain surface.
-		Camera.anInt40 = groundHeight - EYE_HEIGHT - fpCamYOffset;
+		Camera.anInt40 = stableHeadAnchorY(groundHeight) - fpCamYOffset;
 		Camera.cameraYaw = fpCamYaw;
 		Camera.cameraPitch = fpCamPitch & 0x7FF;
 		Camera.yawTarget = fpCamYaw;
@@ -365,6 +369,14 @@ public final class FirstPersonCamera {
 		Camera.cameraX = fpCamX;
 		Camera.cameraZ = fpCamZ;
 		DebugOverlay.lastCameraWriter = "fp_camera";
+	}
+
+	/**
+	 * Stable player-head anchor in RT4 world coordinates. Do not use
+	 * Player#getMinY(): it is refreshed from the animated render model.
+	 */
+	private static int stableHeadAnchorY(int groundHeight) {
+		return groundHeight - EYE_HEIGHT;
 	}
 
 	/**

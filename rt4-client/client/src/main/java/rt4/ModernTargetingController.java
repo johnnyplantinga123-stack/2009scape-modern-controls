@@ -27,8 +27,14 @@ public final class ModernTargetingController {
 	/** Minimum Z depth after rotation to be considered visible. */
 	private static final int MIN_DEPTH = 50;
 
-	/** Hysteresis bonus: current target must be beaten by this much to switch. */
-	private static final double HYSTERESIS_MARGIN = 5.0;
+	/**
+	 * Hysteresis bonus: a replacement target must improve the normalized score
+	 * by this amount before it replaces the current target.  Scores produced by
+	 * {@link #scoreTarget(ModernTarget)} are normalized to roughly [0, 1]; the
+	 * old value of 5.0 therefore made a live target effectively permanent and
+	 * prevented the crosshair from switching to a newly frontmost entity.
+	 */
+	private static final double HYSTERESIS_MARGIN = 0.05;
 
 	/** Candidate pool (pre-allocated to avoid GC pressure). */
 	private static final ModernTarget[] candidates = new ModernTarget[MAX_CANDIDATES];

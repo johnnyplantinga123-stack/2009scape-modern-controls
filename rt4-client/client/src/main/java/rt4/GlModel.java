@@ -942,7 +942,7 @@ public final class GlModel extends Model {
 		@Pc(31) int local31 = arg7 * arg4 - arg5 * arg3 >> 16;
 		@Pc(41) int local41 = arg6 * arg1 + local31 * arg2 >> 16;
 		@Pc(53) int local53 = local41 + (local13 * arg2 + local21 * arg1 >> 16);
-		if (local53 <= 50) {
+		if (local53 <= GlRenderer.getNearClipDistance()) {
 			return;
 		}
 		@Pc(70) int local70 = local41 + (-local13 * arg2 + local17 * arg1 >> 16);
