@@ -414,24 +414,15 @@ public final class Player extends PathingEntity {
 		}
 		@Pc(25) SeqType local25 = this.seqId != -1 && this.anInt3420 == 0 ? SeqTypeList.get(this.seqId) : null;
 		@Pc(54) SeqType local54 = this.movementSeqId == -1 || this.aBoolean98 || this.movementSeqId == this.getBasType().idleAnimationId && local25 != null ? null : SeqTypeList.get(this.movementSeqId);
-		// FIRST_PERSON places the camera at the eye anchor.  Keep the real local
-		// body/equipment model and its server-driven animations, but remove only
-		// the local head slots so the player's own head/helm/hair cannot sit in
-		// front of the camera.  Other players, NPCs, CHASE, FREE and ORIGINAL
-		// continue through the untouched vanilla appearance path.
+		// FIRST_PERSON keeps a headless world-space body layer for looking down,
+		// excluding only world equipment. Camera-relative weapon/shield models are
+		// submitted separately at the end of this method.
+		// Other players, NPCs, CHASE, FREE and ORIGINAL use the vanilla model.
 		boolean hideFirstPersonHead = firstPersonActive;
-		@Pc(76) Model local76 = this.appearance.method1954(this.aClass147Array3, this.anInt3373, local54, local25, this.anInt3396, this.anInt3388, this.anInt3360, this.anInt3425, this.anInt3407, hideFirstPersonHead);
-		Model firstPersonArms = hideFirstPersonHead
-				? this.appearance.method1954(this.aClass147Array3, this.anInt3373, local54, local25, this.anInt3396, this.anInt3388, this.anInt3360, this.anInt3425, this.anInt3407, true, PlayerAppearance.FIRST_PERSON_ARMS_MASK)
-				: null;
-		Model firstPersonWeapon = hideFirstPersonHead
-				? this.appearance.method1954(this.aClass147Array3, this.anInt3373, local54, local25, this.anInt3396, this.anInt3388, this.anInt3360, this.anInt3425, this.anInt3407, true, PlayerAppearance.FIRST_PERSON_WEAPON_MASK)
-				: null;
-		Model firstPersonShield = hideFirstPersonHead
-				? this.appearance.method1954(this.aClass147Array3, this.anInt3373, local54, local25, this.anInt3396, this.anInt3388, this.anInt3360, this.anInt3425, this.anInt3407, true, PlayerAppearance.FIRST_PERSON_SHIELD_MASK)
-				: null;
+		@Pc(76) Model local76 = firstPersonActive
+				? this.appearance.method1954(this.aClass147Array3, this.anInt3373, local54, local25, this.anInt3396, this.anInt3388, this.anInt3360, this.anInt3425, this.anInt3407, true, PlayerAppearance.FIRST_PERSON_BODY_MASK)
+				: this.appearance.method1954(this.aClass147Array3, this.anInt3373, local54, local25, this.anInt3396, this.anInt3388, this.anInt3360, this.anInt3425, this.anInt3407);
 		FirstPersonViewModel.recordModel("full", local76);
-		FirstPersonViewModel.recordViewModels(firstPersonArms, firstPersonWeapon, firstPersonShield);
 		@Pc(79) int local79 = PlayerAppearance.getModelCacheSize();
 		if (GlRenderer.enabled && GameShell.maxMemory < 96 && local79 > 50) {
 			method501();
@@ -448,12 +439,14 @@ public final class Player extends PathingEntity {
 				aByteArrayArray8[anInt2863] = null;
 			}
 		}
-		if (local76 == null && firstPersonArms == null && firstPersonWeapon == null && firstPersonShield == null) {
+		if (local76 == null) {
+			if (hideFirstPersonHead) {
+				this.renderFirstPersonViewModel(local54, local25, arg1, arg2, arg3, arg4, arg9);
+			}
 			FirstPersonViewModel.diagnose(this, null, this.seqId != -1 ? this.seqId : this.movementSeqId, true);
 			return;
 		}
-		Model modelForBounds = local76 != null ? local76 : firstPersonArms != null ? firstPersonArms : firstPersonWeapon != null ? firstPersonWeapon : firstPersonShield;
-		this.minY = modelForBounds.getMinY();
+		this.minY = local76.getMinY();
 		@Pc(184) Model local184;
 		if (local76 != null && Preferences.characterShadowsOn && (this.appearance.npcId == -1 || NpcTypeList.get(this.appearance.npcId).hasshadow)) {
 			local184 = ShadowModelList.method1043(160, this.aBoolean171, local54 == null ? local25 : local54, this.xFine, 0, this.zFine, 0, 1, local76, arg0, local54 == null ? this.anInt3425 : this.anInt3407, this.anInt3424, 240);
@@ -544,15 +537,21 @@ public final class Player extends PathingEntity {
 			}
 		}
 		if (hideFirstPersonHead) {
-			// The full headless model remains available for the local shadow and
-			// follows the existing SceneGraph camera-relative placement.  The
-			// additional viewmodel is rendered on top of that established layer.
+			// The eye anchor and normal player origin share X/Z, which places the
+			// camera inside the upper torso. Keep gameplay/camera coordinates intact
+			// and move only this local presentation a small distance behind and below
+			// the eye, so looking down sees the headless body from the outside.
 			int animationId = this.seqId != -1 ? this.seqId : this.movementSeqId;
-			// The local world model is intentionally suppressed in FIRST_PERSON.
-			// Only the dedicated camera-relative component models are submitted.
-			FirstPersonViewModel.recordWorldModel(null, arg5, arg6, arg7);
-			FirstPersonViewModel.render(this, firstPersonArms, firstPersonWeapon, firstPersonShield, arg1, arg2, arg3, arg4, arg9, this.particleSystem);
-			FirstPersonViewModel.diagnose(this, firstPersonArms, animationId, DebugOverlay.isVisible());
+			int bodyBackOffset = 24;
+			int bodyDrop = 12;
+			int bodyRenderX = arg5 + (arg3 * bodyBackOffset >> 16);
+			int bodyRenderY = arg6 + bodyDrop;
+			int bodyRenderZ = arg7 - (arg4 * bodyBackOffset >> 16);
+			local76.pickable = false;
+			local76.render(arg0, arg1, arg2, arg3, arg4, bodyRenderX, bodyRenderY, bodyRenderZ, -1L, arg9, this.particleSystem);
+			FirstPersonViewModel.recordWorldModel(local76, bodyRenderX, bodyRenderY, bodyRenderZ);
+			this.renderFirstPersonViewModel(local54, local25, arg1, arg2, arg3, arg4, arg9);
+			FirstPersonViewModel.diagnose(this, null, animationId, DebugOverlay.isVisible());
 		} else if (GlRenderer.enabled) {
 			local76.pickable = true;
 			local76.render(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, this.particleSystem);
@@ -581,6 +580,27 @@ public final class Player extends PathingEntity {
 			local515.method4578();
 		}
 		local515.translate(this.xFine - this.attachmentXFine, -this.attachmentY + this.anInt3424, this.zFine - this.attachmentZFine);
+	}
+
+	private void renderFirstPersonViewModel(SeqType movementSequence, SeqType actionSequence,
+			int sinPitch, int cosPitch, int sinYaw, int cosYaw, int arg9) {
+		FirstPersonViewModel.beginRender(this);
+		// Build and submit each item immediately. RT4 animation copies use shared
+		// scratch models; delaying submission until after the second build caused
+		// the earlier 3x sword/shield duplication.
+		Model weapon = this.appearance.method1954(this.aClass147Array3, this.anInt3373,
+				movementSequence, actionSequence, this.anInt3396, this.anInt3388,
+				this.anInt3360, this.anInt3425, this.anInt3407, true,
+				PlayerAppearance.FIRST_PERSON_WEAPON_MASK);
+		FirstPersonViewModel.renderComponent(this, weapon, FirstPersonViewModel.COMPONENT_WEAPON,
+				sinPitch, cosPitch, sinYaw, cosYaw, arg9, this.particleSystem);
+		Model shield = this.appearance.method1954(this.aClass147Array3, this.anInt3373,
+				movementSequence, actionSequence, this.anInt3396, this.anInt3388,
+				this.anInt3360, this.anInt3425, this.anInt3407, true,
+				PlayerAppearance.FIRST_PERSON_SHIELD_MASK);
+		FirstPersonViewModel.renderComponent(this, shield, FirstPersonViewModel.COMPONENT_SHIELD,
+				sinPitch, cosPitch, sinYaw, cosYaw, arg9, this.particleSystem);
+		FirstPersonViewModel.finishRender();
 	}
 
 	@OriginalMember(owner = "client!e", name = "a", descriptor = "(Lclient!ga;ILclient!ak;IIIIIIIIIIII)V")

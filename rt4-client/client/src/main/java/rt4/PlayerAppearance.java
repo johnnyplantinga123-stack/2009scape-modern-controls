@@ -36,10 +36,11 @@ public final class PlayerAppearance {
 	public static final int[] BASE_PART_MAP = new int[]{8, 11, 4, 6, 9, 7, 10, 0};
 
 	/** Existing appearance slots retained by the dedicated FP presentation. */
-	public static final int FIRST_PERSON_ARMS_MASK = (1 << 4) | (1 << 6) | (1 << 9);
-	public static final int FIRST_PERSON_WEAPON_MASK = 1 << 5;
-	public static final int FIRST_PERSON_SHIELD_MASK = 1 << 3;
-	public static final int FIRST_PERSON_FULL_MASK = FIRST_PERSON_ARMS_MASK | FIRST_PERSON_WEAPON_MASK | FIRST_PERSON_SHIELD_MASK;
+	public static final int FIRST_PERSON_ARMS_MASK = (1 << 6) | (1 << 9);
+	public static final int FIRST_PERSON_WEAPON_MASK = 1 << 3;
+	public static final int FIRST_PERSON_SHIELD_MASK = 1 << 5;
+	public static final int FIRST_PERSON_BODY_MASK = (1 << 4) | FIRST_PERSON_ARMS_MASK | (1 << 7) | (1 << 10);
+	public static final int FIRST_PERSON_FULL_MASK = FIRST_PERSON_WEAPON_MASK | FIRST_PERSON_SHIELD_MASK;
 
 	@OriginalMember(owner = "client!r", name = "b", descriptor = "[Lclient!tk;")
 	public static final SeqType[] aClass144Array2 = new SeqType[14];
@@ -93,6 +94,18 @@ public final class PlayerAppearance {
 
 	@OriginalMember(owner = "client!hh", name = "i", descriptor = "J")
 	private long prevChecksum;
+
+	/*
+	 * The vanilla fallback above is a single normal-player cache domain.  FP
+	 * builds happen several times in one render and must never borrow a model
+	 * from another component when an asset is still loading.
+	 */
+	private long firstPersonHeadlessPrevChecksum = -1L;
+	private long firstPersonArmsPrevChecksum = -1L;
+	private long firstPersonWeaponPrevChecksum = -1L;
+	private long firstPersonShieldPrevChecksum = -1L;
+	private long firstPersonBodyPrevChecksum = -1L;
+	private long firstPersonCombinedPrevChecksum = -1L;
 
 	@OriginalMember(owner = "client!hh", name = "l", descriptor = "[I")
 	private int[] identikit;
@@ -249,6 +262,43 @@ public final class PlayerAppearance {
 		}
 	}
 
+	private long getPreviousBodyChecksum(boolean hideHead, int componentMask) {
+		if (componentMask == FIRST_PERSON_ARMS_MASK) {
+			return this.firstPersonArmsPrevChecksum;
+		} else if (componentMask == FIRST_PERSON_WEAPON_MASK) {
+			return this.firstPersonWeaponPrevChecksum;
+		} else if (componentMask == FIRST_PERSON_SHIELD_MASK) {
+			return this.firstPersonShieldPrevChecksum;
+		} else if (componentMask == FIRST_PERSON_BODY_MASK) {
+			return this.firstPersonBodyPrevChecksum;
+		} else if (componentMask == FIRST_PERSON_FULL_MASK) {
+			return this.firstPersonCombinedPrevChecksum;
+		} else if (componentMask != 0) {
+			return -1L;
+		}
+		return hideHead ? this.firstPersonHeadlessPrevChecksum : this.prevChecksum;
+	}
+
+	private void rememberBodyChecksum(boolean hideHead, int componentMask, long value) {
+		if (componentMask == FIRST_PERSON_ARMS_MASK) {
+			this.firstPersonArmsPrevChecksum = value;
+		} else if (componentMask == FIRST_PERSON_WEAPON_MASK) {
+			this.firstPersonWeaponPrevChecksum = value;
+		} else if (componentMask == FIRST_PERSON_SHIELD_MASK) {
+			this.firstPersonShieldPrevChecksum = value;
+		} else if (componentMask == FIRST_PERSON_BODY_MASK) {
+			this.firstPersonBodyPrevChecksum = value;
+		} else if (componentMask == FIRST_PERSON_FULL_MASK) {
+			this.firstPersonCombinedPrevChecksum = value;
+		} else if (componentMask == 0) {
+			if (hideHead) {
+				this.firstPersonHeadlessPrevChecksum = value;
+			} else {
+				this.prevChecksum = value;
+			}
+		}
+	}
+
 	@OriginalMember(owner = "client!hh", name = "a", descriptor = "([Lclient!ub;ILclient!tk;Lclient!tk;IIIIZII)Lclient!ak;")
 	public final Model method1954(@OriginalArg(0) PathingEntity_Class147[] arg0, @OriginalArg(1) int arg1, @OriginalArg(2) SeqType arg2, @OriginalArg(3) SeqType arg3, @OriginalArg(4) int arg4, @OriginalArg(5) int arg5, @OriginalArg(7) int arg6, @OriginalArg(9) int arg7, @OriginalArg(10) int arg8) {
 		return method1954(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, false, false);
@@ -273,9 +323,10 @@ public final class PlayerAppearance {
 
 	/**
 	 * Builds a FIRST_PERSON-only presentation model from the same appearance
-	 * source as the normal player model.  It retains torso/sleeves, arms,
-	 * hands/gloves and the weapon/off-hand slots, while omitting the head,
-	 * cape, legs and feet that are not part of the close camera presentation.
+	 * source as the normal player model.  The currently stable camera-relative
+	 * pass retains only the weapon/off-hand slots. Arms and hands remain part of
+	 * the separate headless world-body presentation until a purpose-built FP arm
+	 * pose exists; the normal third-person hanging-arm rig is not a viewmodel.
 	 * Animation arguments and item wear transforms still flow through the
 	 * normal method below; this method does not decode or invent new assets.
 	 */
@@ -311,7 +362,8 @@ public final class PlayerAppearance {
 				}
 			}
 			// Keep the actual body/equipment attachment slots used by RT4:
-			// torso=4, off-hand=3, weapon=5, arms=6, hands/gloves=9.
+			// cape=1, amulet=2, weapon=3, torso=4, shield=5, arms=6,
+			// legs=7, hands/gloves=9 and feet=10.
 			for (int i = 0; i < local38.length; i++) {
 				if ((componentMask & (1 << i)) == 0) {
 					local38[i] = 0;
@@ -345,9 +397,9 @@ public final class PlayerAppearance {
 			}
 		}
 		if (componentMask != 0) {
-			// Sequence mainhand/offhand overrides above are allowed only for the
-			// component model that owns that slot; never leak another component
-			// back into the dedicated arms/weapon/shield pass.
+			// Vanilla opcode 6/7 overrides already target appearance slots 5/3.
+			// Re-apply the mask so only the owning FP component retains its
+			// override and no equipment leaks into the arms pass.
 			for (int i = 0; i < local38.length; i++) {
 				if ((componentMask & (1 << i)) == 0) {
 					local38[i] = 0;
@@ -381,8 +433,9 @@ public final class PlayerAppearance {
 				}
 			}
 			if (local158) {
-				if (this.prevChecksum != -1L) {
-					local154 = (Model) bodyModels.get(this.prevChecksum);
+				long previousBodyChecksum = this.getPreviousBodyChecksum(hideHead, componentMask);
+				if (previousBodyChecksum != -1L) {
+					local154 = (Model) bodyModels.get(previousBodyChecksum);
 				}
 				if (local154 == null) {
 					return null;
@@ -478,7 +531,7 @@ public final class PlayerAppearance {
 					((GlModel) local154).method4111(false, false, true, false, false, true);
 				}
 				bodyModels.put(local154, local41);
-				this.prevChecksum = local41;
+				this.rememberBodyChecksum(hideHead, componentMask, local41);
 			}
 		}
 		local158 = false;

@@ -1,22 +1,23 @@
 package rt4;
 
-/** Dedicated camera-relative FIRST_PERSON arms/equipment presentation pass. */
+/** Dedicated camera-relative FIRST_PERSON equipment presentation pass. */
 public final class FirstPersonViewModel {
 
-	private static final int WEAPON_SLOT = 5;
-	private static final int SHIELD_SLOT = 3;
+	private static final int WEAPON_SLOT = 3;
+	private static final int SHIELD_SLOT = 5;
 	private static final int DIAGNOSTIC_INTERVAL = 50;
+	public static final int COMPONENT_ARMS = 0;
+	public static final int COMPONENT_WEAPON = 1;
+	public static final int COMPONENT_SHIELD = 2;
+	public static final int COMPONENT_COMBINED = 3;
 
-	/* Shared camera-local offsets; these are presentation values, not equipment data. */
-	private static final int ARM_SCREEN_X = 0;
-	private static final int ARM_SCREEN_Y = 88;
-	private static final int ARM_DEPTH = 360;
-	private static final int WEAPON_SCREEN_X = 32;
-	private static final int WEAPON_SCREEN_Y = 56;
-	private static final int WEAPON_DEPTH = 400;
-	private static final int SHIELD_SCREEN_X = -32;
-	private static final int SHIELD_SCREEN_Y = 56;
-	private static final int SHIELD_DEPTH = 400;
+	/* Shared FIRST_PERSON presentation offsets; item assets remain unchanged. */
+	private static final int WEAPON_SCREEN_X = 24;
+	private static final int WEAPON_SCREEN_Y = 96;
+	private static final int WEAPON_DEPTH = 280;
+	private static final int SHIELD_SCREEN_X = -24;
+	private static final int SHIELD_SCREEN_Y = 104;
+	private static final int SHIELD_DEPTH = 300;
 
 	/** Kept as a runtime switch for the old proof trace; normal FP offsets are now used. */
 	public static boolean DEBUG_VISIBILITY_PROOF = false;
@@ -49,6 +50,12 @@ public final class FirstPersonViewModel {
 	private static int weaponTriangles;
 	private static int shieldVertices;
 	private static int shieldTriangles;
+	private static int combinedVertices;
+	private static int combinedTriangles;
+	private static int armsIdentity;
+	private static int weaponIdentity;
+	private static int shieldIdentity;
+	private static int combinedIdentity;
 	private static int animationId = -1;
 	private static int cameraX;
 	private static int cameraY;
@@ -103,69 +110,68 @@ public final class FirstPersonViewModel {
 		}
 	}
 
-	/** Records the three independently masked real appearance models. */
-	public static void recordViewModels(Model arms, Model weapon, Model shield) {
-		if (!active) {
-			return;
-		}
-		modelBuilt = arms != null || weapon != null || shield != null;
-		armsVertices = countVertices(arms);
-		armsTriangles = countTriangles(arms);
-		weaponVertices = countVertices(weapon);
-		weaponTriangles = countTriangles(weapon);
-		shieldVertices = countVertices(shield);
-		shieldTriangles = countTriangles(shield);
-		vertexCount = armsVertices + weaponVertices + shieldVertices;
-		triangleCount = armsTriangles + weaponTriangles + shieldTriangles;
-		modelSource = (arms == null ? "" : "arms")
-				+ (weapon == null ? "" : "+weapon")
-				+ (shield == null ? "" : "+shield");
-		if (!modelBuilt) {
-			reason = "viewmodel_build_null";
-		} else if (vertexCount <= 0 || triangleCount <= 0) {
-			reason = "viewmodel_empty_geometry";
-		} else {
-			reason = "viewmodel_components_built";
-		}
-	}
-
 	/**
-	 * Submits only the separate arms, weapon and shield models. Every model is
-	 * placed from the current FP camera origin using camera-local right/down/
-	 * forward offsets, then rotated with the current FP yaw.
+	 * Starts the immediate equipment pass. PlayerAppearance animation copies use
+	 * a shared RT4 scratch model, so each finished item is submitted before the
+	 * following appearance build can overwrite that scratch instance.
 	 */
-	public static void render(Player player, Model arms, Model weapon, Model shield,
-			int sinPitch, int cosPitch, int sinYaw, int cosYaw, int arg9,
-			ParticleSystem particles) {
+	public static void beginRender(Player player) {
 		if (!isActive(player)) {
 			return;
 		}
 		updateCameraState();
 		resetCameraSpaceBounds();
+	}
+
+	/** Submits one freshly built real appearance component immediately. */
+	public static void renderComponent(Player player, Model model, int component,
+			int sinPitch, int cosPitch, int sinYaw, int cosYaw, int arg9,
+			ParticleSystem particles) {
+		if (!isActive(player)) {
+			return;
+		}
+		recordComponent(component, model);
+		if (model == null) {
+			return;
+		}
 		// Model.render expects BODY-convention yaw.  FP camera yaw is a different
 		// convention; use the existing involution instead of pointing the real
 		// equipment away from the camera and losing it to backface culling.
 		int modelYaw = ModernCameraRig.cameraYawToBodyYaw(FirstPersonCamera.getYaw());
-		if (arms != null) {
-			int[] offset = cameraLocalToWorld(ARM_SCREEN_X, ARM_SCREEN_Y, ARM_DEPTH,
-					sinPitch, cosPitch, sinYaw, cosYaw);
-			modelX = offset[0];
-			modelY = offset[1];
-			modelZ = offset[2];
-			renderPart(arms, modelYaw, offset, sinPitch, cosPitch, sinYaw, cosYaw, arg9, particles);
+		int screenX;
+		int screenY;
+		int depth;
+		if (component == COMPONENT_WEAPON) {
+			screenX = WEAPON_SCREEN_X;
+			screenY = WEAPON_SCREEN_Y;
+			depth = WEAPON_DEPTH;
+		} else if (component == COMPONENT_SHIELD) {
+			screenX = SHIELD_SCREEN_X;
+			screenY = SHIELD_SCREEN_Y;
+			depth = SHIELD_DEPTH;
+		} else {
+			// The current stable round intentionally defers the third-person arm rig.
+			return;
 		}
-		if (weapon != null) {
-			int[] offset = cameraLocalToWorld(WEAPON_SCREEN_X, WEAPON_SCREEN_Y, WEAPON_DEPTH,
-					sinPitch, cosPitch, sinYaw, cosYaw);
-			renderPart(weapon, modelYaw, offset, sinPitch, cosPitch, sinYaw, cosYaw, arg9, particles);
-		}
-		if (shield != null) {
-			int[] offset = cameraLocalToWorld(SHIELD_SCREEN_X, SHIELD_SCREEN_Y, SHIELD_DEPTH,
-					sinPitch, cosPitch, sinYaw, cosYaw);
-			renderPart(shield, modelYaw, offset, sinPitch, cosPitch, sinYaw, cosYaw, arg9, particles);
-		}
+		int[] offset = cameraLocalToWorld(screenX, screenY, depth,
+				sinPitch, cosPitch, sinYaw, cosYaw);
+		modelX = offset[0];
+		modelY = offset[1];
+		modelZ = offset[2];
+		renderPart(model, modelYaw, offset, sinPitch, cosPitch, sinYaw, cosYaw, arg9, particles);
+	}
+
+	/** Completes diagnostics after all immediately rendered components. */
+	public static void finishRender() {
+		vertexCount = weaponVertices + shieldVertices;
+		triangleCount = weaponTriangles + shieldTriangles;
+		modelSource = vertexCount == 0 ? "none" : "separate_weapon_shield";
 		finishCameraSpaceBounds();
-		if (!submitted) {
+		if (!modelBuilt) {
+			reason = "viewmodel_build_null";
+		} else if (vertexCount <= 0 || triangleCount <= 0) {
+			reason = "viewmodel_empty_geometry";
+		} else if (!submitted) {
 			reason = "no_component_submitted";
 		} else if (nearClipped) {
 			reason = "submitted_near_clip_risk";
@@ -176,7 +182,7 @@ public final class FirstPersonViewModel {
 		}
 	}
 
-	/** The local world model is intentionally reported as suppressed in FP. */
+	/** Records the separate headless local world-body used when looking down. */
 	public static void recordWorldModel(Model model, int relativeX, int relativeY, int relativeZ) {
 		if (!active) {
 			return;
@@ -213,7 +219,7 @@ public final class FirstPersonViewModel {
 				+ " shieldId=" + shieldId
 				+ " componentSlots=3:" + componentSlot3 + ",4:" + componentSlot4
 				+ ",5:" + componentSlot5 + ",6:" + componentSlot6 + ",9:" + componentSlot9
-				+ " handsAvailable=" + (componentSlot9 != 0 && modelBuilt && vertexCount > 0 && triangleCount > 0)
+				+ " handsAvailable=false"
 				+ " modelBuilt=" + modelBuilt
 				+ " modelSource=" + modelSource
 				+ " vertexCount=" + vertexCount
@@ -221,6 +227,17 @@ public final class FirstPersonViewModel {
 				+ " componentGeometry=arms:" + armsVertices + "/" + armsTriangles
 				+ ",weapon:" + weaponVertices + "/" + weaponTriangles
 				+ ",shield:" + shieldVertices + "/" + shieldTriangles
+				+ ",combined:" + combinedVertices + "/" + combinedTriangles
+				+ " componentIdentity=arms:" + armsIdentity
+				+ ",weapon:" + weaponIdentity
+				+ ",shield:" + shieldIdentity
+				+ ",combined:" + combinedIdentity
+				+ " immediateSubmission=true"
+				+ " equipmentOnly=true"
+				+ " armsDeferred=true"
+				+ " torsoExcluded=true"
+				+ " viewOffset=weapon:" + WEAPON_SCREEN_X + "," + WEAPON_SCREEN_Y + "," + WEAPON_DEPTH
+				+ ";shield:" + SHIELD_SCREEN_X + "," + SHIELD_SCREEN_Y + "," + SHIELD_DEPTH
 				+ " animationId=" + animationId
 				+ " cameraX=" + cameraX
 				+ " cameraY=" + cameraY
@@ -251,6 +268,30 @@ public final class FirstPersonViewModel {
 		model.render(modelYaw, sinPitch, cosPitch, sinYaw, cosYaw,
 				offset[0], offset[1], offset[2], -1L, arg9, particles);
 		submitted = true;
+	}
+
+	private static void recordComponent(int component, Model model) {
+		int vertices = countVertices(model);
+		int triangles = countTriangles(model);
+		int identity = model == null ? 0 : System.identityHashCode(model);
+		modelBuilt |= model != null;
+		if (component == COMPONENT_ARMS) {
+			armsVertices = vertices;
+			armsTriangles = triangles;
+			armsIdentity = identity;
+		} else if (component == COMPONENT_WEAPON) {
+			weaponVertices = vertices;
+			weaponTriangles = triangles;
+			weaponIdentity = identity;
+		} else if (component == COMPONENT_SHIELD) {
+			shieldVertices = vertices;
+			shieldTriangles = triangles;
+			shieldIdentity = identity;
+		} else if (component == COMPONENT_COMBINED) {
+			combinedVertices = vertices;
+			combinedTriangles = triangles;
+			combinedIdentity = identity;
+		}
 	}
 
 	private static int[] cameraLocalToWorld(int screenX, int screenY, int depth,
@@ -289,6 +330,12 @@ public final class FirstPersonViewModel {
 		weaponTriangles = 0;
 		shieldVertices = 0;
 		shieldTriangles = 0;
+		combinedVertices = 0;
+		combinedTriangles = 0;
+		armsIdentity = 0;
+		weaponIdentity = 0;
+		shieldIdentity = 0;
+		combinedIdentity = 0;
 		animationId = -1;
 		modelX = 0;
 		modelY = 0;

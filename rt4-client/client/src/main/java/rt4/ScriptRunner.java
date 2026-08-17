@@ -310,6 +310,7 @@ public final class ScriptRunner {
 			}
 			LightingManager.method2394(client.loop, !Preferences.flickeringEffectsOn);
 			GlRenderer.clearColorAndDepthBuffers(local171);
+			ModernSky.render(arg2, arg4, arg3, arg0, Camera.cameraYaw, Camera.cameraPitch);
 			MaterialManager.method2731(Camera.cameraPitch, Camera.renderZ, Camera.anInt40, Camera.renderX, Camera.cameraYaw);
 			GlRenderer.anInt5323 = client.loop;
 			SceneGraph.method2954(Camera.renderX, Camera.anInt40, Camera.renderZ, Camera.cameraPitch, Camera.cameraYaw, aByteArrayArrayArray15, anIntArray205, anIntArray338, anIntArray518, anIntArray134, anIntArray476, Player.plane + 1, local387, PlayerList.self.xFine >> 7, PlayerList.self.zFine >> 7);
@@ -322,6 +323,7 @@ public final class ScriptRunner {
 			MiniMap.method4000(arg3, arg2, arg0, anInt5029, anInt5029, arg4);
 		} else {
 			SoftwareRaster.fillRect(arg2, arg4, arg3, arg0, 0);
+			ModernSky.render(arg2, arg4, arg3, arg0, Camera.cameraYaw, Camera.cameraPitch);
 			SceneGraph.method2954(Camera.renderX, Camera.anInt40, Camera.renderZ, Camera.cameraPitch, Camera.cameraYaw, aByteArrayArrayArray15, anIntArray205, anIntArray338, anIntArray518, anIntArray134, anIntArray476, Player.plane + 1, local387, PlayerList.self.xFine >> 7, PlayerList.self.zFine >> 7);
 			client.audioLoop();
 			method3858();
