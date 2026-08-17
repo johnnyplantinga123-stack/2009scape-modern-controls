@@ -170,6 +170,11 @@ public final class CameraMode {
 		// Reset chat input state on any mode transition to prevent
 		// inconsistent state across mode boundaries.
 		ModernControlController.resetChatState();
+		// Synchronize the session-only MODERN capability before the next WASD
+		// walk packet. The server uses it solely to preserve an active combat
+		// pulse; regular ORIGINAL click-to-walk keeps its historical behavior.
+		Preferences.sentToServer = false;
+		Preferences.syncToServer();
 
 		if (previous == Mode.ORIGINAL && next != Mode.ORIGINAL) {
 			// ORIGINAL → MODERN

@@ -217,6 +217,13 @@ class CombatPulse(
         if (entity == null || victim == null || entity.locks.isMovementLocked) {
             return false
         }
+	    // A MODERN client may issue a verified one-tile WASD step while it is
+	    // fighting. Let that manual step finish instead of replacing it with
+	    // automatic chase pathing. The normal interaction/range rules above
+	    // still decide whether an attack can actually swing.
+	    if (hasRecentModernManualMove(entity!!)) {
+		return false
+	    }
         movement.updatePath()
         return type == InteractionType.MOVE_INTERACT
     }
@@ -458,6 +465,7 @@ class CombatPulse(
                         } else if (state.estimatedHit != 0 && victim is Player) {
                             playHurtAudio(victim.asPlayer())
                         }
+				sendModernHitDirection(entity!!, victim!!)
                         handler.impact(entity, victim, state)
                         handler.onImpact(entity, victim, state)
                         return true

@@ -568,7 +568,11 @@ public final class ModernCameraRig {
 		// Round #8 P3/P7: FP context menu owns the wheel when open — suppress
 		// camera zoom so the menu can scroll its selection. This prevents the
 		// FP->CHASE zoom transition while the menu is open.
-		if (FPContextMenuController.wasWheelConsumed()) return;
+		// The interaction layer selects a context-menu row after the rig update
+		// in the same client tick. Test menuOpen as well as the latched
+		// consumption flag so that first wheel notch cannot also zoom/transition
+		// the camera before the menu gets its turn.
+		if (FPContextMenuController.isMenuOpen() || FPContextMenuController.wasWheelConsumed()) return;
 
 		// Wheel ownership: if the mouse is over a scrollable UI component
 		// (not the viewport), skip camera zoom so the UI can scroll.

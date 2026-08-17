@@ -24,6 +24,9 @@ import core.game.ge.PriceIndex
 import core.game.interaction.*
 import core.game.node.Node
 import core.game.node.entity.combat.spell.MagicSpell
+import core.game.node.entity.combat.hasModernControls
+import core.game.node.entity.combat.rememberModernManualMove
+import core.game.node.entity.combat.setModernControls
 import core.game.node.entity.player.Player
 import core.game.node.entity.player.info.LogType
 import core.game.node.entity.player.info.PlayerMonitor
@@ -41,6 +44,7 @@ import core.game.system.task.Pulse
 import core.game.world.GameWorld
 import core.game.world.map.Location
 import core.game.world.map.RegionManager
+import core.game.world.map.path.Pathfinder
 import core.game.world.repository.Repository
 import core.game.world.update.flag.EntityFlag
 import core.game.world.update.flag.context.ChatMessage
@@ -134,7 +138,7 @@ object PacketProcessor {
             is Packet.TrackingFocus,
             is Packet.TrackingCameraPos,
             is Packet.TrackingDisplayUpdate -> processTrackingPacket(pkt)
-            is Packet.PlayerPrefsUpdate -> {/*TODO implement something that cares about this */}
+            is Packet.PlayerPrefsUpdate -> setModernControls(pkt.player, pkt.prefs)
             is Packet.Ping -> pkt.player.session.lastPing = System.currentTimeMillis()
             is Packet.JoinClan -> {
                 if (pkt.clanName.isEmpty() && pkt.player.communication.currentClan.isNotEmpty()) {
@@ -504,6 +508,22 @@ object PacketProcessor {
             player.walkingQueue.isRunning = isRunning
             return
         }
+
+	    // The RT4 MODERN controller sends authenticated, one-tile
+	    // WORLDSPACE_WALK requests for WASD. Unlike an ordinary game click, a
+	    // manual combat step must not replace the active CombatPulse in the
+	    // PulseManager. The server still validates the path/collision, and the
+	    // pulse retains all standard range, death, and timeout rules.
+	    if (pkt is Packet.WorldspaceWalk && hasModernControls(player)
+		&& player.properties.combatPulse.isAttacking) {
+		val path = Pathfinder.find(player, loc, false, Pathfinder.SMART)
+		if (path.isSuccessful && path.points.isNotEmpty()) {
+		    player.walkingQueue.isRunning = isRunning
+		    path.walk(player)
+		    rememberModernManualMove(player)
+		}
+		return
+	    }
 
         player.face(null)
         player.faceLocation(null)

@@ -122,6 +122,16 @@ public final class ModernActionOverlay {
 	private static boolean key2WasPressed;
 	private static boolean key3WasPressed;
 	private static boolean keyEWasPressed;
+	/** True only for the frame in which FP direct-LMB dispatched Attack. */
+	private static boolean directCombatClickConsumed;
+
+	// ---- FIRST_PERSON combat target lock (presentation only) ----
+	private static final int COMBAT_LOCK_NONE = 0;
+	private static final int COMBAT_LOCK_NPC = 1;
+	private static final int COMBAT_LOCK_PLAYER = 2;
+	private static int combatLockType = COMBAT_LOCK_NONE;
+	private static int combatLockIndex = -1;
+	private static String combatLockName = "";
 
 	/** Scratch buffer for live entity tile resolution (no per-frame alloc). */
 	private static final int[] scratchTile = new int[2];
@@ -214,6 +224,30 @@ public final class ModernActionOverlay {
 	}
 
 	/**
+	 * Whether this frame's left click already dispatched an existing vanilla
+	 * combat action from the FP crosshair. Protocol uses this to avoid running
+	 * the same click through its normal menu-default path a second time.
+	 */
+	public static boolean wasDirectCombatClickConsumed() {
+		return directCombatClickConsumed;
+	}
+
+	/** True while a live NPC/player selected by a vanilla Attack action is locked. */
+	public static boolean hasCombatTargetLock() {
+		return combatLockType != COMBAT_LOCK_NONE;
+	}
+
+	/** Current lock label for HUD/debug presentation, empty when unlocked. */
+	public static String getCombatTargetLockName() {
+		return combatLockName;
+	}
+
+	/** Clears one-frame input consumption before modern input priority runs. */
+	public static void beginInputFrame() {
+		directCombatClickConsumed = false;
+	}
+
+	/**
 	 * Which gate currently blocks the overlay ("" when active). Evaluated in
 	 * the exact {@link #isOverlayActive()} order so the FIRST failing gate is
 	 * reported — proves the blocking boundary at runtime.
@@ -256,9 +290,15 @@ public final class ModernActionOverlay {
 		return countEntriesByType(2);
 	}
 
-	/** Whitelisted NPC entries: key type bits == 1. */
+	/** Whitelisted NPC entries currently exposed by the vanilla menu. */
 	public static int countNpcEntries() {
-		return countEntriesByType(1);
+		int n = 0;
+		for (int i = 1; i < MiniMenu.size; i++) {
+			if (isNpcActionCode(MiniMenu.actions[i])) {
+				n++;
+			}
+		}
+		return n;
 	}
 
 	/**
@@ -389,6 +429,7 @@ public final class ModernActionOverlay {
 	 * {@link LoginManager#method1841()} has rebuilt and sorted the menu.
 	 */
 	public static void snapshot() {
+		validateCombatTargetLock();
 		// Round #7D P2: refresh the NPC pick-chain boundary diagnostics from
 		// the vanilla render-path counters BEFORE any gate return.
 		refreshNpcPickChain();
@@ -422,7 +463,7 @@ public final class ModernActionOverlay {
 				if (MiniMenu.keys[i] != lastTargetKey || !isWorldAction(MiniMenu.actions[i])) {
 					continue;
 				}
-				if (!resolveEntryTile(lastTargetKey, MiniMenu.intArgs1[i], MiniMenu.intArgs2[i], scratchTile)) {
+				if (!resolveEntryTile(lastTargetKey, MiniMenu.actions[i], MiniMenu.intArgs1[i], MiniMenu.intArgs2[i], scratchTile)) {
 					continue;
 				}
 				if (Math.max(Math.abs(scratchTile[0] - selfTileX), Math.abs(scratchTile[1] - selfTileZ)) <= INTERACT_RANGE_TILES) {
@@ -438,7 +479,7 @@ public final class ModernActionOverlay {
 				if (!isWorldAction(MiniMenu.actions[i])) {
 					continue;
 				}
-				if (!resolveEntryTile(MiniMenu.keys[i], MiniMenu.intArgs1[i], MiniMenu.intArgs2[i], scratchTile)) {
+				if (!resolveEntryTile(MiniMenu.keys[i], MiniMenu.actions[i], MiniMenu.intArgs1[i], MiniMenu.intArgs2[i], scratchTile)) {
 					reject = "NO_LIVE_TILE";
 					continue;
 				}
@@ -559,7 +600,20 @@ public final class ModernActionOverlay {
 		}
 		return code == MiniMenu.NPC_ACTION_1 || code == MiniMenu.NPC_ACTION_2
 				|| code == MiniMenu.NPC_ACTION_3 || code == MiniMenu.NPC_ACTION_4
-				|| code == MiniMenu.NPC_ACTION_5 || code == MiniMenu.NPC_EXAMINE;
+				|| code == MiniMenu.NPC_ACTION_5 || code == MiniMenu.NPC_EXAMINE
+				|| code == MiniMenu.OBJ_NPC_ACTION || code == MiniMenu.COMPONENT_NPC_ACTION;
+	}
+
+	/** True for existing NPC/player menu action families that can carry Attack. */
+	private static boolean isCombatEntityAction(int action) {
+		int code = action;
+		if (code >= 2000) {
+			code -= 2000;
+		}
+		return isNpcActionCode((short) code)
+				|| code == MiniMenu.PLAYER_ACTION_1 || code == MiniMenu.PLAYER_ACTION_BLOCK
+				|| code == MiniMenu.PLAYER_ACTION_TRADE || code == MiniMenu.PLAYER_REQ_ASSIST_ACTION
+				|| code == MiniMenu.PLAYER_FOLLOW_ACTION || code == MiniMenu.PLAYER_ACTION_5;
 	}
 
 	/**
@@ -568,15 +622,23 @@ public final class ModernActionOverlay {
 	 * clip so no lingering interface clip region can hide it).
 	 */
 	public static void draw() {
-		if (!snapshotValid) {
-			return;
-		}
 		if (Fonts.p11Full == null) {
 			return;
 		}
 		if (!isOverlayActive()) {
 			return;
 		}
+		int canvasW;
+		int canvasH;
+		if (GlRenderer.enabled) {
+			canvasW = GlRenderer.canvasWidth;
+			canvasH = GlRenderer.canvasHeight;
+		} else {
+			canvasW = SoftwareRaster.width;
+			canvasH = SoftwareRaster.height;
+		}
+
+		if (snapshotValid) {
 
 		String[] lines = new String[snapshotCount + 1];
 		lines[0] = snapshotTargetName;
@@ -592,16 +654,6 @@ public final class ModernActionOverlay {
 			if (w > maxWidth) {
 				maxWidth = w;
 			}
-		}
-
-		int canvasW;
-		int canvasH;
-		if (GlRenderer.enabled) {
-			canvasW = GlRenderer.canvasWidth;
-			canvasH = GlRenderer.canvasHeight;
-		} else {
-			canvasW = SoftwareRaster.width;
-			canvasH = SoftwareRaster.height;
 		}
 
 		int lineHeight = 12;
@@ -637,6 +689,60 @@ public final class ModernActionOverlay {
 			Fonts.p11Full.renderLeft(jagLines[i], x + 6, textY, color, 0);
 			textY += lineHeight;
 		}
+		}
+		drawCombatTargetLock(canvasW, canvasH);
+	}
+
+	/** Draws the active lock independently of what is currently under the crosshair. */
+	private static void drawCombatTargetLock(int canvasW, int canvasH) {
+		if (!hasCombatTargetLock()) {
+			return;
+		}
+		JagString text = JagString.parse("LOCK  " + combatLockName);
+		int width = Fonts.p11Full.getStringWidth(text) + 12;
+		int x = canvasW / 2 - width / 2;
+		int y = canvasH / 2 + 34;
+		if (GlRenderer.enabled) {
+			GlRaster.fillRectAlpha(x, y, width, 16, 0x000000, 170);
+			GlRaster.drawRect(x, y, width, 16, 0xB98A24);
+		} else {
+			SoftwareRaster.fillRectAlpha(x, y, width, 16, 0x000000, 170);
+			SoftwareRaster.drawRect(x, y, width, 16, 0xB98A24);
+		}
+		Fonts.p11Full.renderCenter(text, canvasW / 2, y + 12, 0xFFE07A, 0);
+	}
+
+	/** Clears a presentation lock when its live entity or the FP context is gone. */
+	private static void validateCombatTargetLock() {
+		if (!CameraMode.isModern() || !ModernCameraRig.isFirstPersonRigState()) {
+			clearCombatTargetLock();
+			return;
+		}
+		if (combatLockType == COMBAT_LOCK_NPC) {
+			if (combatLockIndex < 0 || combatLockIndex >= NpcList.npcs.length
+					|| NpcList.npcs[combatLockIndex] == null
+					|| !NpcList.npcs[combatLockIndex].isVisible()) {
+				clearCombatTargetLock();
+			}
+		} else if (combatLockType == COMBAT_LOCK_PLAYER) {
+			if (combatLockIndex < 0 || combatLockIndex >= PlayerList.players.length
+					|| PlayerList.players[combatLockIndex] == null
+					|| !PlayerList.players[combatLockIndex].isVisible()) {
+				clearCombatTargetLock();
+			}
+		}
+	}
+
+	private static void lockCombatTarget(short action, long key, JagString targetName) {
+		combatLockType = isNpcActionCode(action) ? COMBAT_LOCK_NPC : COMBAT_LOCK_PLAYER;
+		combatLockIndex = (int) key;
+		combatLockName = toPlainString(targetName);
+	}
+
+	private static void clearCombatTargetLock() {
+		combatLockType = COMBAT_LOCK_NONE;
+		combatLockIndex = -1;
+		combatLockName = "";
 	}
 
 	/**
@@ -667,6 +773,14 @@ public final class ModernActionOverlay {
 		}
 		if (!snapshotValid) {
 			return false;
+		}
+		// First-person combat is intentionally direct: a left click only maps
+		// to a real visible Attack entry on the current crosshair target. Normal
+		// object clicks, UI clicks, movement and non-combat target actions retain
+		// their existing vanilla behaviour.
+		if (Mouse.clickButton == 1 && executeDirectCombatClick()) {
+			directCombatClickConsumed = true;
+			return true;
 		}
 		if (edge1) {
 			executeAction(0);
@@ -701,6 +815,10 @@ public final class ModernActionOverlay {
 		for (int i = 0; i < MiniMenu.size; i++) {
 			if (MiniMenu.keys[i] == key && MiniMenu.actions[i] == action
 					&& MiniMenu.intArgs1[i] == arg1 && MiniMenu.intArgs2[i] == arg2) {
+				if (isCombatEntityAction(action) && MiniMenu.ops[i] != null
+						&& MiniMenu.ops[i].equalsIgnoreCase(LocalizedText.ATTACK)) {
+					lockCombatTarget(MiniMenu.actions[i], MiniMenu.keys[i], MiniMenu.opBases[i]);
+				}
 				MiniMenu.doAction(i);
 				return;
 			}
@@ -711,16 +829,41 @@ public final class ModernActionOverlay {
 		lastTargetKey = Long.MIN_VALUE;
 	}
 
+	/** Executes the current target's existing NPC/player Attack menu entry. */
+	private static boolean executeDirectCombatClick() {
+		for (int slot = 0; slot < snapshotCount; slot++) {
+			if (!isCombatEntityAction(snapshotAction[slot])) {
+				continue;
+			}
+			long key = snapshotKeys[slot];
+			int action = snapshotAction[slot];
+			int arg1 = snapshotIntArg1[slot];
+			int arg2 = snapshotIntArg2[slot];
+			for (int i = 0; i < MiniMenu.size; i++) {
+				if (MiniMenu.keys[i] == key && MiniMenu.actions[i] == action
+						&& MiniMenu.intArgs1[i] == arg1 && MiniMenu.intArgs2[i] == arg2
+						&& MiniMenu.ops[i] != null
+						&& MiniMenu.ops[i].equalsIgnoreCase(LocalizedText.ATTACK)) {
+					lockCombatTarget(MiniMenu.actions[i], MiniMenu.keys[i], MiniMenu.opBases[i]);
+					MiniMenu.doAction(i);
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	/**
-	 * Round #7 P2: resolves the world tile for a MiniMenu entry. NPC/player
-	 * pick keys carry the entity index in the high 32 bits and NO tile bits,
-	 * so their intArgs tiles are 0 — resolve from the LIVE entity position
-	 * instead. Loc/objstack entries keep their intArgs tiles.
+	 * Resolves the world tile for a MiniMenu entry. The scene-pick tag and its
+	 * derived menu entry do not use the same key layout: a scene tag encodes
+	 * an entity index in its high bits, but the vanilla NPC menu entry uses
+	 * the NPC index itself as its key. Entity kind is therefore determined
+	 * from the existing action code, not arbitrary menu-key bits. Loc/objstack
+	 * entries keep their menu tile arguments.
 	 */
-	private static boolean resolveEntryTile(long key, int fallbackX, int fallbackZ, int[] out) {
-		int type = (int) key >> 29 & 0x3;
-		int index = (int) (key >>> 32);
-		if (type == 1) { // NPC
+	private static boolean resolveEntryTile(long key, short action, int fallbackX, int fallbackZ, int[] out) {
+		int index = (int) key;
+		if (isNpcActionCode(action)) {
 			if (index < 0 || index >= NpcList.npcs.length) {
 				return false;
 			}
@@ -730,18 +873,6 @@ public final class ModernActionOverlay {
 			}
 			out[0] = npc.xFine >> 7;
 			out[1] = npc.zFine >> 7;
-			return true;
-		}
-		if (type == 0) { // Player
-			if (index < 0 || index >= PlayerList.players.length) {
-				return false;
-			}
-			Player player = PlayerList.players[index];
-			if (player == null) {
-				return false;
-			}
-			out[0] = player.xFine >> 7;
-			out[1] = player.zFine >> 7;
 			return true;
 		}
 		out[0] = fallbackX;

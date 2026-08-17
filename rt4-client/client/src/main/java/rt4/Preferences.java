@@ -332,4 +332,23 @@ public class Preferences {
 	public static int toInt() {
 		return ((stereo ? 1 : 0) << 19) + (((fogEnabled ? 1 : 0) << 16) + ((highWaterDetail ? 1 : 0) << 15) + ((highDetailLighting ? 1 : 0) << 13) + ((characterShadowsOn ? 1 : 0) << 10) + ((manyGroundTextures ? 1 : 0) << 9) + ((manyIdleAnimations ? 1 : 0) << 7) + ((highDetailTextures ? 1 : 0) << 6) + ((showGroundDecorations ? 1 : 0) << 5) + (((allLevelsVisible ? 1 : 0) << 3) + (brightness & 0x7) - (-((removeRoofsSelectively ? 1 : 0) << 4) + -((flickeringEffectsOn ? 1 : 0) << 8)) - (-((sceneryShadowsType & 0x3) << 11) + -((soundEffectVolume == 0 ? 0 : 1) << 20) - (((musicVolume == 0 ? 0 : 1) << 21) + ((ambientSoundsVolume == 0 ? 0 : 1) << 22)))) + (getParticleSetting() << 23));
 	}
+
+	/**
+	 * Session-only capability bit understood by this project's server. It is
+	 * deliberately not persisted in the local preferences file: ORIGINAL
+	 * controls always remain the default after a fresh login.
+	 */
+	public static int toServerInt() {
+		return toInt() | (CameraMode.isModern() ? Integer.MIN_VALUE : 0);
+	}
+
+	/** Sends the current session capability before a mode transition can move. */
+	public static void syncToServer() {
+		if (client.gameState != 30) {
+			return;
+		}
+		Protocol.outboundBuffer.p1isaac(98);
+		Protocol.outboundBuffer.p4(toServerInt());
+		sentToServer = true;
+	}
 }

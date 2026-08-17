@@ -996,6 +996,7 @@ public class Protocol {
 			int id = inboundBuffer.g2add();
 			@Pc(137) byte value = inboundBuffer.g1bneg();
 			VarpDomain.set(value, id);
+			ModernDamageIndicator.onVarpUpdate(id, value);
 			opcode = -1;
 			return true;
 		} else if (opcode == ServerProt.RUN_CS2) {
@@ -1305,6 +1306,7 @@ public class Protocol {
 			int value = inboundBuffer.g4();
 			int id = inboundBuffer.g2add();
 			VarpDomain.set(value, id);
+			ModernDamageIndicator.onVarpUpdate(id, value);
 			opcode = -1;
 			return true;
 		} else if (opcode == ServerProt.IF_SETHIDE) {
@@ -2599,7 +2601,7 @@ public class Protocol {
 		}
 		if (!Preferences.sentToServer) {
 			outboundBuffer.p1isaac(98);
-			outboundBuffer.p4(Preferences.toInt());
+			outboundBuffer.p4(Preferences.toServerInt());
 			Preferences.sentToServer = true;
 		}
 		SceneGraph.method846();
@@ -3590,7 +3592,7 @@ public class Protocol {
 		// mouse action processing to prevent double-execution. The menu was
 		// opened by FPContextMenuController which uses the real vanilla menu
 		// arrays and doAction route, so no action reconstruction is needed.
-		if (FPContextMenuController.isMenuOpen()) {
+		if (FPContextMenuController.isMenuOpen() || ModernActionOverlay.wasDirectCombatClickConsumed()) {
 			return;
 		}
 		@Pc(20) int local20 = Mouse.clickButton;

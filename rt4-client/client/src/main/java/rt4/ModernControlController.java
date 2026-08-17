@@ -204,6 +204,7 @@ public final class ModernControlController {
 	 * and the quick overlay is suppressed.</p>
 	 */
 	private static void updateInteractionLayer() {
+		ModernActionOverlay.beginInputFrame();
 		boolean uiConsumed = ModernDialogueKeyboard.update();
 		if (uiConsumed) {
 			ModernHud.updateInput(true);

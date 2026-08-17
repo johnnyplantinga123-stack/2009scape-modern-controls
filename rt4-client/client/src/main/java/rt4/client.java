@@ -896,6 +896,7 @@ public final class client extends GameShell {
 				// Modern controls: center-screen reticle (FP/CHASE only).
 				// Additive presentation layer — no effect on ORIGINAL or gameplay.
 				ModernCrosshair.draw();
+				ModernDamageIndicator.draw();
 				// Phase 3C round 5 (P6): FP crosshair action overlay. The menu was
 				// just rebuilt+sorted by LoginManager.method1841(), so snapshot the
 				// current crosshair-target entries here, then draw the label.

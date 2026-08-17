@@ -1472,6 +1472,9 @@ public class LoginManager {
 			} else {
 				MiniMenu.drawA();
 			}
+			// The FP controller uses the real MiniMenu data and drawing geometry.
+			// Draw its wheel-selected row only after the vanilla menu skin/text.
+			FPContextMenuController.drawSelectionHighlight();
 		} else if (aClass13_13 != null) {
 			MiniMenu.method1207(aClass13_13, Cs1ScriptRunner.anInt3484, Cs1ScriptRunner.anInt3260);
 		} else if (Cs1ScriptRunner.anInt2503 != -1) {
