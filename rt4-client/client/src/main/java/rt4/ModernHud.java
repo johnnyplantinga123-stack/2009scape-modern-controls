@@ -1,5 +1,7 @@
 package rt4;
 
+import com.jogamp.opengl.GL2;
+
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
@@ -547,6 +549,103 @@ public final class ModernHud {
 		}
 		fillRectAlpha(x - 1, y - 1, 34, 34, 0xC89532, 42);
 		drawRect(x - 1, y - 1, 34, 34, 0xE4BE62);
+	}
+
+	/**
+	 * Draws the modern camera's current view angle into the real minimap before
+	 * its markers are drawn.  The map itself rotates by {@code mapYaw}, so the
+	 * camera vector is transformed through that same rotation instead of being
+	 * assumed to point upward.  This keeps the cone correct during yaw smoothing
+	 * and whenever the minimap has a temporary yaw offset.
+	 *
+	 * <p>The opening angle deliberately comes from {@link FirstPersonCamera}'s
+	 * configured FOV.  Any future setting that calls {@code setFovDegrees()} is
+	 * therefore reflected here on the next frame as well as in the renderer.</p>
+	 */
+	public static void drawMinimapCameraCone(int left, int top, Component map, int mapYaw) {
+		if (!isFullHudActive() || map == null || map.width <= 0 || map.height <= 0) {
+			return;
+		}
+
+		int centerX = left + map.width / 2;
+		int centerY = top + map.height / 2;
+		int radius = Math.max(8, Math.min(map.width, map.height) / 2 - 6);
+		double cameraAngle = Camera.cameraYaw * Math.PI * 2.0D / 2048.0D;
+		double mapAngle = (mapYaw & 0x7FF) * Math.PI * 2.0D / 2048.0D;
+
+		// Camera yaw convention: 0 is north (+Z), 512 west (-X).
+		double worldX = -Math.sin(cameraAngle);
+		double worldZ = Math.cos(cameraAngle);
+		// This is the same world-to-minimap transform used by MiniMap.method1446.
+		double screenX = Math.sin(mapAngle) * worldZ + Math.cos(mapAngle) * worldX;
+		double screenY = Math.sin(mapAngle) * worldX - Math.cos(mapAngle) * worldZ;
+		double centreAngle = Math.atan2(screenY, screenX);
+		double halfFov = Math.toRadians(FirstPersonCamera.getFovDegrees() / 2.0D);
+		int segments = Math.max(10, Math.min(22, FirstPersonCamera.getFovDegrees() / 4));
+
+		if (GlRenderer.enabled) {
+			drawGlMinimapCone(centerX, centerY, radius, centreAngle, halfFov, segments);
+		} else {
+			drawSoftwareMinimapCone(left, top, map, centerX, centerY, radius,
+					screenX, screenY, halfFov);
+		}
+	}
+
+	private static void drawGlMinimapCone(int centerX, int centerY, int radius,
+			double centreAngle, double halfFov, int segments) {
+		GlRenderer.method4162();
+		GL2 gl = GlRenderer.gl;
+		gl.glBegin(GL2.GL_TRIANGLE_FAN);
+		gl.glColor4ub((byte) 0x61, (byte) 0xC9, (byte) 0xF2, (byte) 56);
+		gl.glVertex2f(centerX, GlRenderer.canvasHeight - centerY);
+		for (int i = 0; i <= segments; i++) {
+			double angle = centreAngle - halfFov + halfFov * 2.0D * i / segments;
+			gl.glVertex2f((float) (centerX + Math.cos(angle) * radius),
+					(float) (GlRenderer.canvasHeight - (centerY + Math.sin(angle) * radius)));
+		}
+		gl.glEnd();
+	}
+
+	private static void drawSoftwareMinimapCone(int left, int top, Component map,
+			int centerX, int centerY, int radius, double directionX, double directionY,
+			double halfFov) {
+		if (SoftwareRaster.pixels == null) {
+			return;
+		}
+		int radiusSquared = radius * radius;
+		double coneCosine = Math.cos(halfFov);
+		int sourceWeight = 56;
+		int destinationWeight = 256 - sourceWeight;
+		boolean hasMask = map.anIntArray37 != null && map.anIntArray45 != null
+				&& map.anIntArray37.length >= map.height && map.anIntArray45.length >= map.height;
+		for (int localY = 0; localY < map.height; localY++) {
+			int y = top + localY;
+			if (y < SoftwareRaster.clipTop || y >= SoftwareRaster.clipBottom) {
+				continue;
+			}
+			int firstX = hasMask ? map.anIntArray37[localY] : 0;
+			int lastX = hasMask ? firstX + map.anIntArray45[localY] : map.width;
+			firstX = Math.max(firstX, Math.max(0, SoftwareRaster.clipLeft - left));
+			lastX = Math.min(lastX, Math.min(map.width, SoftwareRaster.clipRight - left));
+			int dy = y - centerY;
+			for (int localX = firstX; localX < lastX; localX++) {
+				int dx = left + localX - centerX;
+				int distanceSquared = dx * dx + dy * dy;
+				if (distanceSquared > radiusSquared) {
+					continue;
+				}
+				double dot = dx * directionX + dy * directionY;
+				if (dot < 0.0D || dot * dot < distanceSquared * coneCosine * coneCosine) {
+					continue;
+				}
+				int index = left + localX + y * SoftwareRaster.width;
+				int destination = SoftwareRaster.pixels[index];
+				SoftwareRaster.pixels[index] = ((0x61C9F2 & 0xFF00FF) * sourceWeight
+						+ (destination & 0xFF00FF) * destinationWeight & 0xFF00FF00)
+						+ ((0x61C9F2 & 0xFF00) * sourceWeight
+						+ (destination & 0xFF00) * destinationWeight & 0xFF0000) >>> 8;
+			}
+		}
 	}
 
 	private static void drawCompass(float scale) {

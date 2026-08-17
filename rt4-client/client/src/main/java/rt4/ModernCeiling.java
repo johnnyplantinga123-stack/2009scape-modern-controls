@@ -146,6 +146,11 @@ public final class ModernCeiling {
 	private static int directRoofModelSubmissionMode;
 	private static String directRoofTraceSourceType = "none";
 	private static String directRoofTraceReason = "no_candidate";
+	// Retained for the F12 diagnostics that report the immediate overhead state.
+	private static final int VIEW_SCAN_RADIUS_TILES = 14;
+	private static int viewScanLoop = -1;
+	private static boolean floorAboveInCameraView;
+	private static boolean roofTileInCameraView;
 
 	private ModernCeiling() {
 	}
@@ -180,33 +185,43 @@ public final class ModernCeiling {
 		}
 	}
 
-	/** The plane check is kept at the live floor-batch draw site. */
+	/**
+	 * The plane check is kept at the live floor-batch draw site. Every higher
+	 * live plane is eligible: a multi-storey building can have several real
+	 * floor/ceiling layers above the player. The original scene visibility bits
+	 * and depth buffer still decide which exact tiles can contribute on screen.
+	 */
 	static boolean rendersLiveGlMeshForPlane(int floorPlane) {
-		return RENDER_ENABLED && isEnabled() && floorPlane == Player.plane + 1
-				&& hasLiveFloorAbovePlayer();
+		return RENDER_ENABLED && isEnabled() && Player.plane >= 0
+				&& floorPlane > Player.plane && SceneGraph.tiles != null
+				&& floorPlane < SceneGraph.tiles.length;
 	}
 
 	/**
 	 * A roof LOC is a different live payload from the terrain-floor GlTile.
-	 * Reissue it only when the player's own tile has no upper-floor geometry;
-	 * this keeps the established floor-underpass authoritative wherever it
-	 * exists and prevents the two underside passes overlapping.
+	 * Reissue it for each visible upper storey. The depth buffer resolves any
+	 * overlap with the upper-floor path, while retaining roof-only geometry such
+	 * as sloped and edge sections.
 	 */
 	static boolean rendersLiveRoofMeshForScenery(Scenery scenery) {
 		if (!RENDER_ENABLED || !isEnabled() || !GlRenderer.enabled || scenery == null
-				|| scenery.entity == null || !isPlayerUnderRoofWithoutFloor()) {
+				|| scenery.entity == null) {
 			return false;
 		}
 		Player self = PlayerList.self;
-		if (self == null || scenery.level < Player.plane || scenery.level > Player.plane + 1) {
+		if (self == null || SceneGraph.tiles == null || scenery.level < Player.plane
+				|| scenery.level >= SceneGraph.tiles.length) {
 			return false;
 		}
+		// SceneGraph's tile visibility latch and Entity.render's own frustum test
+		// remain authoritative. A single scenery anchor point can be behind the
+		// eye while part of a large higher-storey roof is still on-screen.
 		return isLiveRoofSearchCandidate(scenery);
 	}
 
 	/** Called once for the surface render before live floor/roof submissions. */
 	static void beginDirectRenderFrame() {
-		if (RENDER_ENABLED && isEnabled() && isPlayerUnderRoofWithoutFloor()) {
+		if (RENDER_ENABLED && isEnabled()) {
 			scanLiveRoofCandidates();
 			emitDirectRoofTraceIfDue();
 		}
@@ -307,14 +322,14 @@ public final class ModernCeiling {
 	}
 
 	private static boolean isRoofTraceCandidate(Scenery scenery) {
-		if (!RENDER_ENABLED || !isEnabled() || scenery == null || scenery.entity == null
-				|| !isPlayerUnderRoofWithoutFloor()) return false;
+		if (!RENDER_ENABLED || !isEnabled() || scenery == null || scenery.entity == null) return false;
 		return isLiveRoofSearchCandidate(scenery);
 	}
 
 	private static boolean isLiveRoofSearchCandidate(Scenery scenery) {
 		Player self = PlayerList.self;
-		if (self == null || scenery.level < Player.plane || scenery.level > Player.plane + 1) return false;
+		if (self == null || SceneGraph.tiles == null || scenery.level < Player.plane
+				|| scenery.level >= SceneGraph.tiles.length) return false;
 		int shape = (int) (scenery.key >>> 14 & 0x3FL);
 		return shape >= LocType.ROOF_STRAIGHT && shape <= LocType.ROOFEDGE_SQUARECORNER;
 	}
@@ -328,7 +343,7 @@ public final class ModernCeiling {
 	private static void scanLiveRoofCandidates() {
 		Player self = PlayerList.self;
 		if (self == null || SceneGraph.tiles == null) return;
-		for (int plane = Player.plane; plane <= Player.plane + 1 && plane < SceneGraph.tiles.length; plane++) {
+		for (int plane = Player.plane; plane < SceneGraph.tiles.length; plane++) {
 			Tile[][] level = SceneGraph.tiles[plane];
 			if (level == null) continue;
 			int x0 = Math.max(0, LightingManager.anInt987);
@@ -420,21 +435,6 @@ public final class ModernCeiling {
 		directRoofMeshSummaryBatches = 0;
 	}
 
-	private static boolean isPlayerUnderRoofWithoutFloor() {
-		Player self = PlayerList.self;
-		if (self == null || Player.plane < 0 || Player.plane >= SceneGraph.renderFlags.length) {
-			return false;
-		}
-		int x = self.xFine >> 7;
-		int z = self.zFine >> 7;
-		if (x < 0 || z < 0 || x >= SceneGraph.renderFlags[Player.plane].length
-				|| z >= SceneGraph.renderFlags[Player.plane][x].length) {
-			return false;
-		}
-		return (SceneGraph.renderFlags[Player.plane][x][z] & plugin.api.API.TILE_FLAG_UNDER_ROOF) != 0
-				&& !hasLiveFloorAbovePlayer();
-	}
-
 	private static boolean hasLiveFloorAbovePlayer() {
 		Player self = PlayerList.self;
 		if (self == null || SceneGraph.tiles == null) {
@@ -450,6 +450,113 @@ public final class ModernCeiling {
 		}
 		Tile overhead = SceneGraph.tiles[upperPlane][x][z];
 		return overhead != null && (overhead.plainTile != null || overhead.shapedTile != null);
+	}
+
+	private static boolean hasLiveFloorAbovePlayerOrInCameraView() {
+		return hasLiveFloorAbovePlayer() || hasCameraViewCeilingState();
+	}
+
+	private static boolean shouldRenderRoofUndersides() {
+		return hasCameraViewRoofState();
+	}
+
+	private static boolean hasCameraViewCeilingState() {
+		refreshCameraViewState();
+		return floorAboveInCameraView;
+	}
+
+	private static boolean hasCameraViewRoofState() {
+		refreshCameraViewState();
+		return roofTileInCameraView;
+	}
+
+	/**
+	 * Finds existing upper-floor and roof tiles in the current camera cone.
+	 * SceneGraph still performs the real visibility/depth work; this only
+	 * enables the already-existing reversed-face submission in FP.
+	 */
+	private static void refreshCameraViewState() {
+		if (viewScanLoop == client.loop) {
+			return;
+		}
+		viewScanLoop = client.loop;
+		floorAboveInCameraView = false;
+		roofTileInCameraView = false;
+		if (SceneGraph.tiles == null || SceneGraph.renderFlags == null || Player.plane < 0) {
+			return;
+		}
+		int cameraTileX = Camera.renderX >> 7;
+		int cameraTileZ = Camera.renderZ >> 7;
+		int x0 = Math.max(0, cameraTileX - VIEW_SCAN_RADIUS_TILES);
+		int x1 = Math.min(103, cameraTileX + VIEW_SCAN_RADIUS_TILES);
+		int z0 = Math.max(0, cameraTileZ - VIEW_SCAN_RADIUS_TILES);
+		int z1 = Math.min(103, cameraTileZ + VIEW_SCAN_RADIUS_TILES);
+		int upperPlane = Player.plane + 1;
+		for (int x = x0; x <= x1; x++) {
+			for (int z = z0; z <= z1; z++) {
+				if (!isTileInCameraView(x, z, upperPlane)) {
+					continue;
+				}
+				if (!floorAboveInCameraView && hasUpperFloorTile(upperPlane, x, z)) {
+					floorAboveInCameraView = true;
+				}
+				if (!roofTileInCameraView && isRoofFlaggedTile(Player.plane, x, z)) {
+					roofTileInCameraView = true;
+				}
+				if (floorAboveInCameraView && roofTileInCameraView) {
+					return;
+				}
+			}
+		}
+	}
+
+	private static boolean hasUpperFloorTile(int plane, int x, int z) {
+		if (plane < 0 || plane >= SceneGraph.tiles.length || SceneGraph.tiles[plane] == null
+				|| x < 0 || x >= SceneGraph.tiles[plane].length || SceneGraph.tiles[plane][x] == null
+				|| z < 0 || z >= SceneGraph.tiles[plane][x].length) {
+			return false;
+		}
+		Tile tile = SceneGraph.tiles[plane][x][z];
+		return tile != null && (tile.plainTile != null || tile.shapedTile != null);
+	}
+
+	private static boolean isRoofFlaggedTile(int plane, int x, int z) {
+		return plane >= 0 && plane < SceneGraph.renderFlags.length
+				&& SceneGraph.renderFlags[plane] != null
+				&& x >= 0 && x < SceneGraph.renderFlags[plane].length
+				&& SceneGraph.renderFlags[plane][x] != null
+				&& z >= 0 && z < SceneGraph.renderFlags[plane][x].length
+				&& (SceneGraph.renderFlags[plane][x][z] & plugin.api.API.TILE_FLAG_UNDER_ROOF) != 0;
+	}
+
+	private static boolean isSceneryInCameraView(Scenery scenery) {
+		return isCameraViewPoint(scenery.anInt1699, scenery.anInt1706, scenery.anInt1703);
+	}
+
+	private static boolean isTileInCameraView(int x, int z, int upperPlane) {
+		int fineX = (x << 7) + 64;
+		int fineZ = (z << 7) + 64;
+		return isCameraViewPoint(fineX, SceneGraph.getTileHeight(upperPlane, fineX, fineZ), fineZ);
+	}
+
+	/** Conservative screen-cone test using the same transform as the client camera. */
+	private static boolean isCameraViewPoint(int fineX, int fineY, int fineZ) {
+		int localX = fineX - Camera.renderX;
+		int localZ = fineZ - Camera.renderZ;
+		int localY = fineY - Camera.anInt40;
+		int sinYaw = MathUtils.sin[Camera.cameraYaw];
+		int cosYaw = MathUtils.cos[Camera.cameraYaw];
+		int rotatedX = localX * cosYaw + localZ * sinYaw >> 16;
+		int rotatedZ = localZ * cosYaw - localX * sinYaw >> 16;
+		int depth = rotatedZ * MathUtils.cos[Camera.cameraPitch] + localY * MathUtils.sin[Camera.cameraPitch] >> 16;
+		// Keep roof eligibility aligned with the actual active render distance,
+		// not the old 14-tile diagnostic scan. This matters for higher storeys
+		// whose visible roof geometry is farther away along the camera ray.
+		if (depth < 50 || depth > GlobalConfig.VIEW_DISTANCE) {
+			return false;
+		}
+		int vertical = localY * MathUtils.cos[Camera.cameraPitch] - rotatedZ * MathUtils.sin[Camera.cameraPitch] >> 16;
+		return Math.abs(rotatedX) <= depth * 2 + 128 && Math.abs(vertical) <= depth * 2 + 256;
 	}
 
 	/** One throttled proof that the exact plane-above GL batches were reissued. */

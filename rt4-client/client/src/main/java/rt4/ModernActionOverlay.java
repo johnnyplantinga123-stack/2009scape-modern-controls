@@ -452,26 +452,27 @@ public final class ModernActionOverlay {
 		// resolveEntryTile before any range check. The collect loop below
 		// therefore matches on the pick KEY only.
 
-		// Hysteresis: prefer last frame's target if it is still in the menu.
+		// Scene pick tags are the actual crosshair hits. Do not let MiniMenu
+		// action sorting or last-frame hysteresis select an entity behind the
+		// first visible target.
 		long targetKey = Long.MIN_VALUE;
 		int targetX = -1;
 		int targetZ = -1;
 		String reject = "";
-		if (lastTargetKey != Long.MIN_VALUE) {
-			for (int i = 1; i < MiniMenu.size; i++) {
-				if (MiniMenu.keys[i] != lastTargetKey || !isWorldAction(MiniMenu.actions[i])) {
-					continue;
-				}
-				if (!resolveEntryTile(lastTargetKey, MiniMenu.actions[i], MiniMenu.intArgs1[i], MiniMenu.intArgs2[i], scratchTile)) {
-					continue;
-				}
-				targetKey = lastTargetKey;
+		int frontmostEntry = findFrontmostScenePickEntry();
+		if (frontmostEntry >= 0) {
+			targetKey = MiniMenu.keys[frontmostEntry];
+			if (resolveEntryTile(targetKey, MiniMenu.actions[frontmostEntry],
+					MiniMenu.intArgs1[frontmostEntry], MiniMenu.intArgs2[frontmostEntry], scratchTile)) {
 				targetX = scratchTile[0];
 				targetZ = scratchTile[1];
-				break;
+			} else {
+				targetKey = Long.MIN_VALUE;
+				reject = "NO_LIVE_TILE";
 			}
 		}
 		if (targetKey == Long.MIN_VALUE) {
+			// Ground/action fallback when a legacy renderer path has no pick tag.
 			for (int i = MiniMenu.size - 1; i >= 1; i--) {
 				if (!isWorldAction(MiniMenu.actions[i])) {
 					continue;
@@ -528,6 +529,103 @@ public final class ModernActionOverlay {
 		snapshotTargetName = toPlainString(targetName);
 		snapshotValid = snapshotCount > 0;
 		refreshNpcPickDiagnostics(selfTileX, selfTileZ, reject);
+	}
+
+	/**
+	 * Chooses the nearest actual scene hit along the camera ray. Model pick tags
+	 * exclude entities that merely share a tile with the cursor hit; camera-space
+	 * depth then resolves overlapping LOC/NPC/player candidates by what is in
+	 * front of the view.
+	 */
+	private static int findFrontmostScenePickEntry() {
+		int pickCount = Math.min(MiniMenu.anInt7, Model.aLongArray11.length);
+		int bestEntry = -1;
+		int bestDepth = Integer.MAX_VALUE;
+		for (int i = 0; i < pickCount; i++) {
+			long tag = Model.aLongArray11[i];
+			int entry = findWorldEntryForScenePick(tag);
+			if (entry < 0 || !resolveEntryTile(MiniMenu.keys[entry], MiniMenu.actions[entry],
+					MiniMenu.intArgs1[entry], MiniMenu.intArgs2[entry], scratchTile)) {
+				continue;
+			}
+			int depth = getCameraDepth(scratchTile[0], scratchTile[1]);
+			if (depth < 50) {
+				continue;
+			}
+			// Equal-depth tags use the later renderer submission, the top layer
+			// of the legacy pick path.
+			if (depth <= bestDepth) {
+				bestDepth = depth;
+				bestEntry = entry;
+			}
+		}
+		return bestEntry;
+	}
+
+	private static int findWorldEntryForScenePick(long tag) {
+		int type = (int) tag >> 29 & 0x3;
+		int index = (int) (tag >>> 32) & Integer.MAX_VALUE;
+		int tileX = (int) tag & 0x7F;
+		int tileZ = (int) tag >> 7 & 0x7F;
+		for (int i = MiniMenu.size - 1; i >= 1; i--) {
+			short action = MiniMenu.actions[i];
+			if (!isWorldAction(action)) {
+				continue;
+			}
+			if (type == 2 && isLocActionCode(action) && MiniMenu.keys[i] == tag) {
+				return i;
+			}
+			if (type == 1 && isNpcActionCode(action) && MiniMenu.keys[i] == index) {
+				return i;
+			}
+			if (type == 0 && isPlayerActionCode(action) && MiniMenu.keys[i] == index) {
+				return i;
+			}
+			if (type == 3 && isObjStackActionCode(action)
+					&& MiniMenu.intArgs1[i] == tileX && MiniMenu.intArgs2[i] == tileZ) {
+				return i;
+			}
+		}
+		return -1;
+	}
+
+	private static int getCameraDepth(int tileX, int tileZ) {
+		int fineX = (tileX << 7) + 64;
+		int fineZ = (tileZ << 7) + 64;
+		int localX = fineX - Camera.renderX;
+		int localZ = fineZ - Camera.renderZ;
+		int localY = SceneGraph.getTileHeight(Player.plane, fineX, fineZ) - Camera.anInt40;
+		int rotatedZ = localZ * MathUtils.cos[Camera.cameraYaw] - localX * MathUtils.sin[Camera.cameraYaw] >> 16;
+		return rotatedZ * MathUtils.cos[Camera.cameraPitch] + localY * MathUtils.sin[Camera.cameraPitch] >> 16;
+	}
+
+	private static boolean isLocActionCode(short action) {
+		int code = normaliseActionCode(action);
+		return code == MiniMenu.LOC_ACTION_1 || code == MiniMenu.LOC_ACTION_2
+				|| code == MiniMenu.LOC_ACTION_3 || code == MiniMenu.LOC_ACTION_4
+				|| code == MiniMenu.LOC_ACTION_5 || code == MiniMenu.LOC_ACTION_EXAMINE
+				|| code == MiniMenu.OBJ_LOC_ACTION || code == MiniMenu.COMPONENT_LOC_ACTION;
+	}
+
+	private static boolean isObjStackActionCode(short action) {
+		int code = normaliseActionCode(action);
+		return code == 21 || code == 34 || code == MiniMenu.OBJSTACK_ACTION_1
+				|| code == MiniMenu.OBJSTACK_ACTION_2 || code == 24 || code == MiniMenu.OBJ_EXAMINE
+				|| code == MiniMenu.OBJ_OBJSTACK_ACTION || code == MiniMenu.COMPONENT_OBJSTACK_ACTION;
+	}
+
+	private static boolean isPlayerActionCode(short action) {
+		int code = normaliseActionCode(action);
+		return code == MiniMenu.PLAYER_ACTION_1 || code == MiniMenu.PLAYER_ACTION_TRADE
+				|| code == MiniMenu.PLAYER_FOLLOW_ACTION || code == MiniMenu.PLAYER_REQ_ASSIST_ACTION
+				|| code == MiniMenu.UNKNOWN_44 || code == MiniMenu.UNKNOWN_10
+				|| code == MiniMenu.PLAYER_ACTION_5 || code == MiniMenu.OBJ_PLAYER_ACTION
+				|| code == MiniMenu.COMPONENT_PLAYER_ACTION;
+	}
+
+	private static int normaliseActionCode(short action) {
+		int code = action;
+		return code >= 2000 ? code - 2000 : code;
 	}
 
 	/**

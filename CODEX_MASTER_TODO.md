@@ -1900,15 +1900,15 @@ Current important truth:
 
 PHASE A — FIX CURRENT BROKEN SYSTEMS
 
-[ ] FP context menu wheel.
+[x] FP context menu wheel. USER RUNTIME VERIFIED.
 
-[ ] FP context menu highlight.
+[x] FP context menu highlight. USER RUNTIME VERIFIED.
 
 [ ] NPC overlay.
 
 [ ] dialogue 1–5.
 
-[ ] F11 ORIGINAL clipping/pathfinding regression.
+[x] F11 ORIGINAL clipping/pathfinding regression. USER RUNTIME VERIFIED.
 
 [ ] frontmost targeting.
 

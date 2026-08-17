@@ -243,6 +243,9 @@ public class MiniMap {
 			} else {
 				((SoftwareSprite) sprite).renderRotated(arg2, arg1, arg3.width, arg3.height, local57, local67, local48, anInt4130 + 256, arg3.anIntArray37, arg3.anIntArray45);
 			}
+			// Draw in the actual minimap layer, before dots/flags/player marker.
+			// The helper uses this same map rotation and the configured camera FOV.
+			ModernHud.drawMinimapCameraCone(arg2, arg1, arg3, local48);
 			@Pc(146) int local146;
 			@Pc(181) int local181;
 			@Pc(150) int local150;

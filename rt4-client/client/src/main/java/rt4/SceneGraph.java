@@ -2330,7 +2330,9 @@ public class SceneGraph {
 		// identity rather than its origin: a large roof can cover this visibility
 		// window even when its origin/footprint starts outside the player tile.
 		IdentityHashMap<Scenery, Boolean> submitted = new IdentityHashMap<Scenery, Boolean>();
-		for (int level = Player.plane; level <= Player.plane + 1 && level < tiles.length; level++) {
+		// Roof geometry can live two or three storeys above the player.  Submit
+		// every visible scene level; its true depth decides the final layering.
+		for (int level = Player.plane; level < tiles.length; level++) {
 			Tile[][] planeTiles = tiles[level];
 			if (planeTiles == null) continue;
 			int x0 = Math.max(0, LightingManager.anInt987);
@@ -2343,7 +2345,10 @@ public class SceneGraph {
 				int z1 = Math.min(row.length - 1, LightingManager.anInt4866 - 1);
 				for (int z = z0; z <= z1; z++) {
 					Tile tile = row[z];
-					if (tile == null) continue;
+					// Match the current SceneGraph visibility set. This includes large
+					// roof footprints whose origin is outside the camera cone, without
+					// reissuing every off-screen roof in the square scan window.
+					if (tile == null || !tile.aBoolean45) continue;
 					for (int i = 0; i < tile.sceneryLen; i++) {
 						Scenery scenery = tile.scenery[i];
 						if (scenery == null || submitted.put(scenery, Boolean.TRUE) != null) continue;

@@ -445,16 +445,11 @@ public final class ModernDialogueKeyboard {
 	// ---- Round #7D P1: structural choice-interface family ----
 
 	/**
-	 * Round #7D P1: the multi-choice dialogue interface family, proven from
-	 * the 530 cache names (530_interface_names.txt: 228/230/232/234 =
-	 * multi2..multi5, 236/237/238 = multivar2/4/5) and the 498 component dump
-	 * (498_interface_dump.txt: every one of 228..238 has child 0 =
-	 * "Select an Option" title and children 1..N = option1..optionN in
-	 * rendered top-to-bottom order). 241..244 are npcchat continue dialogues
-	 * and are deliberately NOT in this family.
+	 * Choice dialogues use this title in the cache. The old implementation
+	 * only accepted ids 228..238, while the current cache also has genuine
+	 * Select-an-Option interfaces such as 451, 458, 557 and 718.
 	 */
-	private static final int CHOICE_FAMILY_MIN = 228;
-	private static final int CHOICE_FAMILY_MAX = 238;
+	private static final JagString SELECT_AN_OPTION_TITLE = JagString.parse("Select an Option");
 
 	/** Max option children per family interface (option1..option5). */
 	private static final int MAX_FAMILY_OPTIONS = 5;
@@ -466,10 +461,9 @@ public final class ModernDialogueKeyboard {
 	private static final int ROUTE_CS1_BUTTON = -1;
 
 	/**
-	 * Returns the id of the currently OPEN choice-family interface with at
-	 * least one visible clickable option child, or -1. Structural only — no
-	 * op-scanning of arbitrary interfaces, so always-open HUD interfaces can
-	 * never false-positive (the Round #7C failure mode).
+	 * Returns the id of the currently OPEN Select-an-Option interface with at
+	 * least one visible clickable option child, or -1. The title plus actual
+	 * option children prevents ordinary HUD interfaces from false-positiving.
 	 */
 	private static int findChoiceInterfaceId() {
 		if (InterfaceList.components == null) {
@@ -477,16 +471,20 @@ public final class ModernDialogueKeyboard {
 		}
 		for (ComponentPointer p = (ComponentPointer) InterfaceList.openInterfaces.head(); p != null; p = (ComponentPointer) InterfaceList.openInterfaces.next()) {
 			int iface = p.interfaceId;
-			if (iface < CHOICE_FAMILY_MIN || iface > CHOICE_FAMILY_MAX
-					|| iface >= InterfaceList.components.length) {
+			if (iface < 0 || iface >= InterfaceList.components.length) {
 				continue;
 			}
 			Component[] comps = InterfaceList.components[iface];
-			if (comps != null && countFamilyOptions(comps) > 0) {
+			if (isSelectAnOptionInterface(comps) && countFamilyOptions(comps) > 0) {
 				return iface;
 			}
 		}
 		return -1;
+	}
+
+	private static boolean isSelectAnOptionInterface(Component[] comps) {
+		return comps != null && comps.length > 1 && comps[0] != null
+				&& comps[0].text != null && comps[0].text.equalsIgnoreCase(SELECT_AN_OPTION_TITLE);
 	}
 
 	/** Visible option children = structural children 1..5 that are clickable. */
