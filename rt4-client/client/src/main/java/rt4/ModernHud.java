@@ -71,7 +71,8 @@ public final class ModernHud {
 	/**
 	 * Repositions the real cache widgets after normal responsive layout. Their
 	 * existing component instances therefore remain the render and input
-	 * hitboxes. Leaving first person runs the normal cache layout again.
+	 * hitboxes. Leaving the MODERN control profile runs the normal cache layout
+	 * again.
 	 */
 	public static void layoutVanillaHud() {
 		int root = InterfaceList.topLevelInterface;
@@ -1119,8 +1120,14 @@ public final class ModernHud {
 		return value;
 	}
 
+	/**
+	 * FIRST_PERSON and CHASE share the modern action HUD. FREE deliberately
+	 * restores the normal vanilla interface: it is the classic free-camera
+	 * experience, even though the MODERN movement profile remains active.
+	 */
 	private static boolean isFullHudActive() {
-		return CameraMode.isModern() && ModernCameraRig.isFirstPersonRigState();
+		return CameraMode.isModern()
+				&& ModernCameraRig.getRigState() != ModernCameraRig.RigState.FREE;
 	}
 
 	private static String currentModeLabel() {

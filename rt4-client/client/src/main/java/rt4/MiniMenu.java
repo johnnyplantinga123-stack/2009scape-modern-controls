@@ -516,6 +516,12 @@ public class MiniMenu {
 		if (ModernQuickBars.handleMenuAction(actionCode, local15, local19, local36)) {
 			return;
 		}
+		// A clicked scene action uses the authentic client PathFinder route before
+		// its packet reaches the server. FP/CHASE must let that route animate the
+		// local player and camera; Q16 WASD prediction resumes after it completes.
+		if (isWorldInteractionAction(actionCode)) {
+			ModernMovementController.beginServerDrivenInteraction();
+		}
 		// Round #7 P3: one-shot trace of the real vanilla dialogue click
 		// route (CS1 button / if3 op / continue) — observation only.
 		if (actionCode == UNKNOWN_8 || actionCode == UNKNOWN_9
@@ -1246,6 +1252,23 @@ public class MiniMenu {
 		if (pressedInventoryComponent != null && anInt2043 == 0) {
 			InterfaceList.redraw(pressedInventoryComponent);
 		}
+	}
+
+	/** True for scene/entity actions whose vanilla execution path starts a route. */
+	private static boolean isWorldInteractionAction(int actionCode) {
+		return actionCode == NPC_ACTION_1 || actionCode == NPC_ACTION_2
+				|| actionCode == NPC_ACTION_3 || actionCode == NPC_ACTION_4
+				|| actionCode == NPC_ACTION_5 || actionCode == PLAYER_ACTION_1
+				|| actionCode == PLAYER_ACTION_BLOCK || actionCode == PLAYER_ACTION_TRADE
+				|| actionCode == PLAYER_REQ_ASSIST_ACTION || actionCode == PLAYER_FOLLOW_ACTION
+				|| actionCode == PLAYER_ACTION_5 || actionCode == OBJSTACK_ACTION_1
+				|| actionCode == OBJSTACK_ACTION_2 || actionCode == LOC_ACTION_1
+				|| actionCode == LOC_ACTION_2 || actionCode == LOC_ACTION_3
+				|| actionCode == LOC_ACTION_4 || actionCode == LOC_ACTION_5
+				|| actionCode == OBJ_NPC_ACTION || actionCode == OBJ_LOC_ACTION
+				|| actionCode == OBJ_OBJSTACK_ACTION || actionCode == COMPONENT_NPC_ACTION
+				|| actionCode == COMPONENT_PLAYER_ACTION || actionCode == COMPONENT_LOC_ACTION
+				|| actionCode == COMPONENT_OBJSTACK_ACTION;
 	}
 
 	/** Executes a synthetic hotbar activation through the existing doAction route. */

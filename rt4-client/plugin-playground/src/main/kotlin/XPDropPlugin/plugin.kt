@@ -9,6 +9,8 @@ import plugin.api.FontType
 import plugin.api.TextModifier
 import plugin.api.WindowMode
 import rt4.Sprite
+import rt4.CameraMode
+import rt4.ModernCameraRig
 import rt4.client
 import java.awt.Color
 import java.awt.image.BufferedImage
@@ -161,6 +163,9 @@ class plugin : Plugin() {
 
     private fun drawDefaultXPBox() {
         var posX = API.GetWindowDimensions().width / 2
+        // The modern compass occupies y=9..53. Keep the XP box beneath it,
+        // rather than letting its upper ornament render through the compass.
+        val boxTop = if (CameraMode.isModern() && !ModernCameraRig.isFreeRigState()) 68 else 5
         val posY = API.GetWindowDimensions().height / 4
 
         if (API.GetWindowMode() == WindowMode.FIXED)
@@ -176,20 +181,20 @@ class plugin : Plugin() {
         val brCorner = spriteCache.getOrPut(827) { API.GetSprite(827) }
         val bg = spriteCache.getOrPut(657) { API.GetSprite(657) }
 
-        bg?.render(posX - 77, 10)
-        API.FillRect(posX - 75, 5, 140, 30, 0, 64)
+        bg?.render(posX - 77, boxTop + 5)
+        API.FillRect(posX - 75, boxTop, 140, 30, 0, 64)
 
-        blCorner?.render(posX - 77, 10)
-        tlCorner?.render(posX - 77, 5)
-        trCorner?.render(posX + 41, 5)
-        brCorner?.render(posX + 41, 10)
+        blCorner?.render(posX - 77, boxTop + 5)
+        tlCorner?.render(posX - 77, boxTop)
+        trCorner?.render(posX + 41, boxTop)
+        brCorner?.render(posX + 41, boxTop + 5)
 
-        horizontalTop?.render(posX - 45, -8)
-        horizontal?.render(posX - 45, 22)
-        horizontalTop?.render(posX - 15, -8)
-        horizontal?.render(posX - 15, 22)
-        horizontalTop?.render(posX + 9, -8)
-        horizontal?.render(posX + 9, 22)
+        horizontalTop?.render(posX - 45, boxTop - 13)
+        horizontal?.render(posX - 45, boxTop + 17)
+        horizontalTop?.render(posX - 15, boxTop - 13)
+        horizontal?.render(posX - 15, boxTop + 17)
+        horizontalTop?.render(posX + 9, boxTop - 13)
+        horizontal?.render(posX + 9, boxTop + 17)
 
         DrawText(
                 FontType.SMALL,
@@ -197,7 +202,7 @@ class plugin : Plugin() {
                 TextModifier.LEFT,
                 "Total Xp: ${addCommas(totalXp.toString())}",
                 posX - 65,
-                28
+                boxTop + 23
         )
     }
 

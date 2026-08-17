@@ -1920,9 +1920,10 @@ PHASE B — COMPLETE CORE INTERACTION
 
 [ ] E / quick interaction finalisation.
 
-[ ] direct LMB combat targeting.
+[x] direct LMB combat targeting. USER RUNTIME VERIFIED.
 
-[ ] combat target lock.
+[x] combat target lock and server-authoritative MODERN WASD persistence.
+    USER RUNTIME VERIFIED.
 
 PHASE C — MODERN UI FOUNDATION
 
@@ -2078,6 +2079,13 @@ IMPORTANT:
 ============================================================
 59 — FIRST-PERSON DAMAGE DIRECTION INDICATOR
 ============================================================
+
+STATUS: USER RUNTIME VERIFIED (17-08-2026).
+
+The current implementation is server-authoritative: a finalized combat impact
+sends only a quantized direction to the affected MODERN-session player. The
+client rotates that cue into camera space and fades simultaneous cues without
+replacing normal hit splats or exposing attacker identity.
 
 When the player receives damage in FIRST_PERSON, they need spatial feedback
 showing approximately where the attack came from.
@@ -2706,6 +2714,11 @@ normal player use/community testing.
 ============================================================
 72 — MODERN UI PROFILE / F11 COMPLETE UI SWITCH
 ============================================================
+
+IMPLEMENTED IN SOURCE (17-08-2026) — runtime verification pending:
+the modern HUD is present in FIRST_PERSON and CHASE. FREE deliberately restores
+the normal vanilla layout; returning to ORIGINAL does the same. Interface state
+remains untouched across every transition.
 
 F11 must switch more than camera/control behaviour.
 

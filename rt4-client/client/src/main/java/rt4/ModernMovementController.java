@@ -151,6 +151,15 @@ public final class ModernMovementController {
 	// ==== FLAGS ====
 	private static boolean initialized;
 	private static boolean suspended;
+	/**
+	 * A world interaction has installed a normal vanilla route. Unlike WASD
+	 * prediction, that route must remain intact so the visible local player,
+	 * camera and the server's MovementPulse all agree on reaching the target.
+	 */
+	private static boolean serverDrivenInteraction;
+	private static boolean serverDrivenRouteObserved;
+	private static int serverDrivenInteractionStartedAt;
+	private static final int INTERACTION_ROUTE_GRACE_TICKS = 40;
 
 	// ==== Round P4B: F11 EXIT resync ====
 	// Round #8 P10: REMOVED time-based post-exit drain. The 150-tick blanket
@@ -247,6 +256,8 @@ public final class ModernMovementController {
 		clearPending();
 		initialized = true;
 		suspended = false;
+		serverDrivenInteraction = false;
+		serverDrivenRouteObserved = false;
 	}
 
 	/**
@@ -329,6 +340,8 @@ public final class ModernMovementController {
 		clearPending();
 		initialized = false;
 		suspended = false;
+		serverDrivenInteraction = false;
+		serverDrivenRouteObserved = false;
 		wasFirstPersonLastTick = false;
 		lastMovementState = MovementState.IDLE;
 
@@ -409,6 +422,9 @@ public final class ModernMovementController {
 		if (!CameraMode.isModern()) {
 			return false;
 		}
+		if (serverDrivenInteraction) {
+			return false;
+		}
 		// Rig active in FREE = vanilla locomotion owns movement.
 		// Rig inactive keeps the proven Phase 3B behaviour (Q16 owns).
 		return !ModernCameraRig.isActive()
@@ -432,7 +448,31 @@ public final class ModernMovementController {
 		if (!CameraMode.isModern()) {
 			return "ORIGINAL";
 		}
+		if (serverDrivenInteraction) {
+			return "VANILLA_INTERACTION";
+		}
 		return isModernQ16Owner() ? "MODERN_Q16" : "VANILLA_FREE";
+	}
+
+	/**
+	 * Gives a normal world interaction its original local route back. The
+	 * client-side {@link PathFinder} route created by {@link MiniMenu#doAction}
+	 * is the same route the server will validate and execute through its
+	 * MovementPulse. Keeping it live is essential in FP/CHASE: otherwise the
+	 * server walks the player while the local camera remains frozen.
+	 */
+	public static void beginServerDrivenInteraction() {
+		if (!initialized || !isModernQ16Owner() || PlayerList.self == null) {
+			return;
+		}
+		velocityXQ16 = 0;
+		velocityZQ16 = 0;
+		intent.clear();
+		clearPending();
+		lastMovementState = MovementState.IDLE;
+		serverDrivenInteraction = true;
+		serverDrivenRouteObserved = false;
+		serverDrivenInteractionStartedAt = client.loop;
 	}
 
 	/**
@@ -665,6 +705,11 @@ public final class ModernMovementController {
 	 */
 	public static void update() {
 		if (!initialized) return;
+		if (serverDrivenInteraction) {
+			if (updateServerDrivenInteraction()) {
+				return;
+			}
+		}
 		// Round #6B/C P7: FREE hands locomotion back to vanilla — no Q16
 		// writes, no WASD, no packets from this controller while FREE.
 		if (!isModernQ16Owner()) return;
@@ -1019,6 +1064,44 @@ public final class ModernMovementController {
 			lastMovementState = currentState;
 			selectAnimationForState();
 		}
+	}
+
+	/**
+	 * While a selected scene action is travelling, {@link NpcList#method4514}
+	 * owns interpolation exactly as it does in ORIGINAL/FREE. Once that route
+	 * is finished (or no route arrives for an immediate interaction), re-seed
+	 * Q16 from the live position without teleporting or altering the server.
+	 */
+	private static boolean updateServerDrivenInteraction() {
+		Player self = PlayerList.self;
+		if (self == null || !CameraMode.isModern()
+				|| ModernCameraRig.isFreeRigState()) {
+			return true;
+		}
+		if (self.movementQueueSize > 0) {
+			serverDrivenRouteObserved = true;
+			return true;
+		}
+		if (!serverDrivenRouteObserved
+				&& client.loop - serverDrivenInteractionStartedAt < INTERACTION_ROUTE_GRACE_TICKS) {
+			return true;
+		}
+		serverDrivenInteraction = false;
+		serverDrivenRouteObserved = false;
+		predictedSubX = ((long) self.xFine) << 16;
+		predictedSubZ = ((long) self.zFine) << 16;
+		lastValidFineX = self.xFine;
+		lastValidFineZ = self.zFine;
+		lastValidInitialized = isFinePositionValid(self.xFine, self.zFine, self.getSize());
+		movementAnchorTileX = self.movementQueueX[0];
+		movementAnchorTileZ = self.movementQueueZ[0];
+		lastServerReportedTileX = movementAnchorTileX;
+		lastServerReportedTileZ = movementAnchorTileZ;
+		lastServerReportTick = client.loop;
+		velocityXQ16 = 0;
+		velocityZQ16 = 0;
+		clearPending();
+		return false;
 	}
 
 	/** Result of one fine-coordinate collision resolution step. */

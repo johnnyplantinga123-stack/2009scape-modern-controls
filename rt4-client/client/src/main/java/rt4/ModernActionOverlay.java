@@ -64,7 +64,6 @@ public final class ModernActionOverlay {
 	 * through existing RuneScape action logic; existing pathfinding/server
 	 * decides where the player must stand and whether the action is in range.
 	 */
-	private static final int INTERACT_RANGE_TILES = 2;
 
 	/** Maximum number of actions displayed for the targeted entity. */
 	private static final int MAX_DISPLAYED_ACTIONS = 3;
@@ -466,12 +465,10 @@ public final class ModernActionOverlay {
 				if (!resolveEntryTile(lastTargetKey, MiniMenu.actions[i], MiniMenu.intArgs1[i], MiniMenu.intArgs2[i], scratchTile)) {
 					continue;
 				}
-				if (Math.max(Math.abs(scratchTile[0] - selfTileX), Math.abs(scratchTile[1] - selfTileZ)) <= INTERACT_RANGE_TILES) {
-					targetKey = lastTargetKey;
-					targetX = scratchTile[0];
-					targetZ = scratchTile[1];
-					break;
-				}
+				targetKey = lastTargetKey;
+				targetX = scratchTile[0];
+				targetZ = scratchTile[1];
+				break;
 			}
 		}
 		if (targetKey == Long.MIN_VALUE) {
@@ -481,10 +478,6 @@ public final class ModernActionOverlay {
 				}
 				if (!resolveEntryTile(MiniMenu.keys[i], MiniMenu.actions[i], MiniMenu.intArgs1[i], MiniMenu.intArgs2[i], scratchTile)) {
 					reject = "NO_LIVE_TILE";
-					continue;
-				}
-				if (Math.max(Math.abs(scratchTile[0] - selfTileX), Math.abs(scratchTile[1] - selfTileZ)) > INTERACT_RANGE_TILES) {
-					reject = "RANGE";
 					continue;
 				}
 				targetKey = MiniMenu.keys[i];
