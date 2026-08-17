@@ -19,6 +19,7 @@ public final class ModernQuickBars {
 	private static final int INVENTORY_INTERFACE = 149;
 	private static final int PRAYER_INTERFACE = 271;
 	private static final int MAGIC_INTERFACE = 192;
+	private static final int PRAYER_SKILL = 5;
 	/** Cache prayer button children and their server-authoritative config varps. */
 	private static final int[] PRAYER_BUTTONS = {
 			5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31,
@@ -35,6 +36,8 @@ public final class ModernQuickBars {
 	private static final int[] actionComponentIds = new int[ACTION_SLOT_COUNT];
 	private static final int[] actionCreatedIds = new int[ACTION_SLOT_COUNT];
 	private static final boolean[] numberWasPressed = new boolean[ACTION_SLOT_COUNT];
+	/** Interface generation whose on-load lifecycle has already been run for the action bar. */
+	private static Component[] initializedPrayerComponents;
 
 	static {
 		resetAssignments();
@@ -175,11 +178,46 @@ public final class ModernQuickBars {
 		if (component == null || component.type != 5) {
 			return null;
 		}
-		// The selected cache sprite for several prayers is deliberately dark.
-		// Keep the icon readable here and communicate the active state through the
-		// action-bar slot highlight instead.
+		if (component.id >>> 16 == PRAYER_INTERFACE) {
+			prewarmPrayerSprites();
+			// Prayer widgets supply a dim normal sprite and a bright active sprite.
+			// Keep the action bar bright while the player has prayer points, but use
+			// the dim state once the server-authoritative current prayer reaches zero.
+			// Before the first UPDATE_STAT packet, the arrays are zero-filled. Do not
+			// briefly present a newly entered player as prayer-depleted just because
+			// the prayer tab has not been opened yet.
+			boolean prayerStatKnown = PlayerSkillXpTable.baseLevels[PRAYER_SKILL] > 0;
+			boolean hasPrayerPoints = !prayerStatKnown
+					|| PlayerSkillXpTable.boostedLevels[PRAYER_SKILL] > 0;
+			Sprite sprite = component.method489(hasPrayerPoints);
+			return sprite == null ? component.method489(!hasPrayerPoints) : sprite;
+		}
 		Sprite sprite = component.method489(false);
 		return sprite == null ? component.method489(true) : sprite;
+	}
+
+	/** Ensures both cache variants are available without requiring the prayer tab to be opened. */
+	private static void prewarmPrayerSprites() {
+		if (!InterfaceList.load(PRAYER_INTERFACE)
+				|| InterfaceList.components[PRAYER_INTERFACE] == null) {
+			initializedPrayerComponents = null;
+			return;
+		}
+		Component[] prayerComponents = InterfaceList.components[PRAYER_INTERFACE];
+		if (initializedPrayerComponents != prayerComponents) {
+			// Opening the vanilla tab runs this lifecycle. Do it once here too so
+			// the action bar sees the final bright prayer sprite on its first F11.
+			InterfaceList.method1626(PRAYER_INTERFACE);
+			initializedPrayerComponents = InterfaceList.components[PRAYER_INTERFACE];
+		}
+		for (int button : PRAYER_BUTTONS) {
+			if (button < 0 || button >= prayerComponents.length) continue;
+			Component prayer = prayerComponents[button];
+			if (prayer != null && prayer.type == 5) {
+				prayer.method489(false);
+				prayer.method489(true);
+			}
+		}
 	}
 
 	public static boolean isActionActive(int slot) {

@@ -151,6 +151,14 @@ public final class ModernCeiling {
 	private static int viewScanLoop = -1;
 	private static boolean floorAboveInCameraView;
 	private static boolean roofTileInCameraView;
+	/**
+	 * Per-frame conservative upper-floor visibility.  The normal SceneGraph
+	 * latch is based on the terrain visibility volume and can lose ceiling edge
+	 * tiles when the first-person camera is looking almost vertically upward.
+	 */
+	private static Tile[][][] conservativeCoverageTiles;
+	private static int[][][] conservativeCoverageLoops;
+	private static int conservativeCoveragePreparedLoop = -1;
 
 	private ModernCeiling() {
 	}
@@ -188,13 +196,116 @@ public final class ModernCeiling {
 	/**
 	 * The plane check is kept at the live floor-batch draw site. Every higher
 	 * live plane is eligible: a multi-storey building can have several real
-	 * floor/ceiling layers above the player. The original scene visibility bits
-	 * and depth buffer still decide which exact tiles can contribute on screen.
+	 * floor/ceiling layers above the player. The exact existing GlTile geometry
+	 * and depth buffer still decide the final pixels; the underside pass adds a
+	 * small screen-safe overscan when the ground-oriented visibility latch drops
+	 * an upward-facing tile at the edge of an extreme pitch.
 	 */
 	static boolean rendersLiveGlMeshForPlane(int floorPlane) {
 		return RENDER_ENABLED && isEnabled() && Player.plane >= 0
 				&& floorPlane > Player.plane && SceneGraph.tiles != null
 				&& floorPlane < SceneGraph.tiles.length;
+	}
+
+	/**
+	 * True only for a real higher-plane tile that falls inside the conservative
+	 * first-person ceiling frustum for this frame.  GlTile consults this solely
+	 * while it reissues the exact upper-floor payload with reversed culling.
+	 */
+	static boolean needsConservativeCeilingCoverage(int plane, int x, int z) {
+		if (!RENDER_ENABLED || !isEnabled() || Player.plane < 0 || plane <= Player.plane
+				|| SceneGraph.tiles == null || plane >= SceneGraph.tiles.length) {
+			return false;
+		}
+		prepareConservativeCoverage();
+		int stamp = client.loop + 1;
+		return conservativeCoverageLoops != null && plane < conservativeCoverageLoops.length
+				&& conservativeCoverageLoops[plane] != null
+				&& x >= 0 && x < conservativeCoverageLoops[plane].length
+				&& conservativeCoverageLoops[plane][x] != null
+				&& z >= 0 && z < conservativeCoverageLoops[plane][x].length
+				&& conservativeCoverageLoops[plane][x][z] == stamp;
+	}
+
+	private static void prepareConservativeCoverage() {
+		Tile[][][] tiles = SceneGraph.tiles;
+		if (tiles == null || Player.plane < 0) {
+			return;
+		}
+		if (conservativeCoveragePreparedLoop == client.loop && conservativeCoverageTiles == tiles) {
+			return;
+		}
+		conservativeCoveragePreparedLoop = client.loop;
+		if (conservativeCoverageTiles != tiles || conservativeCoverageLoops == null) {
+			conservativeCoverageTiles = tiles;
+			conservativeCoverageLoops = new int[tiles.length][][];
+			for (int plane = 0; plane < tiles.length; plane++) {
+				Tile[][] level = tiles[plane];
+				if (level == null) continue;
+				conservativeCoverageLoops[plane] = new int[level.length][];
+				for (int x = 0; x < level.length; x++) {
+					conservativeCoverageLoops[plane][x] = level[x] == null ? new int[0] : new int[level[x].length];
+				}
+			}
+		}
+		for (int plane = Player.plane + 1; plane < tiles.length; plane++) {
+			Tile[][] level = tiles[plane];
+			if (level == null) continue;
+			int x0 = Math.max(0, LightingManager.anInt987);
+			int x1 = Math.min(level.length - 1, LightingManager.anInt15 - 1);
+			if (x0 > x1) continue;
+			for (int x = x0; x <= x1; x++) {
+				Tile[] row = level[x];
+				if (row == null) continue;
+				int z0 = Math.max(0, LightingManager.anInt4698);
+				int z1 = Math.min(row.length - 1, LightingManager.anInt4866 - 1);
+				for (int z = z0; z <= z1; z++) {
+					// A sloped roof can be a pure Scenery tile with no upper-floor
+					// GlTile. Keep it in the same conservative screen mask so the
+					// roof-model underside pass does not inherit ground-only culling.
+					if (row[z] == null) continue;
+					if (isConservativeCeilingTileInView(plane, x, z)) {
+						conservativeCoverageLoops[plane][x][z] = client.loop + 1;
+					}
+				}
+			}
+		}
+	}
+
+	private static boolean isConservativeCeilingTileInView(int plane, int x, int z) {
+		int x0 = x << 7;
+		int z0 = z << 7;
+		int x1 = x0 + 128;
+		int z1 = z0 + 128;
+		return isConservativeCeilingPointInView(x0 + 64, plane, z0 + 64)
+				|| isConservativeCeilingPointInView(x0, plane, z0)
+				|| isConservativeCeilingPointInView(x1, plane, z0)
+				|| isConservativeCeilingPointInView(x0, plane, z1)
+				|| isConservativeCeilingPointInView(x1, plane, z1);
+	}
+
+	private static boolean isConservativeCeilingPointInView(int fineX, int plane, int fineZ) {
+		int fineY = SceneGraph.getTileHeight(plane, fineX, fineZ);
+		int localX = fineX - Camera.renderX;
+		int localZ = fineZ - Camera.renderZ;
+		int localY = fineY - Camera.anInt40;
+		int sinYaw = MathUtils.sin[Camera.cameraYaw];
+		int cosYaw = MathUtils.cos[Camera.cameraYaw];
+		int rotatedX = localX * cosYaw + localZ * sinYaw >> 16;
+		int rotatedZ = localZ * cosYaw - localX * sinYaw >> 16;
+		int sinPitch = MathUtils.sin[Camera.cameraPitch];
+		int cosPitch = MathUtils.cos[Camera.cameraPitch];
+		int depth = rotatedZ * cosPitch + localY * sinPitch >> 16;
+		// Let hardware clipping resolve a triangle that crosses the near plane.
+		if (depth < -256 || depth > GlobalConfig.VIEW_DISTANCE + 512) {
+			return false;
+		}
+		int vertical = localY * cosPitch - rotatedZ * sinPitch >> 16;
+		int screenDepth = Math.max(0, depth);
+		// Deliberately wider than the normal camera cone. This is a small
+		// overscan for tile corners, not an infinite or reconstructed roof.
+		return Math.abs(rotatedX) <= screenDepth * 3 + 384
+				&& Math.abs(vertical) <= screenDepth * 3 + 384;
 	}
 
 	/**

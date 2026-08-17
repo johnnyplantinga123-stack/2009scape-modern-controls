@@ -946,35 +946,40 @@ public final class GlModel extends Model {
 		if (!this.bounds.valid) {
 			this.calculateBounds();
 		}
+		// SceneGraph has already selected this exact roof model for the bounded
+		// first-person underside coverage pass. The generic model bounds test is
+		// ground-view oriented and can reject a sloped roof at a near-vertical
+		// upward pitch before OpenGL gets a chance to clip its real triangles.
+		boolean directRoofUnderside = ModernCeiling.isLiveRoofUndersideSubmission();
 		@Pc(13) short local13 = this.bounds.cylinderRadius;
 		@Pc(17) short local17 = this.bounds.minY;
 		@Pc(21) short local21 = this.bounds.maxY;
 		@Pc(31) int local31 = arg7 * arg4 - arg5 * arg3 >> 16;
 		@Pc(41) int local41 = arg6 * arg1 + local31 * arg2 >> 16;
 		@Pc(53) int local53 = local41 + (local13 * arg2 + local21 * arg1 >> 16);
-		if (local53 <= GlRenderer.getNearClipDistance()) {
+		if (!directRoofUnderside && local53 <= GlRenderer.getNearClipDistance()) {
 			return;
 		}
 		@Pc(70) int local70 = local41 + (-local13 * arg2 + local17 * arg1 >> 16);
-		if (local70 >= GlobalConfig.VIEW_DISTANCE) {
+		if (!directRoofUnderside && local70 >= GlobalConfig.VIEW_DISTANCE) {
 			return;
 		}
 		@Pc(84) int local84 = arg7 * arg3 + arg5 * arg4 >> 16;
 		@Pc(90) int local90 = local84 + local13 << 9;
-		if (local90 / local53 <= Rasteriser.screenLowerX) {
+		if (!directRoofUnderside && local90 / local53 <= Rasteriser.screenLowerX) {
 			return;
 		}
 		@Pc(102) int local102 = local84 - local13 << 9;
-		if (local102 / local53 >= Rasteriser.screenUpperX) {
+		if (!directRoofUnderside && local102 / local53 >= Rasteriser.screenUpperX) {
 			return;
 		}
 		@Pc(118) int local118 = arg6 * arg2 - local31 * arg1 >> 16;
 		@Pc(132) int local132 = local118 + (local13 * arg1 + local21 * arg2 >> 16) << 9;
-		if (local132 / local53 <= Rasteriser.screenLowerY) {
+		if (!directRoofUnderside && local132 / local53 <= Rasteriser.screenLowerY) {
 			return;
 		}
 		@Pc(153) int local153 = local118 + (-local13 * arg1 + local17 * arg2 >> 16) << 9;
-		if (local153 / local53 >= Rasteriser.screenUpperY) {
+		if (!directRoofUnderside && local153 / local53 >= Rasteriser.screenUpperY) {
 			return;
 		}
 		@Pc(161) int local161 = 0;

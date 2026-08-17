@@ -231,6 +231,17 @@ public final class GlTile extends Node {
 
 	@OriginalMember(owner = "client!hg", name = "a", descriptor = "([[[Lclient!bj;FZ)V")
 	public final void method1944(@OriginalArg(0) Tile[][][] arg0, @OriginalArg(1) float arg1, @OriginalArg(2) boolean arg2) {
+		method1944(arg0, arg1, arg2, false);
+	}
+
+	/**
+	 * Draws this exact indexed ground payload.  The optional ceiling coverage
+	 * flag is deliberately limited to the FIRST_PERSON upper-floor underside
+	 * pass: vanilla's visibility latch is tuned for ground-facing views and can
+	 * otherwise omit a real near-vertical ceiling tile at an extreme upward
+	 * pitch.
+	 */
+	public final void method1944(Tile[][][] arg0, float arg1, boolean arg2, boolean ceilingCoverage) {
 		if (aClass3_Sub15_3 == null || aClass3_Sub15_3.data.length < this.anInt2488 * 4) {
 			aClass3_Sub15_3 = new Buffer(this.anInt2488 * 4);
 		} else {
@@ -251,7 +262,8 @@ public final class GlTile extends Node {
 		if (GlRenderer.bigEndian) {
 			for (local47 = 0; local47 < this.anInt2489; local47++) {
 				local68 = arg0[this.anIntArray231[local47]][this.anIntArray228[local47]][this.anIntArray227[local47]];
-				if (local68 != null && local68.aBoolean45) {
+				if (local68 != null && (local68.aBoolean45 || ceilingCoverage
+						&& ModernCeiling.needsConservativeCeilingCoverage(this.anIntArray231[local47], this.anIntArray228[local47], this.anIntArray227[local47]))) {
 					local78 = this.anIntArrayArray17[local47];
 					if (this.blend) {
 						local86 = this.anIntArrayArray18[local47];
@@ -274,7 +286,8 @@ public final class GlTile extends Node {
 		} else {
 			for (local47 = 0; local47 < this.anInt2489; local47++) {
 				local68 = arg0[this.anIntArray231[local47]][this.anIntArray228[local47]][this.anIntArray227[local47]];
-				if (local68 != null && local68.aBoolean45) {
+				if (local68 != null && (local68.aBoolean45 || ceilingCoverage
+						&& ModernCeiling.needsConservativeCeilingCoverage(this.anIntArray231[local47], this.anIntArray228[local47], this.anIntArray227[local47]))) {
 					local78 = this.anIntArrayArray17[local47];
 					if (this.blend) {
 						local86 = this.anIntArrayArray18[local47];

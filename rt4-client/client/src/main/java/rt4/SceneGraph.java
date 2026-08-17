@@ -2305,7 +2305,8 @@ public class SceneGraph {
 		try {
 			scenery.entity.render(scenery.anInt1714, anInt2886, anInt3038, anInt5205, anInt2222,
 					scenery.anInt1699 - cameraX, scenery.anInt1706 - cameraY,
-					scenery.anInt1703 - cameraZ, scenery.key, level, null);
+					// The second, visual-only submission must not rerun menu picking.
+					scenery.anInt1703 - cameraZ, 0L, level, null);
 		} finally {
 			ModernCeiling.endLiveRoofModelSubmission(traceSubmission);
 			gl.glPopAttrib();
@@ -2345,10 +2346,12 @@ public class SceneGraph {
 				int z1 = Math.min(row.length - 1, LightingManager.anInt4866 - 1);
 				for (int z = z0; z <= z1; z++) {
 					Tile tile = row[z];
-					// Match the current SceneGraph visibility set. This includes large
-					// roof footprints whose origin is outside the camera cone, without
-					// reissuing every off-screen roof in the square scan window.
-					if (tile == null || !tile.aBoolean45) continue;
+					// The normal latch is ground-facing and can lose an upward ceiling
+					// edge at an extreme pitch. The conservative selector is only used
+					// by the modern upper-roof underside pass and remains bounded to
+					// the active camera window.
+					if (tile == null || (!tile.aBoolean45
+							&& !ModernCeiling.needsConservativeCeilingCoverage(level, x, z))) continue;
 					for (int i = 0; i < tile.sceneryLen; i++) {
 						Scenery scenery = tile.scenery[i];
 						if (scenery == null || submitted.put(scenery, Boolean.TRUE) != null) continue;
@@ -3199,7 +3202,7 @@ public class SceneGraph {
 							if (!cullWasEnabled) gl.glEnable(GL2.GL_CULL_FACE);
 							gl.glCullFace(GL2.GL_FRONT);
 							try {
-								local336.method1944(tiles, local350, false);
+								local336.method1944(tiles, local350, false, true);
 							} finally {
 								gl.glPopAttrib();
 								if (!cullWasEnabled) gl.glDisable(GL2.GL_CULL_FACE);
