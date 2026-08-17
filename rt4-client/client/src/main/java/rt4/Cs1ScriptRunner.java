@@ -606,6 +606,7 @@ public class Cs1ScriptRunner {
 											if (component.objTypes[local270] > 0) {
 												objId = component.objTypes[local270] - 1;
 												if (arg0 < x + 32 && x < arg4 && arg6 < y + 32 && y < arg7 || component == InterfaceList.clickedInventoryComponent && InterfaceList.mouseOverInventoryObjectIndex == local270) {
+													ModernHud.drawInventoryQuickbarHighlight(component, objId, x, y);
 													@Pc(1476) Sprite sprite;
 
 													if (MiniMenu.anInt5014 == 1 && MiniMenu.anInt4370 == local270 && component.id == MiniMap.anInt5062) {
@@ -778,6 +779,7 @@ public class Cs1ScriptRunner {
 											if (!component.if3) {
 												local1934 = interpolate(component, local1934);
 											}
+											local276 = ModernHud.overrideTextColor(component, local276);
 											local1921.drawInterfaceText(local1934, local123, local114, component.width, component.height, local276, component.shadowed ? 0 : -1, component.halign, component.valign, component.vpadding);
 											PluginRepository.ComponentDraw(i, component, local123, local114);
 										} else if (Component.aBoolean72) {

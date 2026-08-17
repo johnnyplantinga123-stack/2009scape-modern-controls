@@ -885,24 +885,31 @@ public final class client extends GameShell {
 				Fonts.drawTextOnScreen(false, LocalizedText.LOADING);
 			}
 		} else if (gameState == 30) {
+			// Cache scripts can restore responsive base coordinates during update.
+			// Reapply the FP-only layout immediately before interface rendering.
+			ModernHud.layoutVanillaHud();
 			LoginManager.method1841();
-			// Modern controls: target acquisition (FP/CHASE only).
-			// Runs after scene render so SceneGraph camera is set up.
-			ModernTargetingController.update(loop);
-			// Modern controls: center-screen reticle (FP/CHASE only).
-			// Additive presentation layer — no effect on ORIGINAL or gameplay.
-			ModernCrosshair.draw();
-			// Phase 3C round 5 (P6): FP crosshair action overlay. The menu was
-			// just rebuilt+sorted by LoginManager.method1841(), so snapshot the
-			// current crosshair-target entries here, then draw the label.
-			ModernActionOverlay.snapshot();
-			ModernActionOverlay.draw();
+			if (!ModernHud.isWorldMapOpen()) {
+				// Modern controls: target acquisition (FP/CHASE only).
+				// Runs after scene render so SceneGraph camera is set up.
+				ModernTargetingController.update(loop);
+				// Modern controls: center-screen reticle (FP/CHASE only).
+				// Additive presentation layer — no effect on ORIGINAL or gameplay.
+				ModernCrosshair.draw();
+				// Phase 3C round 5 (P6): FP crosshair action overlay. The menu was
+				// just rebuilt+sorted by LoginManager.method1841(), so snapshot the
+				// current crosshair-target entries here, then draw the label.
+				ModernActionOverlay.snapshot();
+				ModernActionOverlay.draw();
+			}
 			// Dedicated MODERN FIRST_PERSON HUD shell. Vanilla interfaces and the
 			// existing item/prayer/spell action routes remain authoritative.
 			ModernHud.draw();
 			// Phase 3C round 4: F12 debug overlay. Drawn INSIDE the render pipeline
 			// (before the GL/software buffer present) using the RT4 raster + Fonts.
-			DebugOverlay.draw();
+			if (!ModernHud.isWorldMapOpen()) {
+				DebugOverlay.draw();
+			}
 		} else if (gameState == 40) {
 			Fonts.drawTextOnScreen(false, JagString.concatenate(new JagString[]{LocalizedText.CONLOST, JagString.aClass100_556, LocalizedText.ATTEMPT_TO_REESTABLISH}));
 		}
@@ -1182,10 +1189,10 @@ public final class client extends GameShell {
 		}
 		Protocol.sceneDelta++;
 		if (InterfaceList.topLevelInterface != -1) {
-			InterfaceList.method1320(0, 0, 0, GameShell.canvasWidth, InterfaceList.topLevelInterface, 0, GameShell.canvasHeight);
-			// Reflow the real cache HUD components. The same instances are used by
-			// the vanilla renderer and by the next input pass, preserving actions.
+			// Position the same cache components before this input traversal so
+			// their visual slots and authoritative hitboxes remain identical.
 			ModernHud.layoutVanillaHud();
+			InterfaceList.method1320(0, 0, 0, GameShell.canvasWidth, InterfaceList.topLevelInterface, 0, GameShell.canvasHeight);
 		}
 		InterfaceList.transmitTimer++;
 		if (GlRenderer.enabled) {

@@ -19,6 +19,15 @@ public final class ModernQuickBars {
 	private static final int INVENTORY_INTERFACE = 149;
 	private static final int PRAYER_INTERFACE = 271;
 	private static final int MAGIC_INTERFACE = 192;
+	/** Cache prayer button children and their server-authoritative config varps. */
+	private static final int[] PRAYER_BUTTONS = {
+			5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31,
+			33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57
+	};
+	private static final int[] PRAYER_VARPS = {
+			83, 84, 85, 862, 863, 86, 87, 88, 89, 90, 91, 864, 865, 92,
+			93, 94, 95, 96, 97, 866, 867, 98, 99, 100, 1168, 1052, 1053
+	};
 	private static final int KEY_1 = 16;
 	private static final int KEY_0 = 25;
 
@@ -166,13 +175,91 @@ public final class ModernQuickBars {
 		if (component == null || component.type != 5) {
 			return null;
 		}
-		Sprite sprite = component.method489(Cs1ScriptRunner.isTrue(component));
-		return sprite == null ? component.method489(false) : sprite;
+		// The selected cache sprite for several prayers is deliberately dark.
+		// Keep the icon readable here and communicate the active state through the
+		// action-bar slot highlight instead.
+		Sprite sprite = component.method489(false);
+		return sprite == null ? component.method489(true) : sprite;
 	}
 
 	public static boolean isActionActive(int slot) {
 		Component component = getActionComponent(slot);
-		return component != null && Cs1ScriptRunner.isTrue(component);
+		if (component == null) {
+			return false;
+		}
+		if (component.id >>> 16 == PRAYER_INTERFACE) {
+			int varp = prayerVarp(component.id & 0xFFFF);
+			return varp >= 0 && varp < VarpDomain.activeVarps.length
+					&& VarpDomain.activeVarps[varp] != 0;
+		}
+		return Cs1ScriptRunner.isTrue(component);
+	}
+
+	private static int prayerVarp(int button) {
+		for (int i = 0; i < PRAYER_BUTTONS.length; i++) {
+			if (PRAYER_BUTTONS[i] == button) {
+				return PRAYER_VARPS[i];
+			}
+		}
+		return -1;
+	}
+
+	public static boolean isItemAssigned(int itemId) {
+		return itemId >= 0 && findItemSlot(itemId) >= 0;
+	}
+
+	public static boolean isItemEquipped(int slot) {
+		int assignedId = getAssignedItemId(slot);
+		if (assignedId < 0 || PlayerList.self == null || PlayerList.self.appearance == null) {
+			return false;
+		}
+		for (int appearanceSlot = 0; appearanceSlot < 12; appearanceSlot++) {
+			int equippedId = PlayerList.self.appearance.getEquippedObjectId(appearanceSlot);
+			if (equippedId >= 0 && sameItemFamily(assignedId, equippedId)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public static void moveItemSlot(int from, int to) {
+		if (from < 0 || from >= ITEM_SLOT_COUNT || to < 0 || to >= ITEM_SLOT_COUNT || from == to) {
+			return;
+		}
+		int itemId = itemIds[from];
+		itemIds[from] = itemIds[to];
+		itemIds[to] = itemId;
+		save();
+	}
+
+	public static void clearItemSlot(int slot) {
+		if (slot < 0 || slot >= ITEM_SLOT_COUNT || itemIds[slot] < 0) {
+			return;
+		}
+		itemIds[slot] = -1;
+		save();
+	}
+
+	public static void moveActionSlot(int from, int to) {
+		if (from < 0 || from >= ACTION_SLOT_COUNT || to < 0 || to >= ACTION_SLOT_COUNT || from == to) {
+			return;
+		}
+		int componentId = actionComponentIds[from];
+		int createdId = actionCreatedIds[from];
+		actionComponentIds[from] = actionComponentIds[to];
+		actionCreatedIds[from] = actionCreatedIds[to];
+		actionComponentIds[to] = componentId;
+		actionCreatedIds[to] = createdId;
+		save();
+	}
+
+	public static void clearActionSlot(int slot) {
+		if (slot < 0 || slot >= ACTION_SLOT_COUNT || actionComponentIds[slot] < 0) {
+			return;
+		}
+		actionComponentIds[slot] = -1;
+		actionCreatedIds[slot] = -1;
+		save();
 	}
 
 	public static void activateItem(int slot) {

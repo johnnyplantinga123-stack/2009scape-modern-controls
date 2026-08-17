@@ -108,16 +108,14 @@ public final class ModernControlController {
 	 * suppressed so the player can type freely.
 	 *
 	 * <p>The RS chatbox is driven by CS2 scripts; there is no single existing
-	 * Java boolean that tracks "chat typing mode". We therefore use Enter-key
-	 * edge-detection in {@link #updateChatInputState()} to maintain this flag.
+	 * Java boolean that tracks "chat typing mode". The keyboard event queue is
+	 * therefore authoritative: {@link #shouldForwardKeyToChat(int, int)} sees
+	 * every Enter event, including taps that begin and end between game ticks.
 	 */
 	private static boolean chatInputActive = false;
 
 	/** Escape keycode in RS keycode space (CODE_MAP[VK_ESCAPE] = 13). */
 	private static final int KEY_ESCAPE = 13;
-
-	/** Previous frame's Enter-key state, used for edge-detection. */
-	private static boolean enterWasPressed = false;
 
 	// ---- WASD key codes (must match ModernMovementController) ----
 	private static final int KEY_W = 33;
@@ -128,6 +126,8 @@ public final class ModernControlController {
 	// ---- Gameplay key codes (round #6A, P3: chat ownership) ----
 	/** Interact key (FP action layer). */
 	private static final int KEY_E = 34;
+	/** World map hotkey in MODERN FIRST_PERSON. */
+	private static final int KEY_M = 70;
 	/** SPACE: dialogue continue / gameplay action. */
 	private static final int KEY_SPACE = 83;
 	/** First digit keycode ('1'); codes are contiguous 16..24 ('1'..'9'). */
@@ -206,16 +206,18 @@ public final class ModernControlController {
 	private static void updateInteractionLayer() {
 		boolean uiConsumed = ModernDialogueKeyboard.update();
 		if (uiConsumed) {
+			ModernHud.updateInput(true);
 			ModernQuickBars.update(true);
 		} else {
 			// Round #8 P7: FP context menu update (right-click open, wheel select,
 			// left-click execute). Runs before quick overlay so the menu can
 			// suppress overlay input when open.
 			FPContextMenuController.update();
+			boolean hudActionConsumed = ModernHud.updateInput(FPContextMenuController.isMenuOpen());
 			// World interaction retains priority for unmodified 1/2/3. Shifted
 			// numbers always belong to the prayer/magic action bar.
 			boolean worldActionConsumed = ModernActionOverlay.update();
-			ModernQuickBars.update(worldActionConsumed);
+			ModernQuickBars.update(worldActionConsumed || hudActionConsumed);
 		}
 	}
 
@@ -247,7 +249,6 @@ public final class ModernControlController {
 	 */
 	public static void resetChatState() {
 		chatInputActive = false;
-		enterWasPressed = Keyboard.pressedKeys[Keyboard.KEY_ENTER];
 	}
 
 	/**
@@ -328,6 +329,22 @@ public final class ModernControlController {
 			// ownership requirement.
 			return true;
 		}
+		if (keyCode == Keyboard.KEY_ENTER) {
+			if (!chatInputActive) {
+				// The first Enter gives the modern chatbox keyboard ownership.
+				// Do not pass it to script 73: an empty input would open Quick Chat.
+				chatInputActive = true;
+				return false;
+			}
+			// The second Enter is still delivered so script 73 can send the
+			// current text, but gameplay ownership resumes immediately.
+			chatInputActive = false;
+			return true;
+		}
+		if (keyCode == KEY_ESCAPE && chatInputActive) {
+			chatInputActive = false;
+			return true;
+		}
 		if (chatInputActive) {
 			return true; // Chat typing active: allow all keys through
 		}
@@ -346,7 +363,7 @@ public final class ModernControlController {
 	/** Whether a game keycode belongs to a gameplay binding (chat closed). */
 	private static boolean isGameplayKeyCode(int keyCode) {
 		return keyCode == KEY_W || keyCode == KEY_A || keyCode == KEY_S || keyCode == KEY_D
-				|| keyCode == KEY_E || keyCode == KEY_SPACE
+				|| keyCode == KEY_E || keyCode == KEY_M || keyCode == KEY_SPACE
 				|| (keyCode >= KEY_1 && keyCode <= KEY_9) || keyCode == 25;
 	}
 
@@ -354,7 +371,7 @@ public final class ModernControlController {
 	private static boolean isGameplayChar(int keyChar) {
 		return keyChar == 'w' || keyChar == 'W' || keyChar == 'a' || keyChar == 'A'
 				|| keyChar == 's' || keyChar == 'S' || keyChar == 'd' || keyChar == 'D'
-				|| keyChar == 'e' || keyChar == 'E'
+				|| keyChar == 'e' || keyChar == 'E' || keyChar == 'm' || keyChar == 'M'
 				|| (keyChar >= '0' && keyChar <= '9')
 				|| keyChar == ' ';
 	}
@@ -416,34 +433,25 @@ public final class ModernControlController {
 	}
 
 	/**
-	 * Tracks the chatbox text-input state using Enter-key edge-detection.
+	 * Applies lifecycle fallbacks for the event-driven chat input state.
 	 *
-	 * <p>Pressing Enter toggles between "gameplay mode" and "chat typing mode".
-	 * Escape also closes the chat (RS default behaviour handled by the CS2
-	 * chatbox script); we mirror that here to keep the flag in sync.
+	 * <p>Enter and Escape are handled from the lossless keyboard event queue in
+	 * {@link #shouldForwardKeyToChat(int, int)}. Polling Enter here used to miss
+	 * fast taps and could leave mouse-look disabled after sending a message.
 	 *
 	 * <p>This is called every frame from {@link #update()}, before the
 	 * mode-specific dispatch, so the flag is current for the entire frame.
 	 */
 	private static void updateChatInputState() {
-		boolean enterPressed = Keyboard.pressedKeys[Keyboard.KEY_ENTER];
-		boolean escPressed = Keyboard.pressedKeys[KEY_ESCAPE];
-
-		// Enter edge-detection: toggle on press (not hold)
-		if (enterPressed && !enterWasPressed) {
-			chatInputActive = !chatInputActive;
-		}
-		enterWasPressed = enterPressed;
-
-		// Escape always closes chat input
-		if (escPressed) {
+		// Escape polling is retained as a harmless fallback if an interface
+		// drains the event before the normal keyboard ownership gate sees it.
+		if (Keyboard.pressedKeys[KEY_ESCAPE]) {
 			chatInputActive = false;
 		}
 
 		// When camera mode switches to ORIGINAL, reset chat state
 		if (CameraMode.getCurrent() == CameraMode.Mode.ORIGINAL) {
 			chatInputActive = false;
-			enterWasPressed = enterPressed;
 		}
 	}
 }
