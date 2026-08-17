@@ -43,10 +43,22 @@ public class GlobalConfig {
 	public static boolean USE_ISAAC = false;
 	//endregion
 
-	// default distance is 28
+	// Client scene draw distance, expressed in gameplay tiles.
 	public static int TILE_DISTANCE = 56;
 	public static int VIEW_DISTANCE = TILE_DISTANCE * 128;
 	public static float VIEW_FADE_DISTANCE = ((float) TILE_DISTANCE / 28.0f) * 256.0f;
+	public static final int MIN_TILE_DISTANCE = 1;
+	public static final int MAX_TILE_DISTANCE = 300;
+
+	/** Updates all derived far-clip/fog values from a tile-radius setting. */
+	public static void setTileDistance(int tileDistance) {
+		if (tileDistance < MIN_TILE_DISTANCE || tileDistance > MAX_TILE_DISTANCE) {
+			throw new IllegalArgumentException("tile distance outside supported range");
+		}
+		TILE_DISTANCE = tileDistance;
+		VIEW_DISTANCE = tileDistance * 128;
+		VIEW_FADE_DISTANCE = ((float) tileDistance / 28.0f) * 256.0f;
+	}
 
 	public static boolean USE_SHIFT_CLICK = true;
 	public static boolean USE_TWEENING = true;

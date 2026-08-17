@@ -13,11 +13,11 @@ public final class FirstPersonViewModel {
 
 	/* Shared FIRST_PERSON presentation offsets; item assets remain unchanged. */
 	private static final int WEAPON_SCREEN_X = 24;
-	private static final int WEAPON_SCREEN_Y = 96;
-	private static final int WEAPON_DEPTH = 280;
+	private static final int WEAPON_SCREEN_Y = 84;
+	private static final int WEAPON_DEPTH = 220;
 	private static final int SHIELD_SCREEN_X = -24;
-	private static final int SHIELD_SCREEN_Y = 104;
-	private static final int SHIELD_DEPTH = 300;
+	private static final int SHIELD_SCREEN_Y = 92;
+	private static final int SHIELD_DEPTH = 240;
 
 	/** Kept as a runtime switch for the old proof trace; normal FP offsets are now used. */
 	public static boolean DEBUG_VISIBILITY_PROOF = false;

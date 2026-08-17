@@ -684,6 +684,22 @@ public class SceneGraph {
 		aByteArrayArrayArray13 = new byte[4][width][length];
 	}
 
+	/**
+	 * Changes the live tile-culling radius without rebuilding loaded scene data.
+	 * The arrays are indexed by camera-relative tile offsets, so their size must
+	 * follow visibility whenever a client command changes the radius.
+	 */
+	public static void setVisibility(int tileVisibility) {
+		if (tileVisibility < GlobalConfig.MIN_TILE_DISTANCE) {
+			tileVisibility = GlobalConfig.MIN_TILE_DISTANCE;
+		} else if (tileVisibility > GlobalConfig.MAX_TILE_DISTANCE) {
+			tileVisibility = GlobalConfig.MAX_TILE_DISTANCE;
+		}
+		visibility = tileVisibility;
+		aBooleanArrayArray1 = new boolean[visibility + visibility + 1][visibility + visibility + 1];
+		aBooleanArrayArray3 = new boolean[visibility + visibility + 2][visibility + visibility + 2];
+	}
+
 	@OriginalMember(owner = "client!vj", name = "a", descriptor = "(III)J")
 	public static long getWallKey(@OriginalArg(0) int level, @OriginalArg(1) int x, @OriginalArg(2) int z) {
 		@Pc(7) Tile tile = tiles[level][x][z];
@@ -3012,9 +3028,12 @@ public class SceneGraph {
 		if (LightingManager.anInt4866 > length) {
 			LightingManager.anInt4866 = length;
 		}
-		@Pc(99) short local99;
+		// VIEW_DISTANCE is a fine-coordinate distance. Keep it as an int: values
+		// above 255 tiles exceed the signed-short range and would otherwise wrap
+		// negative, disabling the far-plane visibility test.
+		@Pc(99) int local99;
 		if (GlRenderer.enabled) {
-			local99 = (short) GlobalConfig.VIEW_DISTANCE;
+			local99 = GlobalConfig.VIEW_DISTANCE;
 		} else {
 			local99 = 3500;
 		}

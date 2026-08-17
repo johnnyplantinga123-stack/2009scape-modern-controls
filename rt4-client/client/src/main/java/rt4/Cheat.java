@@ -99,6 +99,7 @@ public class Cheat {
 	@OriginalMember(owner = "client!jg", name = "e", descriptor = "Z")
 	public static boolean qaOpTest = false;
 	public static final JagString RELOADPLUGINS = JagString.parse("::reloadplugins");
+	public static final JagString RENDER_DISTANCE = JagString.parse("::rd");
 
 	@OriginalMember(owner = "client!en", name = "a", descriptor = "(IIIB)V")
 	public static void teleport(@OriginalArg(0) int arg0, @OriginalArg(1) int arg1, @OriginalArg(2) int arg2) {
@@ -110,6 +111,9 @@ public class Cheat {
 	@OriginalMember(owner = "client!k", name = "a", descriptor = "(Lclient!na;Z)V")
 	public static void execute(@OriginalArg(0) JagString arg0) {
 		PluginRepository.ProcessCommand(arg0);
+		if (executeRenderDistance(arg0)) {
+			return;
+		}
 		// if (LoginManager.staffModLevel >= 2) {
 			@Pc(18) int local18;
 			@Pc(38) int local38;
@@ -237,6 +241,42 @@ public class Cheat {
 		}
 		//}
 		sendCheatPacket(arg0);
+	}
+
+	/** Handles the local-only ::rd <tiles> client command. */
+	private static boolean executeRenderDistance(JagString commandLine) {
+		String command = commandLine.toString().trim();
+		if (!command.regionMatches(true, 0, "::rd", 0, 4)
+				|| command.length() > 4 && !Character.isWhitespace(command.charAt(4))) {
+			return false;
+		}
+		String value = command.substring(4).trim();
+		if (value.length() == 0) {
+			Chat.add(null, 0, JagString.parse("Usage: ::rd <1-300 tiles>"));
+			return true;
+		}
+		String[] values = value.split("\\s+");
+		if (values.length != 1) {
+			Chat.add(null, 0, JagString.parse("Usage: ::rd <1-300 tiles>"));
+			return true;
+		}
+		int tiles;
+		try {
+			tiles = Integer.parseInt(values[0]);
+		} catch (NumberFormatException ex) {
+			Chat.add(null, 0, JagString.parse("Render distance must be a tile number from 1 to 300."));
+			return true;
+		}
+		if (tiles < GlobalConfig.MIN_TILE_DISTANCE || tiles > GlobalConfig.MAX_TILE_DISTANCE) {
+			Chat.add(null, 0, JagString.parse("Render distance must be a tile number from 1 to 300."));
+			return true;
+		}
+		GlobalConfig.setTileDistance(tiles);
+		SceneGraph.setVisibility(tiles);
+		Chat.add(null, 0, JagString.concatenate(new JagString[]{
+				JagString.parse("Render distance: "), JagString.parseInt(tiles), JagString.parse(" tiles.")
+		}));
+		return true;
 	}
 
 	public static void sendCheatPacket(JagString commandLine) {
