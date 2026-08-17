@@ -127,6 +127,7 @@ public class Preferences {
 		safeMode = false;
 		hdr = false;
 		favoriteWorlds = 0;
+		ModernQuickBars.resetAssignments();
 		try {
 			@Pc(78) PrivilegedRequest request = arg0.openPreferences("runescape");
 			while (request.status == 0) {
@@ -176,11 +177,13 @@ public class Preferences {
 			return;
 		}
 		@Pc(21) int version = buffer.g1();
-		if (version < 0 || version > 11) {
+		if (version < 0 || version > 12) {
 			return;
 		}
 		@Pc(34) byte len;
-		if (version == 11) {
+		if (version == 12) {
+			len = 105;
+		} else if (version == 11) {
 			len = 33;
 		} else if (version == 10) {
 			len = 32;
@@ -284,12 +287,15 @@ public class Preferences {
 		if (version >= 11) {
 			cursorsEnabled = buffer.g1() != 0;
 		}
+		if (version >= 12) {
+			ModernQuickBars.decode(buffer);
+		}
 	}
 
 	@OriginalMember(owner = "client!dl", name = "a", descriptor = "(B)Lclient!wa;")
 	public static Buffer encode() {
-		@Pc(4) Buffer local4 = new Buffer(34);
-		local4.p1(11);
+		@Pc(4) Buffer local4 = new Buffer(106);
+		local4.p1(12);
 		local4.p1(brightness);
 		local4.p1(allLevelsVisible ? 1 : 0);
 		local4.p1(removeRoofsSelectively ? 1 : 0);
@@ -318,6 +324,7 @@ public class Preferences {
 		local4.p1(buildArea);
 		local4.p1(hdr ? 1 : 0);
 		local4.p1(cursorsEnabled ? 1 : 0);
+		ModernQuickBars.encode(local4);
 		return local4;
 	}
 

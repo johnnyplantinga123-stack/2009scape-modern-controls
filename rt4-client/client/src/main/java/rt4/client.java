@@ -897,6 +897,9 @@ public final class client extends GameShell {
 			// current crosshair-target entries here, then draw the label.
 			ModernActionOverlay.snapshot();
 			ModernActionOverlay.draw();
+			// Dedicated MODERN FIRST_PERSON HUD shell. Vanilla interfaces and the
+			// existing item/prayer/spell action routes remain authoritative.
+			ModernHud.draw();
 			// Phase 3C round 4: F12 debug overlay. Drawn INSIDE the render pipeline
 			// (before the GL/software buffer present) using the RT4 raster + Fonts.
 			DebugOverlay.draw();
@@ -1180,6 +1183,9 @@ public final class client extends GameShell {
 		Protocol.sceneDelta++;
 		if (InterfaceList.topLevelInterface != -1) {
 			InterfaceList.method1320(0, 0, 0, GameShell.canvasWidth, InterfaceList.topLevelInterface, 0, GameShell.canvasHeight);
+			// Reflow the real cache HUD components. The same instances are used by
+			// the vanilla renderer and by the next input pass, preserving actions.
+			ModernHud.layoutVanillaHud();
 		}
 		InterfaceList.transmitTimer++;
 		if (GlRenderer.enabled) {

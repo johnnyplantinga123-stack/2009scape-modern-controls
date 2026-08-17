@@ -331,6 +331,7 @@ public class MiniMenu {
 										}
 									}
 								}
+								ModernQuickBars.addInventoryMenuEntry(component, local171, local276.id);
 								add(MiniMap.anInt5073, local276.id, JagString.concatenate(new JagString[]{aClass100_32, local276.name}), local171, (short) 1006, LocalizedText.EXAMINE, component.id);
 							}
 						}
@@ -339,6 +340,7 @@ public class MiniMenu {
 				}
 			}
 		}
+		ModernQuickBars.addActionComponentMenuEntry(component);
 		if (!component.if3) {
 			return;
 		}
@@ -511,6 +513,9 @@ public class MiniMenu {
 		}
 		@Pc(31) long local31 = keys[arg0];
 		@Pc(36) int local36 = (int) keys[arg0];
+		if (ModernQuickBars.handleMenuAction(actionCode, local15, local19, local36)) {
+			return;
+		}
 		// Round #7 P3: one-shot trace of the real vanilla dialogue click
 		// route (CS1 button / if3 op / continue) — observation only.
 		if (actionCode == UNKNOWN_8 || actionCode == UNKNOWN_9
@@ -1240,6 +1245,34 @@ public class MiniMenu {
 		}
 		if (pressedInventoryComponent != null && anInt2043 == 0) {
 			InterfaceList.redraw(pressedInventoryComponent);
+		}
+	}
+
+	/** Executes a synthetic hotbar activation through the existing doAction route. */
+	public static void invokeExistingAction(int actionCode, int intArg1, int intArg2,
+			long key, JagString opBase) {
+		int scratch = actions.length - 1;
+		short oldAction = actions[scratch];
+		int oldIntArg1 = intArgs1[scratch];
+		int oldIntArg2 = intArgs2[scratch];
+		long oldKey = keys[scratch];
+		JagString oldOp = ops[scratch];
+		JagString oldOpBase = opBases[scratch];
+		try {
+			actions[scratch] = (short) actionCode;
+			intArgs1[scratch] = intArg1;
+			intArgs2[scratch] = intArg2;
+			keys[scratch] = key;
+			ops[scratch] = JagString.EMPTY;
+			opBases[scratch] = opBase == null ? JagString.EMPTY : opBase;
+			doAction(scratch);
+		} finally {
+			actions[scratch] = oldAction;
+			intArgs1[scratch] = oldIntArg1;
+			intArgs2[scratch] = oldIntArg2;
+			keys[scratch] = oldKey;
+			ops[scratch] = oldOp;
+			opBases[scratch] = oldOpBase;
 		}
 	}
 

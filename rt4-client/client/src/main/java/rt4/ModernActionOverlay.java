@@ -645,7 +645,7 @@ public final class ModernActionOverlay {
 	 * ONLY when the dialogue/UI layer ({@link ModernDialogueKeyboard}) did not
 	 * consume the key.
 	 */
-	public static void update() {
+	public static boolean update() {
 		boolean key1 = Keyboard.pressedKeys[KEY_1];
 		boolean key2 = Keyboard.pressedKeys[KEY_1 + 1];
 		boolean key3 = Keyboard.pressedKeys[KEY_1 + 2];
@@ -661,21 +661,27 @@ public final class ModernActionOverlay {
 		key3WasPressed = key3;
 		keyEWasPressed = keyE;
 
-		if (!isOverlayActive() || !ModernControlController.isGameplayInputAllowed()) {
-			return;
+		if (!isOverlayActive() || !ModernControlController.isGameplayInputAllowed()
+				|| Keyboard.pressedKeys[Keyboard.KEY_SHIFT]) {
+			return false;
 		}
 		if (!snapshotValid) {
-			return;
+			return false;
 		}
 		if (edge1) {
 			executeAction(0);
+			return true;
 		} else if (edge2) {
 			executeAction(1);
+			return true;
 		} else if (edge3) {
 			executeAction(2);
+			return true;
 		} else if (edgeE) {
 			executeAction(0); // E = primary/default action
+			return true;
 		}
+		return false;
 	}
 
 	/**

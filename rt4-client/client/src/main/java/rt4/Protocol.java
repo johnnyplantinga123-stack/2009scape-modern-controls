@@ -2835,6 +2835,9 @@ public class Protocol {
 		}
 		WorldMap.component = null;
 		if (InterfaceList.topLevelInterface != -1) {
+			// Apply the MODERN HUD to the same cache components that the gameplay
+			// input pass below uses. This keeps visuals and hitboxes synchronized.
+			ModernHud.layoutVanillaHud();
 			InterfaceList.method1320(0, 0, 0, GameShell.canvasWidth, InterfaceList.topLevelInterface, 0, GameShell.canvasHeight);
 		}
 		InterfaceList.transmitTimer++;

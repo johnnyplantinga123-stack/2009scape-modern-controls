@@ -384,6 +384,9 @@ public class Cs1ScriptRunner {
 						@Pc(563) int local563;
 						@Pc(571) int local571;
 						@Pc(545) int objId;
+						if (ModernHud.replaceOrSuppressVanillaComponent(component, local123, local114)) {
+							continue;
+						}
 						if (component.clientCode != 0) {
 							if (component.clientCode == 1337 || component.clientCode == 1403 && GlRenderer.enabled) {
 								InterfaceList.aClass13_26 = component;

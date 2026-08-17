@@ -205,13 +205,17 @@ public final class ModernControlController {
 	 */
 	private static void updateInteractionLayer() {
 		boolean uiConsumed = ModernDialogueKeyboard.update();
-		if (!uiConsumed) {
+		if (uiConsumed) {
+			ModernQuickBars.update(true);
+		} else {
 			// Round #8 P7: FP context menu update (right-click open, wheel select,
 			// left-click execute). Runs before quick overlay so the menu can
 			// suppress overlay input when open.
 			FPContextMenuController.update();
-			// Quick overlay is gated on !FPContextMenuController.isMenuOpen()
-			ModernActionOverlay.update();
+			// World interaction retains priority for unmodified 1/2/3. Shifted
+			// numbers always belong to the prayer/magic action bar.
+			boolean worldActionConsumed = ModernActionOverlay.update();
+			ModernQuickBars.update(worldActionConsumed);
 		}
 	}
 
@@ -343,7 +347,7 @@ public final class ModernControlController {
 	private static boolean isGameplayKeyCode(int keyCode) {
 		return keyCode == KEY_W || keyCode == KEY_A || keyCode == KEY_S || keyCode == KEY_D
 				|| keyCode == KEY_E || keyCode == KEY_SPACE
-				|| (keyCode >= KEY_1 && keyCode <= KEY_9);
+				|| (keyCode >= KEY_1 && keyCode <= KEY_9) || keyCode == 25;
 	}
 
 	/** Whether a typed character belongs to a gameplay binding (chat closed). */
@@ -351,7 +355,7 @@ public final class ModernControlController {
 		return keyChar == 'w' || keyChar == 'W' || keyChar == 'a' || keyChar == 'A'
 				|| keyChar == 's' || keyChar == 'S' || keyChar == 'd' || keyChar == 'D'
 				|| keyChar == 'e' || keyChar == 'E'
-				|| (keyChar >= '1' && keyChar <= '9')
+				|| (keyChar >= '0' && keyChar <= '9')
 				|| keyChar == ' ';
 	}
 
